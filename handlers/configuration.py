@@ -15,6 +15,74 @@ from network.connection import Connection, ConnectionState
 logger = logging.getLogger("PyMC.配置")
 
 
+def _build_damage_type_registry() -> dict:
+    """
+    构建 1.21.1 所需的基础伤害类型注册表。
+
+    客户端在进入世界时会初始化 DamageSources。
+    如果缺少 vanilla 预期的 key（例如 minecraft:in_fire），
+    客户端或某些客户端模组会在收到 Join Game 包后直接崩溃。
+    """
+    damage_keys = [
+        "in_fire",
+        "campfire",
+        "lightning_bolt",
+        "on_fire",
+        "lava",
+        "hot_floor",
+        "in_wall",
+        "cramming",
+        "drown",
+        "starve",
+        "cactus",
+        "fall",
+        "fly_into_wall",
+        "out_of_world",
+        "generic",
+        "magic",
+        "wither",
+        "dragon_breath",
+        "dry_out",
+        "sweet_berry_bush",
+        "freeze",
+        "stalagmite",
+        "falling_block",
+        "falling_anvil",
+        "falling_stalactite",
+        "sting",
+        "mob_attack",
+        "mob_attack_no_aggro",
+        "player_attack",
+        "arrow",
+        "trident",
+        "mob_projectile",
+        "spit",
+        "wind_charge",
+        "fireworks",
+        "fireball",
+        "unattributed_fireball",
+        "wither_skull",
+        "thrown",
+        "indirect_magic",
+        "thorns",
+        "explosion",
+        "player_explosion",
+        "sonic_boom",
+        "bad_respawn_point",
+        "outside_border",
+        "generic_kill",
+    ]
+
+    return {
+        f"minecraft:{key}": {
+            "message_id": key,
+            "scaling": "never",
+            "exhaustion": NbtFloat(0.0),
+        }
+        for key in damage_keys
+    }
+
+
 async def handle_configuration(conn: Connection, packet_id: int,
                                 payload: bytes, server):
     """处理配置阶段的数据包。"""
@@ -174,18 +242,11 @@ async def _send_registry_data(conn: Connection):
     })
 
     # --- 伤害类型注册表 ---
-    await _send_single_registry(conn, "minecraft:damage_type", {
-        "minecraft:generic": {
-            "message_id": "generic",
-            "scaling": "never",
-            "exhaustion": NbtFloat(0.0),
-        },
-        "minecraft:generic_kill": {
-            "message_id": "genericKill",
-            "scaling": "never",
-            "exhaustion": NbtFloat(0.0),
-        },
-    })
+    await _send_single_registry(
+        conn,
+        "minecraft:damage_type",
+        _build_damage_type_registry()
+    )
 
     # --- 画作种类注册表 (可为空但必须发送) ---
     await _send_single_registry(conn, "minecraft:painting_variant", {

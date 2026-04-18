@@ -1,13 +1,13 @@
 # ============================================================
 # PyMC - C++ 原生地形生成器桥接
-# 通过子进程与 terrain_gen.exe 进行二进制协议通信
+# 通过子进程与 terrain_gen 可执行文件进行二进制协议通信
 # 自动回退到纯 Python 实现
 # ============================================================
 
 """
 原生地形生成器桥接模块。
 
-启动 terrain_gen.exe 作为长驻子进程，通过 stdin/stdout 传递二进制数据
+启动 terrain_gen 可执行文件作为长驻子进程，通过 stdin/stdout 传递二进制数据
 进行区块生成。
 
 二进制通信协议 (全部小端序):
@@ -45,22 +45,32 @@ REQUEST_SIZE = struct.calcsize(REQUEST_FORMAT)  # 16
 
 
 def _find_native_binary() -> str | None:
-    """查找 terrain_gen.exe 的路径。"""
-    candidates = [
-        # 与主程序同目录
-        Path(sys.argv[0]).parent / "native" / "terrain_gen.exe",
-        Path(sys.argv[0]).parent / "terrain_gen.exe",
-        # 与当前文件同目录
-        Path(__file__).parent.parent / "native" / "terrain_gen.exe",
-        Path(__file__).parent / "terrain_gen.exe",
-        # 工作目录
-        Path("native") / "terrain_gen.exe",
-        Path("terrain_gen.exe"),
+    """查找跨平台 terrain_gen 可执行文件路径。"""
+    binary_names = ["terrain_gen.exe", "terrain_gen"]
+    search_roots = [
+        Path(sys.executable).resolve().parent,
+        Path(sys.argv[0]).resolve().parent,
+        Path(__file__).resolve().parent,
+        Path(__file__).resolve().parent.parent,
+        Path.cwd(),
     ]
 
-    for p in candidates:
-        if p.exists():
-            return str(p.resolve())
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+
+    for root in search_roots:
+        for relative in ("native", "."):
+            base = root / relative
+            for name in binary_names:
+                candidate = (base / name).resolve()
+                if candidate not in seen:
+                    seen.add(candidate)
+                    candidates.append(candidate)
+
+    for path in candidates:
+        if path.exists() and path.is_file():
+            if os.name == "nt" or os.access(path, os.X_OK):
+                return str(path)
     return None
 
 
@@ -118,7 +128,7 @@ class NativeTerrainGenerator:
             logger.info(f"找到原生地形生成器: {self._binary_path}")
             self._start_process()
         else:
-            logger.warning("未找到 terrain_gen.exe，将使用纯 Python 回退")
+            logger.warning("未找到 terrain_gen 原生生成器，将使用纯 Python 回退")
 
     @property
     def available(self) -> bool:
