@@ -455,9 +455,56 @@ async def _send_chunk_data_terrain(conn: Connection, chunk_x: int, chunk_z: int,
     await conn.send_packet(0x27, bytes(payload))
 
 
+def _build_chunk_light_data(chunk_blocks: list[list[list[int]]]) -> tuple[int, int, int, int, list[bytes], list[bytes]]:
+    """
+    为 24 个世界 section + 上下边界构建简化版光照数据。
+    规则:
+      - 露天列保持 15 级天光
+      - 遇到第一个非空气/非流体方块后，下面不再有天光
+      - 方块光当前仍为 0
+    """
+    section_count = 26  # 24 world sections + bottom/top boundary
+    section_bytes = [bytearray(2048) for _ in range(section_count)]
+
+    for z in range(16):
+        for x in range(16):
+            sky_open = True
+            for y_index in range(len(chunk_blocks) - 1, -1, -1):
+                block_id = chunk_blocks[y_index][z][x]
+                transparent = block_id in (AIR, WATER)
+                if sky_open and transparent:
+                    world_section = y_index // 16
+                    section_idx = world_section + 1
+                    local_y = y_index % 16
+                    nibble_index = (local_y * 16 * 16) + (z * 16) + x
+                    byte_index = nibble_index // 2
+                    shift = 0 if (nibble_index % 2) == 0 else 4
+                    section_bytes[section_idx][byte_index] |= 0xF << shift
+                elif not transparent:
+                    sky_open = False
+
+    # 顶部边界 section 作为天空光源，保持全亮；底部边界置空。
+    section_bytes[-1] = bytearray([0xFF] * 2048)
+
+    sky_mask = 0
+    empty_sky_mask = 0
+    sky_arrays: list[bytes] = []
+    for idx, data in enumerate(section_bytes):
+        if any(data):
+            sky_mask |= 1 << idx
+            sky_arrays.append(bytes(data))
+        else:
+            empty_sky_mask |= 1 << idx
+
+    block_mask = 0
+    empty_block_mask = (1 << section_count) - 1
+    block_arrays: list[bytes] = []
+    return sky_mask, block_mask, empty_sky_mask, empty_block_mask, sky_arrays, block_arrays
+
+
 async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
-                                motion_blocking: list[int], world_surface: list[int], 
-                                chunk_data: bytes):
+                                motion_blocking: list[int], world_surface: list[int],
+                                chunk_data: bytes, chunk_blocks: list[list[list[int]]]):
     """
     发送已预生成的区块数据包 (0x27)。
     区块生成和编码已在线程池中完成，此处仅组装协议数据包并发送。
@@ -483,26 +530,25 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
     payload.extend(write_varint(0))
 
     # --- 光照数据 ---
-    all_bits = (1 << 26) - 1
+    sky_mask, block_mask, empty_sky_mask, empty_block_mask, sky_arrays, block_arrays = (
+        _build_chunk_light_data(chunk_blocks)
+    )
     payload.extend(write_varint(1))
-    payload.extend(write_long(all_bits))
+    payload.extend(write_long(sky_mask))
     payload.extend(write_varint(1))
-    payload.extend(write_long(all_bits))
-    payload.extend(write_varint(0))
-    payload.extend(write_varint(0))
+    payload.extend(write_long(block_mask))
+    payload.extend(write_varint(1))
+    payload.extend(write_long(empty_sky_mask))
+    payload.extend(write_varint(1))
+    payload.extend(write_long(empty_block_mask))
 
-    # Sky Light (全亮)
-    sky_light_section = bytes([0xFF] * 2048)
-    light_section_count = 26
-    payload.extend(write_varint(light_section_count))
-    for _ in range(light_section_count):
+    payload.extend(write_varint(len(sky_arrays)))
+    for sky_light_section in sky_arrays:
         payload.extend(write_varint(2048))
         payload.extend(sky_light_section)
 
-    # Block Light (全黑)
-    block_light_section = bytes([0x00] * 2048)
-    payload.extend(write_varint(light_section_count))
-    for _ in range(light_section_count):
+    payload.extend(write_varint(len(block_arrays)))
+    for block_light_section in block_arrays:
         payload.extend(write_varint(2048))
         payload.extend(block_light_section)
 
@@ -622,10 +668,12 @@ async def _send_chunk_batch(conn: Connection, chunk_results):
         return
 
     await conn.send_packet(0x0D, b'')
-    for cx, cz, motion_blocking, world_surface, chunk_data in chunk_results:
+    for cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks in chunk_results:
         if not conn.alive:
             break
-        await _send_prebuilt_chunk(conn, cx, cz, motion_blocking, world_surface, chunk_data)
+        await _send_prebuilt_chunk(
+            conn, cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks
+        )
     await conn.send_packet(0x0C, write_varint(len(chunk_results)))
 
 

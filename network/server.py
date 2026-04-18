@@ -250,7 +250,7 @@ class MinecraftServer:
 
         返回:
             (results, loaded, generated)
-            results: [(cx, cz, motion_blocking, world_surface, chunk_data), ...]
+            results: [(cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks), ...]
         """
         results = []
         loaded = 0
@@ -269,7 +269,7 @@ class MinecraftServer:
             ]
 
         for cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks in chunk_records:
-            results.append((cx, cz, motion_blocking, world_surface, chunk_data))
+            results.append((cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks))
             if was_loaded:
                 loaded += 1
                 continue
