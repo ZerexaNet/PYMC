@@ -642,65 +642,142 @@ async def _handle_chat_command(conn: Connection, payload: bytes, server):
     command, offset = read_string(payload, offset)
 
     logger.info(f"{conn.username} 执行命令: /{command}")
-
-    parts = command.strip().split()
-    if not parts:
-        return
-
-    cmd = parts[0].lower()
-
-    if cmd == "help":
-        await _send_system_message(conn, "[PyMC] 可用命令: /help, /list, /tp, /gamemode, /stop")
-
-    elif cmd == "list":
-        players = server.get_online_players()
-        names = ", ".join(p.username for p in players)
-        await _send_system_message(conn,
-            f"[PyMC] 在线玩家 ({len(players)}/{server.max_players}): {names}")
-
-    elif cmd == "tp" and len(parts) >= 4:
-        try:
-            x = float(parts[1])
-            y = float(parts[2])
-            z = float(parts[3])
-            conn.x, conn.y, conn.z = x, y, z
-            await _send_synchronize_position(conn)
-            await _send_system_message(conn, f"[PyMC] 已传送到 ({x}, {y}, {z})")
-        except ValueError:
-            await _send_system_message(conn, "[PyMC] 用法: /tp <x> <y> <z>")
-
-    elif cmd == "gamemode" and len(parts) >= 2:
-        mode_map = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3,
-                    "0": 0, "1": 1, "2": 2, "3": 3}
-        mode_name = parts[1].lower()
-        if mode_name in mode_map:
-            mode = mode_map[mode_name]
-            # Game Event: 变更游戏模式 (事件 3)
-            await _send_game_event(conn, 3, float(mode))
-            mode_names = {0: "生存", 1: "创造", 2: "冒险", 3: "旁观"}
-            await _send_system_message(conn,
-                f"[PyMC] 游戏模式已切换为 {mode_names.get(mode, '未知')}")
-        else:
-            await _send_system_message(conn,
-                "[PyMC] 用法: /gamemode <survival|creative|adventure|spectator>")
-
-    elif cmd == "stop":
-        await _send_system_message(conn, "[PyMC] 正在关闭服务器...")
-        logger.info(f"{conn.username} 执行了关闭服务器命令")
-        import asyncio
-        asyncio.get_event_loop().call_soon(lambda: asyncio.ensure_future(server.stop()))
-
-    else:
-        await _send_system_message(conn, f"[PyMC] 未知命令: /{cmd}")
+    await execute_server_command(server, command, source_conn=conn)
 
 
-async def _send_system_message(conn: Connection, text: str):
-    """发送系统聊天消息给单个玩家。"""
+def build_system_message_payload(text: str) -> bytes:
+    """构建系统聊天消息负载。"""
     chat_json = json.dumps({"text": text, "color": "gray"}, ensure_ascii=False)
     payload = bytearray()
     payload.extend(write_string(chat_json))
     payload.extend(write_boolean(False))  # overlay
-    await conn.send_packet(0x6C, bytes(payload))
+    return bytes(payload)
+
+
+async def send_system_message(conn: Connection, text: str):
+    """发送系统聊天消息给单个玩家。"""
+    await conn.send_packet(0x6C, build_system_message_payload(text))
+
+
+async def execute_server_command(server, command: str,
+                                 source_conn: Connection | None = None) -> bool:
+    """
+    执行玩家或控制台命令。
+
+    返回:
+        True 表示识别并处理了命令
+        False 表示命令为空或未知
+    """
+    parts = command.strip().split()
+    if not parts:
+        return False
+
+    cmd = parts[0].lower()
+    source_name = source_conn.username if source_conn else "控制台"
+    mode_map = {
+        "survival": 0, "creative": 1, "adventure": 2, "spectator": 3,
+        "0": 0, "1": 1, "2": 2, "3": 3,
+    }
+    mode_names = {0: "生存", 1: "创造", 2: "冒险", 3: "旁观"}
+
+    async def reply(text: str):
+        if source_conn is not None:
+            await send_system_message(source_conn, text)
+        else:
+            logger.info(text)
+
+    if cmd == "help":
+        if source_conn is not None:
+            await reply("[PyMC] 可用命令: /help, /list, /tp, /gamemode, /stop")
+        else:
+            await reply("[PyMC] 控制台命令: help, list, say <消息>, tp <玩家> <x> <y> <z>, gamemode <玩家> <模式>, stop")
+        return True
+
+    if cmd == "list":
+        players = server.get_online_players()
+        names = ", ".join(p.username for p in players) if players else "无"
+        await reply(f"[PyMC] 在线玩家 ({len(players)}/{server.max_players}): {names}")
+        return True
+
+    if cmd == "say":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: say <消息>")
+            return True
+        message = command.strip()[len(parts[0]):].strip()
+        full_text = f"[Server] {message}"
+        server.broadcast_system_message(full_text)
+        logger.info(f"[控制台广播] {message}")
+        return True
+
+    if cmd == "tp":
+        target = source_conn
+        coord_index = 1
+        if source_conn is None:
+            if len(parts) < 5:
+                await reply("[PyMC] 用法: tp <玩家> <x> <y> <z>")
+                return True
+            target = server.find_player(parts[1])
+            coord_index = 2
+            if target is None:
+                await reply(f"[PyMC] 未找到玩家: {parts[1]}")
+                return True
+        elif len(parts) < 4:
+            await reply("[PyMC] 用法: /tp <x> <y> <z>")
+            return True
+
+        try:
+            x = float(parts[coord_index])
+            y = float(parts[coord_index + 1])
+            z = float(parts[coord_index + 2])
+        except (ValueError, IndexError):
+            await reply("[PyMC] 坐标格式无效")
+            return True
+
+        target.x, target.y, target.z = x, y, z
+        await _send_synchronize_position(target)
+        await send_system_message(target, f"[PyMC] 已传送到 ({x}, {y}, {z})")
+        if source_conn is None:
+            await reply(f"[PyMC] 已将 {target.username} 传送到 ({x}, {y}, {z})")
+        return True
+
+    if cmd == "gamemode":
+        target = source_conn
+        mode_name = parts[1].lower() if len(parts) >= 2 else None
+
+        if source_conn is None:
+            if len(parts) < 3:
+                await reply("[PyMC] 用法: gamemode <玩家> <survival|creative|adventure|spectator>")
+                return True
+            target = server.find_player(parts[1])
+            mode_name = parts[2].lower()
+            if target is None:
+                await reply(f"[PyMC] 未找到玩家: {parts[1]}")
+                return True
+        elif mode_name is None:
+            await reply("[PyMC] 用法: /gamemode <survival|creative|adventure|spectator>")
+            return True
+
+        if mode_name not in mode_map:
+            await reply("[PyMC] 无效模式，可用值: survival, creative, adventure, spectator")
+            return True
+
+        mode = mode_map[mode_name]
+        await _send_game_event(target, 3, float(mode))
+        await send_system_message(target, f"[PyMC] 游戏模式已切换为 {mode_names.get(mode, '未知')}")
+        if source_conn is None:
+            await reply(f"[PyMC] 已将 {target.username} 的游戏模式切换为 {mode_names.get(mode, '未知')}")
+        return True
+
+    if cmd == "stop":
+        if source_conn is not None:
+            await send_system_message(source_conn, "[PyMC] 正在关闭服务器...")
+        server.broadcast_system_message("[PyMC] 服务器正在关闭...")
+        logger.info(f"{source_name} 执行了关闭服务器命令")
+        asyncio.get_event_loop().call_soon(lambda: asyncio.ensure_future(server.stop()))
+        return True
+
+    await reply(f"[PyMC] 未知命令: {parts[0]}")
+    return False
 
 
 def _handle_keepalive(conn: Connection, payload: bytes):

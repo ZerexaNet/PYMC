@@ -59,12 +59,25 @@ class MinecraftServer:
         return [c for c in self.connections
                 if c.alive and c.state == ConnectionState.PLAY and c.username]
 
+    def find_player(self, username: str) -> Connection | None:
+        """按名称查找在线玩家（不区分大小写）。"""
+        target = username.lower()
+        for conn in self.get_online_players():
+            if conn.username.lower() == target:
+                return conn
+        return None
+
     def broadcast_packet(self, packet_id: int, payload: bytes,
                          exclude: Connection = None):
         """向所有在线玩家广播数据包。"""
         for conn in self.get_online_players():
             if conn != exclude:
                 asyncio.ensure_future(conn.send_packet(packet_id, payload))
+
+    def broadcast_system_message(self, text: str, exclude: Connection = None):
+        """向所有在线玩家广播系统聊天消息。"""
+        from handlers.play import build_system_message_payload
+        self.broadcast_packet(0x6C, build_system_message_payload(text), exclude=exclude)
 
     async def start(self):
         """启动服务器。"""
