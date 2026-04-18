@@ -24,6 +24,10 @@ DEFAULT_CONFIG = {
     "level-seed": "",
     "spawn-protection": 0,
     "enable-command-block": True,
+    "web-admin-enabled": True,
+    "web-admin-host": "0.0.0.0",
+    "web-admin-port": 25568,
+    "permissions-file": "permissions.json",
 }
 
 # 类型映射 (用于自动转换配置值)
@@ -35,6 +39,8 @@ TYPE_MAP = {
     "network-compression-threshold": int,
     "spawn-protection": int,
     "enable-command-block": lambda v: v.lower() in ("true", "1", "yes"),
+    "web-admin-enabled": lambda v: v.lower() in ("true", "1", "yes"),
+    "web-admin-port": int,
 }
 
 
