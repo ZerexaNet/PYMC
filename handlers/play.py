@@ -54,7 +54,6 @@ from world.chunk import (
 from world.terrain import TerrainGenerator
 
 logger = logging.getLogger("PyMC.游戏")
-JOIN_IMMEDIATE_RADIUS = 2
 
 COMMAND_ALIASES = {
     "teleport": "tp",
@@ -176,7 +175,7 @@ async def send_join_game(conn: Connection, server):
 
     view_distance = server.view_distance
     chunk_coords = _sorted_chunk_coords(center_cx, center_cz, view_distance)
-    immediate_radius = min(JOIN_IMMEDIATE_RADIUS, view_distance)
+    immediate_radius = min(server.join_immediate_radius, view_distance)
     immediate_count = (immediate_radius * 2 + 1) ** 2
     immediate_coords = chunk_coords[:immediate_count]
     deferred_coords = chunk_coords[immediate_count:]
@@ -857,6 +856,7 @@ async def execute_server_command(server, command: str,
             await reply("[PyMC] 用法: difficulty <peaceful|easy|normal|hard>")
             return True
         server.config["difficulty"] = value
+        server.save_runtime_config()
         await reply(f"[PyMC] 难度已设置为 {value}")
         return True
 
@@ -875,6 +875,7 @@ async def execute_server_command(server, command: str,
             3: "spectator",
         }[mode_map[value]]
         server.config["gamemode"] = normalized
+        server.save_runtime_config()
         await reply(f"[PyMC] 默认游戏模式已设置为 {normalized}")
         return True
 
@@ -932,6 +933,7 @@ async def execute_server_command(server, command: str,
             y = int(server.spawn_position[1])
             z = int(server.spawn_position[2])
         server.spawn_position = (x, y, z)
+        server.save_runtime_config()
         await reply(f"[PyMC] 世界出生点已设置为 ({x}, {y}, {z})")
         return True
 

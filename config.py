@@ -22,6 +22,9 @@ DEFAULT_CONFIG = {
     "level-name": "world",
     "level-type": "default",
     "level-seed": "",
+    "level-spawn-x": 0,
+    "level-spawn-y": 100,
+    "level-spawn-z": 0,
     "spawn-protection": 0,
     "enable-command-block": True,
     "web-admin-enabled": True,
@@ -29,6 +32,8 @@ DEFAULT_CONFIG = {
     "web-admin-port": 25568,
     "permissions-file": "permissions.json",
     "chunk-generation-multithreading": False,
+    "chunk-generation-workers": 0,
+    "join-immediate-radius": 2,
 }
 
 # 类型映射 (用于自动转换配置值)
@@ -38,11 +43,16 @@ TYPE_MAP = {
     "online-mode": lambda v: v.lower() in ("true", "1", "yes"),
     "view-distance": int,
     "network-compression-threshold": int,
+    "level-spawn-x": int,
+    "level-spawn-y": int,
+    "level-spawn-z": int,
     "spawn-protection": int,
     "enable-command-block": lambda v: v.lower() in ("true", "1", "yes"),
     "web-admin-enabled": lambda v: v.lower() in ("true", "1", "yes"),
     "web-admin-port": int,
     "chunk-generation-multithreading": lambda v: v.lower() in ("true", "1", "yes"),
+    "chunk-generation-workers": int,
+    "join-immediate-radius": int,
 }
 
 
