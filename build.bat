@@ -55,6 +55,30 @@ if errorlevel 1 (
     )
 )
 
+echo [信息] 正在编译原生地形生成器...
+if exist "C:\Program Files\Microsoft Visual Studio\Installer\vswhere.exe" (
+    where cl >nul 2>&1
+)
+
+where cl >nul 2>&1
+if not errorlevel 1 (
+    cl /O2 /EHsc /std:c++17 /Fe:native\terrain_gen.exe native\terrain_gen.cpp
+) else (
+    where g++ >nul 2>&1
+    if errorlevel 1 (
+        echo [错误] 未找到可用的 C++ 编译器 (cl 或 g++)。
+        pause
+        exit /b 1
+    )
+    g++ -O3 -std=c++17 -o native\terrain_gen.exe native\terrain_gen.cpp
+)
+
+if errorlevel 1 (
+    echo [错误] terrain_gen.exe 编译失败。
+    pause
+    exit /b 1
+)
+
 echo [信息] 开始编译 PyMC 服务端...
 echo.
 
@@ -69,7 +93,7 @@ echo.
     --include-package=handlers ^
     --include-package=world ^
     --include-module=config ^
-    --include-data-files=native/terrain_gen.exe=native/terrain_gen.exe ^
+    --include-data-dir=native=native ^
     --include-data-files=world/blocks.json=world/blocks.json ^
     --follow-imports ^
     --assume-yes-for-downloads ^

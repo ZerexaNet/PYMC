@@ -55,6 +55,7 @@ class Connection:
         # 连接状态
         self.alive = True
         self.keepalive_id: int = 0
+        self.teleport_id: int = 0
 
         logger.info(f"新连接来自 {self.address}")
 

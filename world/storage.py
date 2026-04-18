@@ -48,6 +48,7 @@ import time
 import logging
 from pathlib import Path
 from io import BytesIO
+from .chunk_io import serialize_chunk, deserialize_chunk
 
 logger = logging.getLogger("pymc.storage")
 
@@ -434,6 +435,18 @@ class WorldStorage:
             return None
         return region.get_chunk(index)
 
+    def load_generated_chunk(self, cx: int, cz: int):
+        """
+        加载区块方块数组。
+
+        返回:
+            [y][z][x] 方块数组，或 None（不存在 / 无法解析）
+        """
+        raw = self.load_chunk(cx, cz)
+        if raw is None:
+            return None
+        return deserialize_chunk(raw)
+
     def save_chunk(self, cx: int, cz: int, nbt_data: bytes):
         """
         保存区块数据。
@@ -446,6 +459,10 @@ class WorldStorage:
         region = self._get_or_create_region(rx, rz)
         region.set_chunk(index, nbt_data)
         self._dirty.add((rx, rz))
+
+    def save_generated_chunk(self, cx: int, cz: int, chunk_blocks):
+        """保存区块方块数组到 Linear V2 区域文件（内容为原版 Chunk NBT）。"""
+        self.save_chunk(cx, cz, serialize_chunk(chunk_blocks, chunk_x=cx, chunk_z=cz))
 
     def flush(self):
         """将所有修改过的区域写入磁盘。"""

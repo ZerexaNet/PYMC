@@ -38,8 +38,6 @@ import time
 import json
 import uuid
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
 from protocol.data_types import (
     write_varint, write_string, write_boolean, write_int, write_long,
     write_byte, write_ubyte, write_float, write_double, write_short,
@@ -54,8 +52,6 @@ from world.chunk import (
     build_flat_chunk_column, build_heightmap_data
 )
 from world.terrain import TerrainGenerator
-from world.terrain_native import NativeTerrainGenerator
-from world.chunk_io import serialize_chunk, deserialize_chunk
 
 logger = logging.getLogger("PyMC.游戏")
 
@@ -160,26 +156,7 @@ async def send_join_game(conn: Connection, server):
     """
     logger.info(f"正在发送游戏数据给 {conn.username}...")
     load_start = time.time()
-
-    # 初始化地形生成器 (如果还没有)
-    if not hasattr(server, 'terrain_generator'):
-        seed = server.config.get("level-seed", 0)
-        if isinstance(seed, str):
-            try:
-                seed = int(seed)
-            except ValueError:
-                seed = hash(seed)
-
-        # 优先使用 C++ 原生生成器
-        native_gen = NativeTerrainGenerator(seed)
-        if native_gen.available:
-            server.terrain_generator = native_gen
-            server._use_native_terrain = True
-            logger.info(f"使用 C++ 原生地形生成器 (种子: {seed})")
-        else:
-            server.terrain_generator = TerrainGenerator(seed)
-            server._use_native_terrain = False
-            logger.info(f"使用纯 Python 地形生成器 (种子: {seed})")
+    server._initialize_terrain_generator()
 
     terrain = server.terrain_generator
     use_native = getattr(server, '_use_native_terrain', False)
@@ -188,29 +165,17 @@ async def send_join_game(conn: Connection, server):
     await _send_login_play(conn, server)
 
     # --- 2. 计算出生点高度 ---
-    if use_native:
-        # 原生生成器: 通过生成 (0,0) 区块获取高度
-        spawn_x = int(server.spawn_position[0])
-        spawn_z = int(server.spawn_position[2])
-        _, hmap = terrain.generate_chunk_with_heightmap(spawn_x >> 4, spawn_z >> 4)
-        spawn_height = hmap[spawn_z & 15][spawn_x & 15] + 2
-    else:
-        spawn_height = terrain.get_terrain_height(
-            int(server.spawn_position[0]),
-            int(server.spawn_position[2])
-        ) + 2
-    server.spawn_position = (
-        int(server.spawn_position[0]),
-        int(spawn_height),
-        int(server.spawn_position[2]),
-    )
+    spawn_height = int(server.spawn_position[1])
     await _send_spawn_position(conn, *server.spawn_position)
 
     # --- 3. 发送游戏事件: 等待区块 ---
     await _send_game_event(conn, 13, 0.0)  # 事件13: Start waiting for chunks
 
     # --- 4. 设置区块中心 ---
-    await _send_center_chunk(conn, int(server.spawn_position[0]) >> 4, int(server.spawn_position[2]) >> 4)
+    center_cx = int(server.spawn_position[0]) >> 4
+    center_cz = int(server.spawn_position[2]) >> 4
+    await _send_center_chunk(conn, center_cx, center_cz)
+    await conn.send_packet(0x55, write_varint(server.view_distance))  # Set Chunk Cache Radius
 
     # --- 5. 发送区块数据 (使用 Chunk Batch 协议) ---
     # 发送 Chunk Batch Start (0x0D)
@@ -218,8 +183,8 @@ async def send_join_game(conn: Connection, server):
 
     view_distance = server.view_distance
     chunk_coords = [(cx, cz)
-                    for cx in range(-view_distance, view_distance + 1)
-                    for cz in range(-view_distance, view_distance + 1)]
+                    for cx in range(center_cx - view_distance, center_cx + view_distance + 1)
+                    for cz in range(center_cz - view_distance, center_cz + view_distance + 1)]
 
     # 在线程池中预生成所有区块数据 (避免阻塞事件循环)
     loop = asyncio.get_event_loop()
@@ -236,16 +201,14 @@ async def send_join_game(conn: Connection, server):
         generated = 0
         for cx, cz in chunk_coords:
             # 先尝试从存档加载
-            saved = storage.load_chunk(cx, cz)
-            if saved is not None:
-                chunk_blocks = deserialize_chunk(saved)
-                if chunk_blocks is not None:
-                    loaded += 1
-                    motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
-                    world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
-                    chunk_data = build_chunk_column_from_terrain(chunk_blocks)
-                    results.append((cx, cz, motion_blocking, world_surface, chunk_data))
-                    continue
+            chunk_blocks = storage.load_generated_chunk(cx, cz)
+            if chunk_blocks is not None:
+                loaded += 1
+                motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
+                world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
+                chunk_data = build_chunk_column_from_terrain(chunk_blocks)
+                results.append((cx, cz, motion_blocking, world_surface, chunk_data))
+                continue
 
             # 存档中没有，使用生成器生成
             if use_native:
@@ -258,8 +221,8 @@ async def send_join_game(conn: Connection, server):
             chunk_data = build_chunk_column_from_terrain(chunk_blocks)
             results.append((cx, cz, motion_blocking, world_surface, chunk_data))
 
-            # 保存到存档
-            storage.save_chunk(cx, cz, serialize_chunk(chunk_blocks))
+            # 保存到 Linear V2 存档
+            storage.save_generated_chunk(cx, cz, chunk_blocks)
             generated += 1
 
         if loaded > 0:
@@ -572,16 +535,14 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
 async def _send_synchronize_position(conn: Connection):
     """发送 Synchronize Player Position 数据包 (0x40)。"""
     payload = bytearray()
-    payload.extend(write_varint(0))        # Teleport ID
     payload.extend(write_double(conn.x))    # X
     payload.extend(write_double(conn.y))    # Y
     payload.extend(write_double(conn.z))    # Z
-    payload.extend(write_double(0.0))       # Velocity X
-    payload.extend(write_double(0.0))       # Velocity Y
-    payload.extend(write_double(0.0))       # Velocity Z
     payload.extend(write_float(conn.yaw))   # Yaw
     payload.extend(write_float(conn.pitch)) # Pitch
-    payload.extend(write_int(0))            # Flags (都是绝对值)
+    payload.extend(write_ubyte(0))          # Flags (全部绝对坐标)
+    conn.teleport_id += 1
+    payload.extend(write_varint(conn.teleport_id))  # Teleport ID
     await conn.send_packet(0x40, bytes(payload))
 
 
