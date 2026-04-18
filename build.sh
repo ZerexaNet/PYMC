@@ -22,6 +22,27 @@ if ! python3 -m nuitka --version &> /dev/null; then
     pip3 install nuitka ordered-set
 fi
 
+# 检查 zstandard
+if ! python3 -c "import zstandard" &> /dev/null; then
+    echo "[提示] 正在安装 zstandard..."
+    pip3 install zstandard
+fi
+
+# 检查 C++ 编译器
+if ! command -v g++ &> /dev/null; then
+    echo "[错误] 未找到 g++，请先安装。"
+    exit 1
+fi
+
+echo "[信息] 正在编译原生地形生成器..."
+mkdir -p native
+g++ -O3 -std=c++17 -o native/terrain_gen native/terrain_gen.cpp
+
+if [ $? -ne 0 ]; then
+    echo "[错误] terrain_gen 编译失败!"
+    exit 1
+fi
+
 echo "[信息] 开始编译 PyMC 服务端..."
 echo ""
 
@@ -35,6 +56,8 @@ python3 -m nuitka \
     --include-package=handlers \
     --include-package=world \
     --include-module=config \
+    --include-data-dir=native=native \
+    --include-data-files=world/blocks.json=world/blocks.json \
     --follow-imports \
     --assume-yes-for-downloads \
     main.py
