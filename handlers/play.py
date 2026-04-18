@@ -218,7 +218,11 @@ async def send_join_game(conn: Connection, server):
     conn.x = float(server.spawn_position[0]) + 0.5
     conn.y = float(actual_spawn_y)
     conn.z = float(server.spawn_position[2]) + 0.5
+    conn.fall_start_y = conn.y
+    conn.gamemode = server.config.get("gamemode", "creative")
     await _send_synchronize_position(conn)
+    await _send_update_health(conn)
+    await _send_time_update(conn, server)
 
     # --- 7. 通知其他玩家 ---
     await _broadcast_player_join(conn, server)
@@ -565,7 +569,6 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
         GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL, MOSS_BLOCK,
         SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY,
     }
-    acceptable_blocks = preferred_blocks | {STONE}
     chunk_cache: dict[tuple[int, int], list[list[list[int]]] | None] = {}
 
     def _load_chunk(cx: int, cz: int):
@@ -626,7 +629,7 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
 
             if not column["clear"]:
                 continue
-            if column["block_id"] not in acceptable_blocks:
+            if column["block_id"] not in preferred_blocks:
                 continue
 
             slope = _surface_slope(world_x, world_z)
@@ -635,8 +638,6 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
 
             if column["block_id"] in preferred_blocks:
                 score -= 40
-            if column["block_id"] == STONE:
-                score += 25
             if column["world_y"] < 62:
                 score += 20
 
@@ -660,6 +661,51 @@ def _sorted_chunk_coords(center_cx: int, center_cz: int, view_distance: int) -> 
                                  abs(pos[0] - center_cx) + abs(pos[1] - center_cz),
                                  pos[0], pos[1]))
     return coords
+
+
+async def _damage_player(conn: Connection, amount: float, reason: str, server):
+    """对玩家造成基础伤害。死亡时回到出生点。"""
+    if not conn.alive or conn.gamemode in {"creative", "spectator"}:
+        return
+
+    conn.health = max(0.0, conn.health - amount)
+    await _send_update_health(conn)
+
+    if conn.health > 0:
+        await send_system_message(conn, f"[PyMC] 你受到了 {amount:.1f} 点{reason}伤害")
+        return
+
+    await send_system_message(conn, "[PyMC] 你死亡了，已返回出生点")
+    spawn_x, _, spawn_z = server.spawn_position
+    respawn_x, respawn_y, respawn_z = _resolve_spawn_location(server, spawn_x, spawn_z)
+    server.spawn_position = (int(respawn_x), int(respawn_y), int(respawn_z))
+    conn.x = float(respawn_x) + 0.5
+    conn.y = float(respawn_y)
+    conn.z = float(respawn_z) + 0.5
+    conn.fall_start_y = conn.y
+    conn.health = 20.0
+    conn.food = 20
+    conn.saturation = 5.0
+    await _send_synchronize_position(conn)
+    await _send_update_health(conn)
+
+
+async def _update_player_motion_state(conn: Connection, new_y: float, new_on_ground: bool, server):
+    """更新玩家移动状态并处理最基础的摔落伤害。"""
+    previous_on_ground = conn.on_ground
+    previous_y = conn.y
+
+    if previous_on_ground and not new_on_ground:
+        conn.fall_start_y = previous_y
+
+    if (not previous_on_ground) and new_on_ground:
+        fall_distance = conn.fall_start_y - new_y
+        if fall_distance > 3.0:
+            await _damage_player(conn, max(0.0, fall_distance - 3.0), "摔落", server)
+        conn.fall_start_y = new_y
+
+    if new_on_ground:
+        conn.fall_start_y = new_y
 
 
 async def _send_chunk_batch(conn: Connection, chunk_results):
@@ -708,6 +754,24 @@ async def _send_synchronize_position(conn: Connection):
     conn.teleport_id += 1
     payload.extend(write_varint(conn.teleport_id))  # Teleport ID
     await conn.send_packet(0x40, bytes(payload))
+
+
+async def _send_update_health(conn: Connection):
+    """发送基础生命值同步。"""
+    payload = bytearray()
+    payload.extend(write_float(float(conn.health)))
+    payload.extend(write_varint(int(conn.food)))
+    payload.extend(write_float(float(conn.saturation)))
+    await conn.send_packet(0x62, bytes(payload))
+
+
+async def _send_time_update(conn: Connection, server):
+    """发送世界时间。"""
+    payload = bytearray()
+    payload.extend(write_long(int(server.world_time)))
+    payload.extend(write_long(int(server.world_time)))
+    payload.extend(write_boolean(True))
+    await conn.send_packet(0x6B, bytes(payload))
 
 
 # ============================================================
@@ -1256,6 +1320,7 @@ async def _handle_player_position(conn: Connection, payload: bytes, server):
     z, offset = read_double(payload, offset)
     on_ground, offset = read_boolean(payload, offset)
 
+    await _update_player_motion_state(conn, y, on_ground, server)
     conn.x = x
     conn.y = y
     conn.z = z
@@ -1273,6 +1338,7 @@ async def _handle_player_position_rotation(conn: Connection, payload: bytes,
     pitch, offset = read_float(payload, offset)
     on_ground, offset = read_boolean(payload, offset)
 
+    await _update_player_motion_state(conn, y, on_ground, server)
     conn.x = x
     conn.y = y
     conn.z = z
@@ -1288,6 +1354,7 @@ async def _handle_player_rotation(conn: Connection, payload: bytes, server):
     pitch, offset = read_float(payload, offset)
     on_ground, offset = read_boolean(payload, offset)
 
+    await _update_player_motion_state(conn, conn.y, on_ground, server)
     conn.yaw = yaw
     conn.pitch = pitch
     conn.on_ground = on_ground

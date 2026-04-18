@@ -421,6 +421,7 @@ class MinecraftServer:
         while self.running:
             tick_start = time.time()
             tick_count += 1
+            self.world_time = (self.world_time + 1) % 24000
 
             # 发送 KeepAlive 心跳
             if tick_count % keepalive_interval == 0:
@@ -432,6 +433,9 @@ class MinecraftServer:
 
             # 清理无效连接
             self.connections = [c for c in self.connections if c.alive]
+
+            # 基础玩家生存规则
+            await self._tick_players(tick_count)
 
             # 计算 tick 用时，补偿延迟
             elapsed = time.time() - tick_start
@@ -447,3 +451,14 @@ class MinecraftServer:
         for conn in self.get_online_players():
             conn.keepalive_id = keepalive_id
             await conn.send_packet(0x26, payload)  # KeepAlive (Play, Clientbound)
+
+    async def _tick_players(self, tick_count: int):
+        """处理最基础的玩家伤害与时间同步。"""
+        from handlers.play import _damage_player, _send_time_update
+
+        for conn in self.get_online_players():
+            if conn.y < -80:
+                await _damage_player(conn, 20.0, "虚空", self)
+
+            if tick_count % 40 == 0:
+                await _send_time_update(conn, self)
