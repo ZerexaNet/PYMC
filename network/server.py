@@ -22,6 +22,7 @@ from world.storage import WorldStorage
 from world.terrain import TerrainGenerator
 from world.terrain_native import NativeTerrainGenerator
 from world.chunk import build_chunk_column_from_terrain, build_heightmap_from_terrain
+from world.biomes import BiomeSampler
 
 logger = logging.getLogger("PyMC.服务器")
 
@@ -76,6 +77,7 @@ class MinecraftServer:
         self._server: Optional[asyncio.Server] = None
         self._tick_task: Optional[asyncio.Task] = None
         self.terrain_generator = None
+        self.biome_sampler = None
         self._use_native_terrain = False
         self._chunk_executor: ThreadPoolExecutor | None = None
 
@@ -175,6 +177,7 @@ class MinecraftServer:
                 seed = hash(seed)
 
         native_gen = NativeTerrainGenerator(seed)
+        self.biome_sampler = BiomeSampler(seed)
         if native_gen.available:
             self.terrain_generator = native_gen
             self._use_native_terrain = True
@@ -239,10 +242,11 @@ class MinecraftServer:
             else:
                 chunk_blocks = terrain.generate_chunk(cx, cz)
 
+        chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
         motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
         world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
-        chunk_data = build_chunk_column_from_terrain(chunk_blocks)
-        return (cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks)
+        chunk_data = build_chunk_column_from_terrain(chunk_blocks, chunk_biomes)
+        return (cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks, chunk_biomes)
 
     def generate_chunk_results(self, chunk_coords: list[tuple[int, int]]):
         """
@@ -268,12 +272,12 @@ class MinecraftServer:
                 for cx, cz in chunk_coords
             ]
 
-        for cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks in chunk_records:
+        for cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks, chunk_biomes in chunk_records:
             results.append((cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks))
             if was_loaded:
                 loaded += 1
                 continue
-            self.world_storage.save_generated_chunk(cx, cz, chunk_blocks)
+            self.world_storage.save_generated_chunk(cx, cz, chunk_blocks, chunk_biomes)
             generated += 1
 
         if generated:

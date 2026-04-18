@@ -25,10 +25,11 @@ import struct
 import math
 from protocol.data_types import write_varint
 from .blocks import AIR
+from .biomes import BIOME_NAME_TO_ID
 
 
 # 生物群系 ID
-BIOME_PLAINS = 0
+BIOME_PLAINS = BIOME_NAME_TO_ID["minecraft:plains"]
 
 # 世界参数
 MIN_Y = -64
@@ -145,6 +146,7 @@ def _encode_direct_palette(entries: list[int], palette: list[int],
 
 
 def build_section_from_blocks(section_blocks: list[list[list[int]]],
+                               biome_data: list[int] | None = None,
                                biome_id: int = BIOME_PLAINS) -> bytes:
     """
     从 3D 方块数组构建区块段数据。
@@ -191,13 +193,31 @@ def build_section_from_blocks(section_blocks: list[list[list[int]]],
             entries, palette, 4096
         ))
 
-    # --- 编码生物群系 (固定为单值) ---
-    result.extend(encode_paletted_container_single(biome_id))
+    # --- 编码生物群系 (4x4x4 = 64 条目) ---
+    if biome_data:
+        biome_palette_map = {}
+        biome_palette = []
+        biome_entries = []
+        for entry in biome_data:
+            if entry not in biome_palette_map:
+                biome_palette_map[entry] = len(biome_palette)
+                biome_palette.append(entry)
+            biome_entries.append(biome_palette_map[entry])
+
+        if len(biome_palette) == 1:
+            result.extend(encode_paletted_container_single(biome_palette[0]))
+        else:
+            result.extend(encode_paletted_container_indirect(
+                biome_entries, biome_palette, 64
+            ))
+    else:
+        result.extend(encode_paletted_container_single(biome_id))
 
     return bytes(result)
 
 
-def build_chunk_column_from_terrain(chunk_blocks: list[list[list[int]]]) -> bytes:
+def build_chunk_column_from_terrain(chunk_blocks: list[list[list[int]]],
+                                    chunk_biomes: list[list[int]] | None = None) -> bytes:
     """
     从完整的区块方块数据构建区块列。
 
@@ -216,7 +236,11 @@ def build_chunk_column_from_terrain(chunk_blocks: list[list[list[int]]]) -> byte
         # 提取这个 Section 的 16x16x16 方块数据
         section_blocks = chunk_blocks[y_start:y_start + 16]
 
-        result.extend(build_section_from_blocks(section_blocks))
+        biome_section = None
+        if chunk_biomes is not None and section_idx < len(chunk_biomes):
+            biome_section = chunk_biomes[section_idx]
+
+        result.extend(build_section_from_blocks(section_blocks, biome_section))
 
     return bytes(result)
 

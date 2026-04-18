@@ -460,9 +460,13 @@ class WorldStorage:
         region.set_chunk(index, nbt_data)
         self._dirty.add((rx, rz))
 
-    def save_generated_chunk(self, cx: int, cz: int, chunk_blocks):
+    def save_generated_chunk(self, cx: int, cz: int, chunk_blocks, chunk_biomes=None):
         """保存区块方块数组到 Linear V2 区域文件（内容为原版 Chunk NBT）。"""
-        self.save_chunk(cx, cz, serialize_chunk(chunk_blocks, chunk_x=cx, chunk_z=cz))
+        self.save_chunk(
+            cx,
+            cz,
+            serialize_chunk(chunk_blocks, chunk_x=cx, chunk_z=cz, chunk_biomes=chunk_biomes)
+        )
 
     def flush(self):
         """将所有修改过的区域写入磁盘。"""

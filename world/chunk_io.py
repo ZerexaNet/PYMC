@@ -34,6 +34,7 @@ from protocol.nbt import (
     encode_nbt,
 )
 from .chunk import build_heightmap_from_terrain
+from .biomes import BIOME_ID_TO_NAME, BIOME_NAME_TO_ID
 
 logger = logging.getLogger("pymc.chunk_io")
 
@@ -236,7 +237,8 @@ def _palette_entry_to_state_id(entry: dict) -> int:
     return BLOCK_NAME_TO_DEFAULT_STATE.get(name, 0)
 
 
-def _build_section_nbt(section_blocks: list[list[list[int]]], section_y: int) -> dict:
+def _build_section_nbt(section_blocks: list[list[list[int]]], section_y: int,
+                       biome_ids: list[int] | None = None) -> dict:
     palette_map: dict[int, int] = {}
     palette_state_ids: list[int] = []
     entries: list[int] = []
@@ -264,12 +266,28 @@ def _build_section_nbt(section_blocks: list[list[list[int]]], section_y: int) ->
         bits = max(4, math.ceil(math.log2(len(palette_state_ids))))
         block_states["data"] = NbtLongArray(_pack_palette_indices(entries, bits))
 
+    biome_palette_ids = biome_ids or [BIOME_NAME_TO_ID["minecraft:plains"]] * 64
+    biome_palette_map: dict[int, int] = {}
+    biome_palette_values: list[int] = []
+    biome_entries: list[int] = []
+    for biome_id in biome_palette_ids:
+        if biome_id not in biome_palette_map:
+            biome_palette_map[biome_id] = len(biome_palette_values)
+            biome_palette_values.append(biome_id)
+        biome_entries.append(biome_palette_map[biome_id])
+
+    biome_container = {
+        "palette": [BIOME_ID_TO_NAME.get(biome_id, "minecraft:plains")
+                    for biome_id in biome_palette_values]
+    }
+    if len(biome_palette_values) > 1:
+        bits = max(1, math.ceil(math.log2(len(biome_palette_values))))
+        biome_container["data"] = NbtLongArray(_pack_palette_indices(biome_entries, bits))
+
     section = {
         "Y": NbtByte(section_y),
         "block_states": block_states,
-        "biomes": {
-            "palette": ["minecraft:plains"]
-        },
+        "biomes": biome_container,
     }
     if non_air_count:
         section["block_count"] = non_air_count
@@ -286,7 +304,7 @@ def _empty_heightmaps() -> dict:
 
 
 def serialize_chunk(chunk_blocks: list[list[list[int]]], chunk_x: int = 0,
-                    chunk_z: int = 0) -> bytes:
+                    chunk_z: int = 0, chunk_biomes: list[list[int]] | None = None) -> bytes:
     """
     将区块方块数组编码为原版 Chunk NBT。
 
@@ -298,7 +316,12 @@ def serialize_chunk(chunk_blocks: list[list[list[int]]], chunk_x: int = 0,
     for section_index in range(NUM_SECTIONS):
         y_start = section_index * 16
         section_blocks = chunk_blocks[y_start:y_start + 16]
-        sections.append(_build_section_nbt(section_blocks, MIN_SECTION_Y + section_index))
+        biome_section = None
+        if chunk_biomes is not None and section_index < len(chunk_biomes):
+            biome_section = chunk_biomes[section_index]
+        sections.append(_build_section_nbt(
+            section_blocks, MIN_SECTION_Y + section_index, biome_section
+        ))
 
     root = {
         "DataVersion": DATA_VERSION,
