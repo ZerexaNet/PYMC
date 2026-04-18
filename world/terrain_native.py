@@ -27,6 +27,7 @@ import struct
 import array
 import logging
 import subprocess
+import time
 from pathlib import Path
 
 logger = logging.getLogger("pymc.terrain_native")
@@ -77,6 +78,10 @@ def _find_native_binary() -> str | None:
         if path.exists() and path.is_file():
             if os.name == "nt" or os.access(path, os.X_OK):
                 return str(path)
+    logger.warning(
+        "未在以下路径找到原生地形生成器: %s",
+        ", ".join(str(path) for path in candidates),
+    )
     return None
 
 
@@ -154,6 +159,22 @@ class NativeTerrainGenerator:
                 stderr=subprocess.PIPE,
                 bufsize=0,  # 无缓冲
             )
+            time.sleep(0.1)
+            exit_code = self._process.poll()
+            if exit_code is not None:
+                stderr_data = b""
+                if self._process.stderr is not None:
+                    try:
+                        stderr_data = self._process.stderr.read() or b""
+                    except Exception:
+                        stderr_data = b""
+                logger.error(
+                    "原生地形生成器启动后立即退出 (code=%s): %s",
+                    exit_code,
+                    stderr_data.decode("utf-8", errors="replace").strip() or "无错误输出",
+                )
+                self._process = None
+                return
             logger.info(f"原生地形生成器子进程已启动 (PID: {self._process.pid})")
         except Exception as e:
             logger.error(f"启动原生地形生成器失败: {e}")
