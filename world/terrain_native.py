@@ -47,7 +47,11 @@ REQUEST_SIZE = struct.calcsize(REQUEST_FORMAT)  # 16
 def _find_native_binary() -> str | None:
     """查找跨平台 terrain_gen 可执行文件路径。"""
     binary_names = ["terrain_gen.exe", "terrain_gen"]
+    compiled = globals().get("__compiled__")
     search_roots = [
+        Path(compiled.containing_dir).resolve()
+        if compiled is not None and hasattr(compiled, "containing_dir")
+        else None,
         Path(sys.executable).resolve().parent,
         Path(sys.argv[0]).resolve().parent,
         Path(__file__).resolve().parent,
@@ -59,6 +63,8 @@ def _find_native_binary() -> str | None:
     candidates: list[Path] = []
 
     for root in search_roots:
+        if root is None:
+            continue
         for relative in ("native", "."):
             base = root / relative
             for name in binary_names:

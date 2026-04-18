@@ -16,6 +16,8 @@ from handlers.login import handle_login
 from handlers.configuration import handle_configuration
 from handlers.play import handle_play
 from world.storage import WorldStorage
+from world.terrain import TerrainGenerator
+from world.terrain_native import NativeTerrainGenerator
 
 logger = logging.getLogger("PyMC.服务器")
 
@@ -56,6 +58,8 @@ class MinecraftServer:
         self.start_time = 0
         self._server: Optional[asyncio.Server] = None
         self._tick_task: Optional[asyncio.Task] = None
+        self.terrain_generator = None
+        self._use_native_terrain = False
 
     def get_next_entity_id(self) -> int:
         """获取下一个可用的实体 ID。"""
@@ -96,6 +100,8 @@ class MinecraftServer:
 
         # 初始化世界存储 (Anvil -> Linear 自动转换)
         self.world_storage.initialize()
+        self._initialize_terrain_generator()
+        await self._pregenerate_spawn_area()
 
         self._server = await asyncio.start_server(
             self._handle_client,
@@ -130,6 +136,87 @@ class MinecraftServer:
 
         async with self._server:
             await self._server.serve_forever()
+
+    def _initialize_terrain_generator(self):
+        """初始化地形生成器，并计算出生点高度。"""
+        if self.terrain_generator is not None:
+            return
+
+        seed = self.config.get("level-seed", 0)
+        if isinstance(seed, str):
+            try:
+                seed = int(seed)
+            except ValueError:
+                seed = hash(seed)
+
+        native_gen = NativeTerrainGenerator(seed)
+        if native_gen.available:
+            self.terrain_generator = native_gen
+            self._use_native_terrain = True
+            logger.info(f"使用 C++ 原生地形生成器 (种子: {seed})")
+        else:
+            self.terrain_generator = TerrainGenerator(seed)
+            self._use_native_terrain = False
+            logger.info(f"使用纯 Python 地形生成器 (种子: {seed})")
+
+        spawn_x, _, spawn_z = self.spawn_position
+        if self._use_native_terrain:
+            _, hmap = self.terrain_generator.generate_chunk_with_heightmap(
+                int(spawn_x) >> 4, int(spawn_z) >> 4
+            )
+            spawn_y = hmap[int(spawn_z) & 15][int(spawn_x) & 15] + 2
+        else:
+            spawn_y = self.terrain_generator.get_terrain_height(int(spawn_x), int(spawn_z)) + 2
+        self.spawn_position = (int(spawn_x), int(spawn_y), int(spawn_z))
+
+    async def _pregenerate_spawn_area(self):
+        """服务器启动时预生成出生点视距范围内的区块，并写入 Linear V2。"""
+        spawn_x, _, spawn_z = self.spawn_position
+        center_cx = int(spawn_x) >> 4
+        center_cz = int(spawn_z) >> 4
+        chunk_coords = [
+            (cx, cz)
+            for cx in range(center_cx - self.view_distance, center_cx + self.view_distance + 1)
+            for cz in range(center_cz - self.view_distance, center_cz + self.view_distance + 1)
+        ]
+
+        logger.info(
+            f"正在预生成出生点区块 {len(chunk_coords)} 个 "
+            f"(中心={center_cx},{center_cz} 视距={self.view_distance})..."
+        )
+
+        terrain = self.terrain_generator
+        use_native = self._use_native_terrain
+        storage = self.world_storage
+
+        def _generate_spawn_chunks():
+            loaded = 0
+            generated = 0
+            for cx, cz in chunk_coords:
+                if storage.load_generated_chunk(cx, cz) is not None:
+                    loaded += 1
+                    continue
+
+                if use_native:
+                    chunk_blocks, _ = terrain.generate_chunk_with_heightmap(cx, cz)
+                else:
+                    chunk_blocks = terrain.generate_chunk(cx, cz)
+
+                storage.save_generated_chunk(cx, cz, chunk_blocks)
+                generated += 1
+
+            if generated:
+                storage.flush()
+            return loaded, generated
+
+        start = time.time()
+        loaded, generated = await asyncio.get_running_loop().run_in_executor(
+            None, _generate_spawn_chunks
+        )
+        logger.info(
+            f"出生点区块预生成完成: 已缓存 {loaded} 个, 新生成 {generated} 个, "
+            f"耗时 {time.time() - start:.1f}s"
+        )
 
     async def stop(self):
         """停止服务器。"""
