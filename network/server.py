@@ -9,6 +9,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+from config import save_config
 from admin.permissions import PermissionManager
 from admin.web import WebAdminServer
 from .connection import Connection, ConnectionState
@@ -31,8 +32,9 @@ class MinecraftServer:
     管理所有客户端连接和游戏循环。
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, config_path: str = "server.properties"):
         self.config = config
+        self.config_path = config_path
         self.host = config.get("server-ip", "0.0.0.0")
         self.port = config.get("server-port", 25565)
         self.motd = config.get("motd", "PyMC - Python Minecraft 服务器")
@@ -43,11 +45,19 @@ class MinecraftServer:
         self.autosave_enabled = True
         self.world_time = 1000
         self.weather = "clear"
-        self.spawn_position = (0, 100, 0)
+        self.spawn_position = (
+            int(config.get("level-spawn-x", 0)),
+            int(config.get("level-spawn-y", 100)),
+            int(config.get("level-spawn-z", 0)),
+        )
         self.chunk_generation_multithreading = config.get(
             "chunk-generation-multithreading", False
         )
-        self.chunk_generation_workers = max(2, os.cpu_count() or 2)
+        configured_workers = int(config.get("chunk-generation-workers", 0) or 0)
+        self.chunk_generation_workers = (
+            configured_workers if configured_workers > 0 else max(2, os.cpu_count() or 2)
+        )
+        self.join_immediate_radius = max(0, int(config.get("join-immediate-radius", 2)))
 
         # 世界存储
         world_name = config.get("level-name", "world")
@@ -183,6 +193,19 @@ class MinecraftServer:
         else:
             spawn_y = self.terrain_generator.get_terrain_height(int(spawn_x), int(spawn_z)) + 2
         self.spawn_position = (int(spawn_x), int(spawn_y), int(spawn_z))
+
+    def save_runtime_config(self):
+        """将运行时配置写回 server.properties。"""
+        self.config["difficulty"] = self.config.get("difficulty", "normal")
+        self.config["gamemode"] = self.config.get("gamemode", "creative")
+        self.config["chunk-generation-multithreading"] = self.chunk_generation_multithreading
+        self.config["chunk-generation-workers"] = self.config.get("chunk-generation-workers", 0)
+        self.config["join-immediate-radius"] = self.join_immediate_radius
+        self.config["level-name"] = self.config.get("level-name", "world")
+        self.config["level-spawn-x"] = int(self.spawn_position[0])
+        self.config["level-spawn-y"] = int(self.spawn_position[1])
+        self.config["level-spawn-z"] = int(self.spawn_position[2])
+        save_config(self.config, self.config_path)
 
     def should_use_multithreaded_generation(self) -> bool:
         """是否启用多线程区块生成。"""

@@ -85,11 +85,12 @@ async def main():
     logger.info("正在启动 PyMC 服务器...")
 
     # 加载配置
-    config = load_config()
+    config_path = "server.properties"
+    config = load_config(config_path)
     logger.info(f"服务器地址: {config['server-ip']}:{config['server-port']}")
 
     # 创建服务器实例
-    server = MinecraftServer(config)
+    server = MinecraftServer(config, config_path=config_path)
     console_task = None
 
     # 注册信号处理 (优雅关闭)
