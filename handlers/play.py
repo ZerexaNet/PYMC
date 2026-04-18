@@ -35,7 +35,6 @@ Play 阶段数据包处理器。
 import logging
 import struct
 import time
-import json
 import uuid
 import asyncio
 from protocol.data_types import (
@@ -659,20 +658,15 @@ async def _handle_chat_message(conn: Connection, payload: bytes, server):
 
     logger.info(f"<{conn.username}> {message}")
 
-    # 构建系统聊天消息并广播
-    chat_json = json.dumps({
+    # 1.21.1 的 system_chat.content 是匿名 NBT 文本组件，不是 JSON 字符串。
+    chat_component = {
         "translate": "chat.type.text",
         "with": [
             {"text": conn.username, "color": "yellow"},
             {"text": message}
         ]
-    }, ensure_ascii=False)
-
-    chat_payload = bytearray()
-    chat_payload.extend(write_string(chat_json))
-    chat_payload.extend(write_boolean(False))  # overlay = false (聊天栏)
-
-    server.broadcast_packet(0x6C, bytes(chat_payload))
+    }
+    server.broadcast_packet(0x6C, build_system_message_payload(chat_component))
 
 
 async def _handle_chat_command(conn: Connection, payload: bytes, server):
@@ -684,11 +678,15 @@ async def _handle_chat_command(conn: Connection, payload: bytes, server):
     await execute_server_command(server, command, source_conn=conn)
 
 
-def build_system_message_payload(text: str) -> bytes:
-    """构建系统聊天消息负载。"""
-    chat_json = json.dumps({"text": text, "color": "gray"}, ensure_ascii=False)
+def build_system_message_payload(message: str | dict) -> bytes:
+    """构建 1.21.1 system_chat 负载。"""
+    if isinstance(message, dict):
+        component = message
+    else:
+        component = {"text": message, "color": "gray"}
+
     payload = bytearray()
-    payload.extend(write_string(chat_json))
+    payload.extend(encode_nbt(component, with_type=True))
     payload.extend(write_boolean(False))  # overlay
     return bytes(payload)
 
