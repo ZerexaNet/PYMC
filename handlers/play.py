@@ -51,6 +51,10 @@ from world.chunk import (
     build_flat_chunk_column, build_heightmap_data
 )
 from world.terrain import TerrainGenerator
+from world.blocks import (
+    AIR, WATER, LAVA, GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL,
+    MOSS_BLOCK, SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY, STONE,
+)
 
 logger = logging.getLogger("PyMC.游戏")
 
@@ -202,8 +206,12 @@ async def send_join_game(conn: Connection, server):
 
     # --- 5. 基于实际出生区块修正出生点 ---
     spawn_x, _, spawn_z = server.spawn_position
-    actual_spawn_y = _resolve_spawn_height(server, spawn_x, spawn_z)
-    server.spawn_position = (int(spawn_x), int(actual_spawn_y), int(spawn_z))
+    actual_spawn_x, actual_spawn_y, actual_spawn_z = _resolve_spawn_location(
+        server, spawn_x, spawn_z
+    )
+    server.spawn_position = (
+        int(actual_spawn_x), int(actual_spawn_y), int(actual_spawn_z)
+    )
     await _send_spawn_position(conn, *server.spawn_position)
 
     # --- 6. 同步玩家位置 ---
@@ -217,7 +225,10 @@ async def send_join_game(conn: Connection, server):
 
     load_elapsed = time.time() - load_start
     logger.info(f"加载完成，用时 {load_elapsed:.1f}s")
-    logger.info(f"玩家 {conn.username} 已成功加入游戏 (出生高度: {actual_spawn_y})")
+    logger.info(
+        f"玩家 {conn.username} 已成功加入游戏 "
+        f"(出生点: {server.spawn_position[0]}, {server.spawn_position[1]}, {server.spawn_position[2]})"
+    )
 
     if deferred_coords:
         asyncio.create_task(_send_deferred_chunks(
@@ -498,23 +509,98 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
     await conn.send_packet(0x27, bytes(payload))
 
 
-def _resolve_spawn_height(server, block_x: int, block_z: int) -> int:
+def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, int, int]:
     """
-    从实际区块数据中解析出生高度。
-    如果区块还未落盘，则回退到配置中的出生高度。
+    在出生点附近选择一个更安全、更平坦的落脚点。
+    优先选择草地/泥土/沙地等自然地表，并要求头顶有足够空间。
     """
-    chunk_x = int(block_x) >> 4
-    chunk_z = int(block_z) >> 4
-    chunk_blocks = server.world_storage.load_generated_chunk(chunk_x, chunk_z)
-    if chunk_blocks is None:
-        return int(server.spawn_position[1])
+    search_radius = 8
+    preferred_blocks = {
+        GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL, MOSS_BLOCK,
+        SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY,
+    }
+    acceptable_blocks = preferred_blocks | {STONE}
+    chunk_cache: dict[tuple[int, int], list[list[list[int]]] | None] = {}
 
-    local_x = int(block_x) & 15
-    local_z = int(block_z) & 15
-    for y_index in range(len(chunk_blocks) - 1, -1, -1):
-        if chunk_blocks[y_index][local_z][local_x] != 0:
-            return y_index - 64 + 1
-    return int(server.spawn_position[1])
+    def _load_chunk(cx: int, cz: int):
+        key = (cx, cz)
+        if key not in chunk_cache:
+            chunk_cache[key] = server.world_storage.load_generated_chunk(cx, cz)
+        return chunk_cache[key]
+
+    def _column_top(world_x: int, world_z: int):
+        chunk_x = int(world_x) >> 4
+        chunk_z = int(world_z) >> 4
+        chunk_blocks = _load_chunk(chunk_x, chunk_z)
+        if chunk_blocks is None:
+            return None
+
+        local_x = int(world_x) & 15
+        local_z = int(world_z) & 15
+        for y_index in range(len(chunk_blocks) - 1, -1, -1):
+            block_id = chunk_blocks[y_index][local_z][local_x]
+            if block_id in (AIR, WATER, LAVA):
+                continue
+
+            above_1 = chunk_blocks[y_index + 1][local_z][local_x] if y_index + 1 < len(chunk_blocks) else AIR
+            above_2 = chunk_blocks[y_index + 2][local_z][local_x] if y_index + 2 < len(chunk_blocks) else AIR
+            return {
+                "block_id": block_id,
+                "world_y": y_index - 64,
+                "clear": above_1 == AIR and above_2 == AIR,
+            }
+        return None
+
+    def _surface_slope(world_x: int, world_z: int) -> int:
+        center = _column_top(world_x, world_z)
+        if center is None:
+            return 999
+        deltas = []
+        for dx, dz in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            neighbor = _column_top(world_x + dx, world_z + dz)
+            if neighbor is None:
+                continue
+            deltas.append(abs(center["world_y"] - neighbor["world_y"]))
+        return max(deltas) if deltas else 0
+
+    best_choice = None
+    best_score = None
+    fallback_y = int(server.spawn_position[1])
+
+    for dz in range(-search_radius, search_radius + 1):
+        for dx in range(-search_radius, search_radius + 1):
+            world_x = int(block_x) + dx
+            world_z = int(block_z) + dz
+            column = _column_top(world_x, world_z)
+            if column is None:
+                continue
+
+            if dx == 0 and dz == 0:
+                fallback_y = column["world_y"] + 1
+
+            if not column["clear"]:
+                continue
+            if column["block_id"] not in acceptable_blocks:
+                continue
+
+            slope = _surface_slope(world_x, world_z)
+            distance = abs(dx) + abs(dz)
+            score = distance * 6 + slope * 10
+
+            if column["block_id"] in preferred_blocks:
+                score -= 40
+            if column["block_id"] == STONE:
+                score += 25
+            if column["world_y"] < 62:
+                score += 20
+
+            if best_score is None or score < best_score:
+                best_score = score
+                best_choice = (world_x, column["world_y"] + 1, world_z)
+
+    if best_choice is not None:
+        return best_choice
+    return int(block_x), fallback_y, int(block_z)
 
 
 def _sorted_chunk_coords(center_cx: int, center_cz: int, view_distance: int) -> list[tuple[int, int]]:

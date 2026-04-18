@@ -381,6 +381,17 @@ class TerrainGenerator:
                 is_gravel_beach = (is_beach and surf_n > 0.4)
                 is_underwater = surface_h < SEA_LEVEL
 
+                west_h = height_map[lz][max(0, lx - 1)]
+                east_h = height_map[lz][min(15, lx + 1)]
+                north_h = height_map[max(0, lz - 1)][lx]
+                south_h = height_map[min(15, lz + 1)][lx]
+                slope = max(
+                    abs(surface_h - west_h),
+                    abs(surface_h - east_h),
+                    abs(surface_h - north_h),
+                    abs(surface_h - south_h),
+                )
+
                 # 应用地表方块
                 si = surface_h - MIN_Y  # 地表数组索引
 
@@ -457,13 +468,25 @@ class TerrainGenerator:
                         if idx >= 0 and blocks[idx][lz][lx] == STONE:
                             blocks[idx][lz][lx] = DIRT
                 else:
-                    # 普通陆地: 草方块 + 泥土
-                    blocks[si][lz][lx] = GRASS_BLOCK
+                    # 普通陆地: 默认草皮。高坡/高海拔处改为更厚的土层，
+                    # 减少大片裸露石头带来的“全石头山”观感。
+                    top_block = GRASS_BLOCK
+                    filler_block = DIRT
                     dirt_depth = 3 + int(abs(surf_n) * 2)
+
+                    if slope >= 4:
+                        dirt_depth += 2
+                    if slope >= 6:
+                        top_block = COARSE_DIRT
+                        filler_block = COARSE_DIRT
+                    elif slope >= 4 or surface_h > SEA_LEVEL + 45:
+                        top_block = COARSE_DIRT
+
+                    blocks[si][lz][lx] = top_block
                     for d in range(1, dirt_depth + 1):
                         idx = si - d
                         if idx >= 0 and blocks[idx][lz][lx] == STONE:
-                            blocks[idx][lz][lx] = DIRT
+                            blocks[idx][lz][lx] = filler_block if d <= 2 else DIRT
 
                 # 深层替换: 石头->深板岩过渡 (y=0 附近)
                 for wy in range(max(0, MIN_Y + 5), 8):
