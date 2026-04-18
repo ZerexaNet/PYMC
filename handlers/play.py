@@ -173,6 +173,7 @@ async def send_join_game(conn: Connection, server):
     # --- 3. 设置区块中心 ---
     center_cx = int(server.spawn_position[0]) >> 4
     center_cz = int(server.spawn_position[2]) >> 4
+    conn.chunk_center = (center_cx, center_cz)
     await _send_center_chunk(conn, center_cx, center_cz)
     await conn.send_packet(0x55, write_varint(server.view_distance))  # Set Chunk Cache Radius
 
@@ -203,6 +204,7 @@ async def send_join_game(conn: Connection, server):
     logger.info(f"出生点附近区块已准备完成: {len(immediate_results)} 个, 耗时 {gen_elapsed:.1f}s")
 
     await _send_chunk_batch(conn, immediate_results)
+    conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in immediate_results)
 
     # --- 5. 基于实际出生区块修正出生点 ---
     spawn_x, _, spawn_z = server.spawn_position
@@ -736,10 +738,64 @@ async def _send_deferred_chunks(conn: Connection, server, chunk_coords, total_co
 
     chunk_results = await loop.run_in_executor(None, _generate_deferred)
     await _send_chunk_batch(conn, chunk_results)
+    conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
     logger.info(
         f"已向 {conn.username} 补发远距离区块 {len(chunk_results)} 个 "
         f"(总计 {total_count} 个, 用时 {time.time() - start:.1f}s)"
     )
+
+
+async def _stream_chunks_around_player(conn: Connection, server):
+    """在玩家跨区块移动时，继续补发新进入视距的区块。"""
+    while conn.alive:
+        center_cx = int(conn.x) >> 4
+        center_cz = int(conn.z) >> 4
+        if conn.chunk_center == (center_cx, center_cz):
+            return
+
+        conn.chunk_center = (center_cx, center_cz)
+        await _send_center_chunk(conn, center_cx, center_cz)
+
+        desired_coords = set(_sorted_chunk_coords(center_cx, center_cz, server.view_distance))
+        missing_coords = [
+            coord for coord in _sorted_chunk_coords(center_cx, center_cz, server.view_distance)
+            if coord not in conn.loaded_chunks
+        ]
+        if not missing_coords:
+            conn.loaded_chunks.intersection_update(desired_coords)
+            continue
+
+        loop = asyncio.get_event_loop()
+        start = time.time()
+        logger.info(
+            f"玩家 {conn.username} 进入新区块中心 {center_cx},{center_cz}，"
+            f"正在补发 {len(missing_coords)} 个新区块..."
+        )
+
+        def _generate_missing():
+            return server.generate_chunk_results(missing_coords)[0]
+
+        chunk_results = await loop.run_in_executor(None, _generate_missing)
+        if not conn.alive:
+            return
+
+        await _send_chunk_batch(conn, chunk_results)
+        conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
+        conn.loaded_chunks.intersection_update(desired_coords)
+
+        logger.info(
+            f"已向 {conn.username} 动态补发新区块 {len(chunk_results)} 个 "
+            f"(中心={center_cx},{center_cz}, 用时 {time.time() - start:.1f}s)"
+        )
+
+
+def _schedule_chunk_stream_update(conn: Connection, server):
+    """串行调度区块流式补发，避免玩家连续移动时重复并发补块。"""
+    if not conn.alive:
+        return
+    if conn.chunk_stream_task is not None and not conn.chunk_stream_task.done():
+        return
+    conn.chunk_stream_task = asyncio.create_task(_stream_chunks_around_player(conn, server))
 
 
 async def _send_synchronize_position(conn: Connection):
@@ -1325,6 +1381,7 @@ async def _handle_player_position(conn: Connection, payload: bytes, server):
     conn.y = y
     conn.z = z
     conn.on_ground = on_ground
+    _schedule_chunk_stream_update(conn, server)
 
 
 async def _handle_player_position_rotation(conn: Connection, payload: bytes,
@@ -1345,6 +1402,7 @@ async def _handle_player_position_rotation(conn: Connection, payload: bytes,
     conn.yaw = yaw
     conn.pitch = pitch
     conn.on_ground = on_ground
+    _schedule_chunk_stream_update(conn, server)
 
 
 async def _handle_player_rotation(conn: Connection, payload: bytes, server):

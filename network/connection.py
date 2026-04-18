@@ -56,6 +56,9 @@ class Connection:
         self.food: int = 20
         self.saturation: float = 5.0
         self.gamemode: str = "creative"
+        self.loaded_chunks: set[tuple[int, int]] = set()
+        self.chunk_center: tuple[int, int] = (0, 0)
+        self.chunk_stream_task: asyncio.Task | None = None
 
         # 连接状态
         self.alive = True
