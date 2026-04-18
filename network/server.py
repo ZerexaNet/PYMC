@@ -293,7 +293,7 @@ class MinecraftServer:
         ]
 
         logger.info(
-            f"正在预生成出生点区块 {len(chunk_coords)} 个 "
+            f"正在检查出生点区块缓存 {len(chunk_coords)} 个 "
             f"(中心={center_cx},{center_cz} 视距={self.view_distance})..."
         )
 
