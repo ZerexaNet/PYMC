@@ -1,6 +1,6 @@
 # ============================================================
 # PyMC 自动构建 & 发布
-# 推送 tag (如 v1.0.0) 时自动触发:
+# 推送自动触发:
 #   1. 编译 C++ 原生地形生成器 (terrain_gen.exe)
 #   2. Nuitka 打包 Python 服务端 (PyMC.exe)
 #   3. 上传到 GitHub Release
@@ -11,7 +11,7 @@ name: 构建并发布
 on:
   push:
     tags:
-      - 'v*'
+      - '*'
 
 permissions:
   contents: write
