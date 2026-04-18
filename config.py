@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
     "web-admin-host": "0.0.0.0",
     "web-admin-port": 25568,
     "permissions-file": "permissions.json",
+    "chunk-generation-multithreading": False,
 }
 
 # 类型映射 (用于自动转换配置值)
@@ -41,6 +42,7 @@ TYPE_MAP = {
     "enable-command-block": lambda v: v.lower() in ("true", "1", "yes"),
     "web-admin-enabled": lambda v: v.lower() in ("true", "1", "yes"),
     "web-admin-port": int,
+    "chunk-generation-multithreading": lambda v: v.lower() in ("true", "1", "yes"),
 }
 
 
