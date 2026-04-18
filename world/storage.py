@@ -46,6 +46,7 @@ import zlib
 import gzip
 import time
 import logging
+import json
 from pathlib import Path
 from io import BytesIO
 from .chunk_io import serialize_chunk, deserialize_chunk
@@ -364,6 +365,7 @@ class WorldStorage:
     def __init__(self, world_dir: str):
         self.world_dir = Path(world_dir)
         self.region_dir = self.world_dir / "region"
+        self.playerdata_dir = self.world_dir / "playerdata"
         # 缓存已加载的区域文件 (rx, rz) -> LinearRegion
         self._regions: dict[tuple[int, int], LinearRegion] = {}
         # 标记已修改的区域 (需要保存)
@@ -371,6 +373,7 @@ class WorldStorage:
 
         # 确保目录存在
         self.region_dir.mkdir(parents=True, exist_ok=True)
+        self.playerdata_dir.mkdir(parents=True, exist_ok=True)
 
     def initialize(self):
         """初始化存储，执行必要的格式转换。"""
@@ -510,3 +513,39 @@ class WorldStorage:
         self.flush()
         self._regions.clear()
         self._dirty.clear()
+
+    def _get_playerdata_path(self, player_uuid: str) -> Path:
+        """获取玩家存档路径。"""
+        return self.playerdata_dir / f"{player_uuid}.json"
+
+    def load_player_data(self, player_uuid: str) -> dict | None:
+        """加载玩家存档。"""
+        path = self._get_playerdata_path(player_uuid)
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            logger.error(f"加载玩家存档失败 ({player_uuid}): {e}")
+        return None
+
+    def save_player_data(self, player_uuid: str, data: dict):
+        """保存玩家存档。"""
+        path = self._get_playerdata_path(player_uuid)
+        tmp_path = path.with_suffix(".json.tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception as e:
+            logger.error(f"保存玩家存档失败 ({player_uuid}): {e}")
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
