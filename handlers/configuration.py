@@ -11,6 +11,7 @@ from protocol.nbt import (
     encode_nbt, NbtByte, NbtFloat, NbtLong, NbtDouble
 )
 from network.connection import Connection, ConnectionState
+from world.biomes import build_biome_registry_entries
 
 logger = logging.getLogger("PyMC.配置")
 
@@ -213,19 +214,11 @@ async def _send_registry_data(conn: Connection):
     })
 
     # --- 生物群系注册表 ---
-    await _send_single_registry(conn, "minecraft:worldgen/biome", {
-        "minecraft:plains": {
-            "has_precipitation": NbtByte(1),
-            "temperature": NbtFloat(0.8),
-            "downfall": NbtFloat(0.4),
-            "effects": {
-                "sky_color": 7907327,
-                "water_color": 4159204,
-                "water_fog_color": 329011,
-                "fog_color": 12638463,
-            }
-        },
-    })
+    await _send_single_registry(
+        conn,
+        "minecraft:worldgen/biome",
+        build_biome_registry_entries()
+    )
 
     # --- 聊天类型注册表 ---
     await _send_single_registry(conn, "minecraft:chat_type", {
