@@ -59,6 +59,42 @@ from world.chunk_io import serialize_chunk, deserialize_chunk
 
 logger = logging.getLogger("PyMC.游戏")
 
+COMMAND_ALIASES = {
+    "teleport": "tp",
+    "experience": "xp",
+    "tell": "msg",
+    "w": "msg",
+    "tm": "teammsg",
+}
+
+RECOGNIZED_BUT_UNSUPPORTED = {
+    "advancement", "attribute", "bossbar", "clear", "clone", "damage", "data",
+    "datapack", "debug", "effect", "enchant", "execute", "fill", "fillbiome",
+    "forceload", "function", "gamerule", "give", "item", "jfr", "locate",
+    "loot", "particle", "perf", "place", "playsound", "publish", "random",
+    "recipe", "return", "ride", "schedule", "scoreboard", "setblock",
+    "setidletimeout", "spawnpoint", "spectate", "spreadplayers", "summon",
+    "tag", "team", "teammsg", "tellraw", "title", "transfer", "trigger",
+    "worldborder", "xp", "kill",
+}
+
+ALL_VANILLA_COMMAND_NAMES = sorted({
+    "advancement", "attribute", "ban", "ban-ip", "banlist", "bossbar", "clear",
+    "clone", "damage", "data", "datapack", "debug", "defaultgamemode", "deop",
+    "difficulty", "effect", "enchant", "execute", "experience", "fill",
+    "fillbiome", "forceload", "function", "gamemode", "gamerule", "give",
+    "help", "item", "jfr", "kick", "kill", "list", "locate", "loot", "me",
+    "msg", "op", "pardon", "pardon-ip", "particle", "perf", "place",
+    "playsound", "publish", "random", "recipe", "reload", "return", "ride",
+    "save-all", "save-off", "save-on", "say", "schedule", "scoreboard",
+    "seed", "setblock", "setidletimeout", "setworldspawn", "spawnpoint",
+    "spectate", "spreadplayers", "stop", "summon", "tag", "team", "teammsg",
+    "teleport", "tell", "tellraw", "time", "title", "tm", "tp", "transfer",
+    "trigger", "w", "weather", "whitelist", "worldborder", "xp",
+    # PyMC 扩展
+    "group", "perm", "save-status",
+})
+
 
 # ============================================================
 # Play 阶段数据包分发
@@ -154,17 +190,27 @@ async def send_join_game(conn: Connection, server):
     # --- 2. 计算出生点高度 ---
     if use_native:
         # 原生生成器: 通过生成 (0,0) 区块获取高度
-        _, hmap = terrain.generate_chunk_with_heightmap(0, 0)
-        spawn_height = hmap[0][0] + 2
+        spawn_x = int(server.spawn_position[0])
+        spawn_z = int(server.spawn_position[2])
+        _, hmap = terrain.generate_chunk_with_heightmap(spawn_x >> 4, spawn_z >> 4)
+        spawn_height = hmap[spawn_z & 15][spawn_x & 15] + 2
     else:
-        spawn_height = terrain.get_terrain_height(0, 0) + 2
-    await _send_spawn_position(conn, spawn_height)
+        spawn_height = terrain.get_terrain_height(
+            int(server.spawn_position[0]),
+            int(server.spawn_position[2])
+        ) + 2
+    server.spawn_position = (
+        int(server.spawn_position[0]),
+        int(spawn_height),
+        int(server.spawn_position[2]),
+    )
+    await _send_spawn_position(conn, *server.spawn_position)
 
     # --- 3. 发送游戏事件: 等待区块 ---
     await _send_game_event(conn, 13, 0.0)  # 事件13: Start waiting for chunks
 
     # --- 4. 设置区块中心 ---
-    await _send_center_chunk(conn, 0, 0)
+    await _send_center_chunk(conn, int(server.spawn_position[0]) >> 4, int(server.spawn_position[2]) >> 4)
 
     # --- 5. 发送区块数据 (使用 Chunk Batch 协议) ---
     # 发送 Chunk Batch Start (0x0D)
@@ -237,9 +283,9 @@ async def send_join_game(conn: Connection, server):
     await conn.send_packet(0x0C, write_varint(len(chunk_results)))
 
     # --- 6. 同步玩家位置 ---
-    conn.x = 0.5
+    conn.x = float(server.spawn_position[0]) + 0.5
     conn.y = float(spawn_height)
-    conn.z = 0.5
+    conn.z = float(server.spawn_position[2]) + 0.5
     await _send_synchronize_position(conn)
 
     # --- 7. 通知其他玩家 ---
@@ -301,7 +347,8 @@ async def _send_login_play(conn: Connection, server):
     payload.extend(write_long(0))
 
     # Game Mode (Unsigned Byte) - 0=生存, 1=创造, 2=冒险, 3=旁观
-    payload.extend(write_ubyte(1))  # 创造模式
+    gamemode_map = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
+    payload.extend(write_ubyte(gamemode_map.get(server.config.get("gamemode", "creative"), 1)))
 
     # Previous Game Mode (Byte) - -1 表示无
     payload.extend(write_byte(-1))
@@ -324,10 +371,10 @@ async def _send_login_play(conn: Connection, server):
     await conn.send_packet(0x2B, bytes(payload))
 
 
-async def _send_spawn_position(conn: Connection, y: int):
+async def _send_spawn_position(conn: Connection, x: int, y: int, z: int):
     """发送 Set Default Spawn Position 数据包 (0x56)。"""
     payload = bytearray()
-    payload.extend(write_position(0, y, 0))  # 出生点位置
+    payload.extend(write_position(x, y, z))  # 出生点位置
     payload.extend(write_float(0.0))         # 角度
     await conn.send_packet(0x56, bytes(payload))
 
@@ -672,7 +719,8 @@ async def execute_server_command(server, command: str,
     if not parts:
         return False
 
-    cmd = parts[0].lower()
+    original_cmd = parts[0].lower()
+    cmd = COMMAND_ALIASES.get(original_cmd, original_cmd)
     source_name = source_conn.username if source_conn else "控制台"
     mode_map = {
         "survival": 0, "creative": 1, "adventure": 2, "spectator": 3,
@@ -686,11 +734,19 @@ async def execute_server_command(server, command: str,
         else:
             logger.info(text)
 
+    if source_conn is not None:
+        permission_node = f"command.{cmd}"
+        if not server.permissions.has_permission(source_conn.username, permission_node):
+            await reply(f"[PyMC] 你没有权限执行该命令: /{original_cmd}")
+            return True
+
     if cmd == "help":
         if source_conn is not None:
-            await reply("[PyMC] 可用命令: /help, /list, /tp, /gamemode, /stop")
+            level = server.permissions.get_permission_level(source_conn.username)
+            await reply(f"[PyMC] 你的权限组: {level}")
+            await reply("[PyMC] 已识别原版指令: /help, /list, /msg, /me, /tp, /gamemode, /kick, /ban, /op, /whitelist, /time, /weather, /stop 等")
         else:
-            await reply("[PyMC] 控制台命令: help, list, say <消息>, tp <玩家> <x> <y> <z>, gamemode <玩家> <模式>, stop")
+            await reply("[PyMC] 控制台命令: help, list, say, tp, gamemode, kick, ban, ban-ip, op, deop, whitelist, group, perm, stop")
         return True
 
     if cmd == "list":
@@ -707,6 +763,31 @@ async def execute_server_command(server, command: str,
         full_text = f"[Server] {message}"
         server.broadcast_system_message(full_text)
         logger.info(f"[控制台广播] {message}")
+        return True
+
+    if cmd == "me":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: /me <动作>")
+            return True
+        action = command.strip()[len(parts[0]):].strip()
+        server.broadcast_system_message(f"* {source_name} {action}")
+        logger.info(f"* {source_name} {action}")
+        return True
+
+    if cmd == "msg":
+        if len(parts) < 3:
+            await reply("[PyMC] 用法: /msg <玩家> <消息>")
+            return True
+        target = server.find_player(parts[1])
+        if target is None:
+            await reply(f"[PyMC] 未找到玩家: {parts[1]}")
+            return True
+        message = command.strip().split(maxsplit=2)[2]
+        await send_system_message(target, f"[私聊] {source_name}: {message}")
+        if source_conn is not None and target != source_conn:
+            await send_system_message(source_conn, f"[私聊 -> {target.username}] {message}")
+        else:
+            logger.info(f"[私聊 -> {target.username}] {message}")
         return True
 
     if cmd == "tp":
@@ -768,12 +849,265 @@ async def execute_server_command(server, command: str,
             await reply(f"[PyMC] 已将 {target.username} 的游戏模式切换为 {mode_names.get(mode, '未知')}")
         return True
 
+    if cmd == "seed":
+        seed = server.config.get("level-seed", "")
+        text = f"[PyMC] 世界种子: {seed if seed != '' else 0}"
+        await reply(text)
+        return True
+
+    if cmd == "difficulty":
+        if len(parts) == 1:
+            await reply(f"[PyMC] 当前难度: {server.config.get('difficulty', 'normal')}")
+            return True
+        value = parts[1].lower()
+        if value not in {"peaceful", "easy", "normal", "hard"}:
+            await reply("[PyMC] 用法: difficulty <peaceful|easy|normal|hard>")
+            return True
+        server.config["difficulty"] = value
+        await reply(f"[PyMC] 难度已设置为 {value}")
+        return True
+
+    if cmd == "defaultgamemode":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: defaultgamemode <survival|creative|adventure|spectator>")
+            return True
+        value = parts[1].lower()
+        if value not in mode_map:
+            await reply("[PyMC] 无效模式")
+            return True
+        normalized = {
+            0: "survival",
+            1: "creative",
+            2: "adventure",
+            3: "spectator",
+        }[mode_map[value]]
+        server.config["gamemode"] = normalized
+        await reply(f"[PyMC] 默认游戏模式已设置为 {normalized}")
+        return True
+
+    if cmd == "time":
+        if len(parts) < 2:
+            await reply(f"[PyMC] 当前时间: {server.world_time}")
+            return True
+        action = parts[1].lower()
+        if action == "set" and len(parts) >= 3:
+            presets = {"day": 1000, "noon": 6000, "night": 13000, "midnight": 18000}
+            try:
+                server.world_time = presets.get(parts[2].lower(), int(parts[2]))
+            except ValueError:
+                await reply("[PyMC] 用法: time set <day|noon|night|midnight|ticks>")
+                return True
+            await reply(f"[PyMC] 世界时间已设置为 {server.world_time}")
+            return True
+        if action == "add" and len(parts) >= 3:
+            try:
+                server.world_time += int(parts[2])
+            except ValueError:
+                await reply("[PyMC] 用法: time add <ticks>")
+                return True
+            await reply(f"[PyMC] 世界时间已变更为 {server.world_time}")
+            return True
+        if action == "query":
+            await reply(f"[PyMC] 世界时间: {server.world_time}")
+            return True
+        await reply("[PyMC] 用法: time <set|add|query> ...")
+        return True
+
+    if cmd == "weather":
+        if len(parts) == 1:
+            await reply(f"[PyMC] 当前天气: {server.weather}")
+            return True
+        value = parts[1].lower()
+        if value not in {"clear", "rain", "thunder"}:
+            await reply("[PyMC] 用法: weather <clear|rain|thunder>")
+            return True
+        server.weather = value
+        await reply(f"[PyMC] 天气已设置为 {value}")
+        return True
+
+    if cmd == "setworldspawn":
+        if len(parts) >= 4:
+            try:
+                x = int(float(parts[1]))
+                y = int(float(parts[2]))
+                z = int(float(parts[3]))
+            except ValueError:
+                await reply("[PyMC] 用法: setworldspawn <x> <y> <z>")
+                return True
+        else:
+            x = int(server.spawn_position[0])
+            y = int(server.spawn_position[1])
+            z = int(server.spawn_position[2])
+        server.spawn_position = (x, y, z)
+        await reply(f"[PyMC] 世界出生点已设置为 ({x}, {y}, {z})")
+        return True
+
+    if cmd == "kick":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: kick <玩家> [原因]")
+            return True
+        target = server.find_player(parts[1])
+        if target is None:
+            await reply(f"[PyMC] 未找到玩家: {parts[1]}")
+            return True
+        reason = command.strip().split(maxsplit=2)[2] if len(parts) >= 3 else "已被管理员移出服务器"
+        await target.disconnect(reason)
+        await reply(f"[PyMC] 已踢出 {target.username}: {reason}")
+        return True
+
+    if cmd == "ban":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: ban <玩家> [原因]")
+            return True
+        reason = command.strip().split(maxsplit=2)[2] if len(parts) >= 3 else ""
+        server.permissions.ban_player(parts[1], reason)
+        target = server.find_player(parts[1])
+        if target is not None:
+            await target.disconnect(reason or "你已被封禁")
+        await reply(f"[PyMC] 已封禁玩家: {parts[1]}")
+        return True
+
+    if cmd == "pardon":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: pardon <玩家>")
+            return True
+        server.permissions.pardon_player(parts[1])
+        await reply(f"[PyMC] 已解除封禁: {parts[1]}")
+        return True
+
+    if cmd == "ban-ip":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: ban-ip <IP> [原因]")
+            return True
+        reason = command.strip().split(maxsplit=2)[2] if len(parts) >= 3 else ""
+        server.permissions.ban_ip(parts[1], reason)
+        for player in server.get_online_players():
+            address = player.address.split(":")[0]
+            if address == parts[1]:
+                await player.disconnect(reason or "你的 IP 已被封禁")
+        await reply(f"[PyMC] 已封禁 IP: {parts[1]}")
+        return True
+
+    if cmd == "pardon-ip":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: pardon-ip <IP>")
+            return True
+        server.permissions.pardon_ip(parts[1])
+        await reply(f"[PyMC] 已解除 IP 封禁: {parts[1]}")
+        return True
+
+    if cmd == "banlist":
+        banlist = server.permissions.get_banlist()
+        players = ", ".join(sorted(entry["name"] for entry in banlist["players"].values())) or "无"
+        ips = ", ".join(sorted(banlist["ips"].keys())) or "无"
+        await reply(f"[PyMC] 玩家封禁: {players}")
+        await reply(f"[PyMC] IP 封禁: {ips}")
+        return True
+
+    if cmd == "op":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: op <玩家>")
+            return True
+        server.permissions.op(parts[1])
+        server.permissions.set_user_group(parts[1], "admin")
+        await reply(f"[PyMC] 已授予 OP: {parts[1]}")
+        return True
+
+    if cmd == "deop":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: deop <玩家>")
+            return True
+        server.permissions.deop(parts[1])
+        server.permissions.set_user_group(parts[1], "default")
+        await reply(f"[PyMC] 已移除 OP: {parts[1]}")
+        return True
+
+    if cmd == "whitelist":
+        if len(parts) < 2:
+            whitelist = server.permissions.get_whitelist()
+            status = "开启" if whitelist["enabled"] else "关闭"
+            players = ", ".join(whitelist["players"]) or "无"
+            await reply(f"[PyMC] 白名单状态: {status}")
+            await reply(f"[PyMC] 白名单玩家: {players}")
+            return True
+        action = parts[1].lower()
+        if action == "on":
+            server.permissions.set_whitelist_enabled(True)
+            await reply("[PyMC] 白名单已开启")
+            return True
+        if action == "off":
+            server.permissions.set_whitelist_enabled(False)
+            await reply("[PyMC] 白名单已关闭")
+            return True
+        if action == "list":
+            whitelist = server.permissions.get_whitelist()
+            players = ", ".join(whitelist["players"]) or "无"
+            await reply(f"[PyMC] 白名单玩家: {players}")
+            return True
+        if action == "add" and len(parts) >= 3:
+            server.permissions.add_whitelist(parts[2])
+            await reply(f"[PyMC] 已加入白名单: {parts[2]}")
+            return True
+        if action == "remove" and len(parts) >= 3:
+            server.permissions.remove_whitelist(parts[2])
+            await reply(f"[PyMC] 已移除白名单: {parts[2]}")
+            return True
+        if action == "reload":
+            server.permissions.load()
+            await reply("[PyMC] 白名单与权限文件已重载")
+            return True
+        await reply("[PyMC] 用法: whitelist <on|off|list|add|remove|reload>")
+        return True
+
+    if cmd == "reload":
+        server.permissions.load()
+        await reply("[PyMC] 已重载权限与白名单配置")
+        return True
+
+    if cmd == "save-all":
+        server.world_storage.flush()
+        await reply("[PyMC] 世界数据已保存")
+        return True
+
+    if cmd in {"save-on", "save-off"}:
+        server.autosave_enabled = (cmd == "save-on")
+        await reply(f"[PyMC] 自动保存已{'开启' if server.autosave_enabled else '关闭'}")
+        return True
+
+    if cmd == "save-status":
+        await reply(f"[PyMC] 自动保存状态: {'开启' if server.autosave_enabled else '关闭'}")
+        return True
+
+    if cmd == "group":
+        if len(parts) == 1:
+            groups = ", ".join(sorted(server.permissions.list_groups().keys()))
+            await reply(f"[PyMC] 权限组: {groups}")
+            return True
+        if len(parts) >= 3:
+            server.permissions.set_user_group(parts[1], parts[2])
+            await reply(f"[PyMC] 已将 {parts[1]} 设置为权限组 {parts[2]}")
+            return True
+        await reply("[PyMC] 用法: group <玩家> <组名>")
+        return True
+
+    if cmd == "perm":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: perm <玩家>")
+            return True
+        level = server.permissions.get_permission_level(parts[1])
+        await reply(f"[PyMC] {parts[1]} 的权限组: {level}")
+        return True
+
     if cmd == "stop":
         if source_conn is not None:
             await send_system_message(source_conn, "[PyMC] 正在关闭服务器...")
         server.broadcast_system_message("[PyMC] 服务器正在关闭...")
         logger.info(f"{source_name} 执行了关闭服务器命令")
         asyncio.get_event_loop().call_soon(lambda: asyncio.ensure_future(server.stop()))
+        return True
+
+    if cmd in RECOGNIZED_BUT_UNSUPPORTED or original_cmd in RECOGNIZED_BUT_UNSUPPORTED:
+        await reply(f"[PyMC] 已识别原版指令 /{original_cmd}，但当前 PyMC 尚未实现其所需游戏系统")
         return True
 
     await reply(f"[PyMC] 未知命令: {parts[0]}")

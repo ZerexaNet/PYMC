@@ -45,6 +45,13 @@ async def _handle_login_start(conn: Connection, payload: bytes, server):
     conn.username = username
     logger.info(f"玩家 {username} 正在登录... (来自 {conn.address})")
 
+    ip = conn.address.split(":", 1)[0]
+    deny_reason = server.permissions.check_login_allowed(username, ip)
+    if deny_reason:
+        logger.info(f"拒绝玩家 {username} 登录: {deny_reason}")
+        await conn.disconnect(deny_reason)
+        return
+
     # 离线模式: 根据用户名生成 UUID
     if not server.online_mode:
         conn.uuid = conn.generate_offline_uuid()

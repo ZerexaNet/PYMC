@@ -7,6 +7,8 @@ import asyncio
 import logging
 import time
 from typing import Optional
+from admin.permissions import PermissionManager
+from admin.web import WebAdminServer
 from .connection import Connection, ConnectionState
 from handlers.handshake import handle_handshake
 from handlers.status import handle_status
@@ -33,10 +35,17 @@ class MinecraftServer:
         self.online_mode = config.get("online-mode", False)
         self.compression_threshold = config.get("network-compression-threshold", 256)
         self.view_distance = config.get("view-distance", 10)
+        self.autosave_enabled = True
+        self.world_time = 1000
+        self.weather = "clear"
+        self.spawn_position = (0, 100, 0)
 
         # 世界存储
         world_name = config.get("level-name", "world")
         self.world_storage = WorldStorage(world_name)
+        self.permissions = PermissionManager(config.get("permissions-file", "permissions.json"))
+        self.web_admin: WebAdminServer | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
 
         # 在线玩家列表
         self.connections: list[Connection] = []
@@ -83,6 +92,7 @@ class MinecraftServer:
         """启动服务器。"""
         self.running = True
         self.start_time = time.time()
+        self.loop = asyncio.get_running_loop()
 
         # 初始化世界存储 (Anvil -> Linear 自动转换)
         self.world_storage.initialize()
@@ -95,6 +105,18 @@ class MinecraftServer:
 
         # 启动游戏循环 (20 TPS)
         self._tick_task = asyncio.create_task(self._game_loop())
+
+        if self.config.get("web-admin-enabled", True):
+            try:
+                self.web_admin = WebAdminServer(
+                    self,
+                    self.config.get("web-admin-host", "0.0.0.0"),
+                    self.config.get("web-admin-port", 25568),
+                )
+                self.web_admin.start()
+            except Exception as e:
+                logger.error(f"启动 Web 管理台失败: {e}")
+                self.web_admin = None
 
         addr = self._server.sockets[0].getsockname()
         logger.info(f"服务器已启动，监听 {addr[0]}:{addr[1]}")
@@ -118,6 +140,10 @@ class MinecraftServer:
         logger.info("正在保存世界数据...")
         self.world_storage.close()
         logger.info("世界数据已保存")
+
+        if self.web_admin:
+            self.web_admin.stop()
+            self.web_admin = None
 
         # 断开所有连接
         for conn in list(self.connections):
@@ -214,7 +240,7 @@ class MinecraftServer:
                 await self._send_keepalive()
 
             # 自动保存世界数据
-            if tick_count % autosave_interval == 0:
+            if self.autosave_enabled and tick_count % autosave_interval == 0:
                 self.world_storage.flush()
 
             # 清理无效连接

@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "schema": 1
+  },
+  "groups": {
+    "default": {
+      "inherits": [],
+      "permissions": [
+        "command.help",
+        "command.list",
+        "command.me",
+        "command.msg",
+        "command.tell",
+        "command.w"
+      ]
+    },
+    "moderator": {
+      "inherits": [
+        "default"
+      ],
+      "permissions": [
+        "command.say",
+        "command.tp",
+        "command.teleport",
+        "command.gamemode",
+        "command.kick",
+        "command.kill",
+        "command.time",
+        "command.weather"
+      ]
+    },
+    "admin": {
+      "inherits": [
+        "moderator"
+      ],
+      "permissions": [
+        "command.*",
+        "web.access",
+        "file.read.*",
+        "file.write.server.properties",
+        "file.write.permissions.json"
+      ]
+    }
+  },
+  "users": {},
+  "ops": [],
+  "bans": {
+    "players": {},
+    "ips": {}
+  },
+  "whitelist": {
+    "enabled": false,
+    "players": []
+  }
+}
