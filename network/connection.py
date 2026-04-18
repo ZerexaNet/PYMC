@@ -51,6 +51,11 @@ class Connection:
         self.yaw: float = 0.0
         self.pitch: float = 0.0
         self.on_ground: bool = True
+        self.fall_start_y: float = 100.0
+        self.health: float = 20.0
+        self.food: int = 20
+        self.saturation: float = 5.0
+        self.gamemode: str = "creative"
 
         # 连接状态
         self.alive = True

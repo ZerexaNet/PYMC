@@ -51,6 +51,7 @@ import math
 import random as _random
 from functools import lru_cache
 from .noise import OctaveNoise, ImprovedNoise
+from .biomes import BiomeSampler
 from .blocks import (
     AIR, STONE, GRANITE, DIORITE, ANDESITE,
     GRASS_BLOCK, DIRT, COARSE_DIRT,
@@ -69,6 +70,13 @@ from .blocks import (
     SHORT_GRASS, DANDELION, POPPY,
     DIRT_PATH,
     MOSS_BLOCK,
+    SEAGRASS, TALL_SEAGRASS, KELP, KELP_PLANT,
+    TUBE_CORAL_BLOCK, BRAIN_CORAL_BLOCK, BUBBLE_CORAL_BLOCK,
+    FIRE_CORAL_BLOCK, HORN_CORAL_BLOCK,
+    TUBE_CORAL_FAN, BRAIN_CORAL_FAN, BUBBLE_CORAL_FAN,
+    FIRE_CORAL_FAN, HORN_CORAL_FAN,
+    BLUE_ORCHID, ALLIUM, AZURE_BLUET, RED_TULIP, ORANGE_TULIP,
+    WHITE_TULIP, PINK_TULIP, OXEYE_DAISY, CORNFLOWER, LILY_OF_THE_VALLEY,
 )
 
 # --------------------------------------------------
@@ -157,6 +165,7 @@ class TerrainGenerator:
 
         # 矿石噪声
         self._ore_rng = _random.Random(seed + 100)
+        self.biome_sampler = BiomeSampler(seed)
 
     # --------------------------------------------------
     # 高度计算
@@ -349,6 +358,9 @@ class TerrainGenerator:
 
         # --- 第四步: 嵌入石头变种 (花岗岩/闪长岩/安山岩) ---
         self._place_stone_variants(blocks, base_x, base_z)
+
+        # --- 第五步: 地表/水下装饰 ---
+        self._place_decorations(blocks, height_map, base_x, base_z)
 
         return blocks
 
@@ -596,6 +608,178 @@ class TerrainGenerator:
                             blocks[ny][nz][nx] = ore
                         elif blocks[ny][nz][nx] == DEEPSLATE:
                             blocks[ny][nz][nx] = deep_ore
+
+    def _place_decorations(self, blocks, height_map, base_x, base_z):
+        """放置树木、花草、海草、珊瑚等装饰，带基础环境校验。"""
+        rng = _random.Random(self.seed ^ (base_x * 42317861 + base_z * 9717613))
+
+        for lx in range(16):
+            for lz in range(16):
+                wx = base_x + lx
+                wz = base_z + lz
+                surface_h = height_map[lz][lx]
+                yi = surface_h - MIN_Y
+                if yi < 0 or yi >= WORLD_HEIGHT:
+                    continue
+
+                biome = self.biome_sampler.sample_surface_biome(wx, wz, surface_h)
+                top_block = blocks[yi][lz][lx]
+                above_yi = yi + 1
+                if above_yi >= WORLD_HEIGHT:
+                    continue
+
+                if top_block in (GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL, SNOW_BLOCK):
+                    if self._should_place_tree(biome, surface_h, rng) and self._is_clear_for_tree(blocks, lx, lz, yi + 1):
+                        self._place_tree(blocks, biome, lx, lz, yi + 1, rng)
+                        continue
+
+                    if blocks[above_yi][lz][lx] == AIR:
+                        self._place_surface_plant(blocks, biome, lx, lz, yi + 1, rng)
+
+                elif top_block in (SAND, RED_SAND, GRAVEL, CLAY) and surface_h < SEA_LEVEL:
+                    self._place_underwater_decor(blocks, biome, lx, lz, yi, rng)
+
+    def _should_place_tree(self, biome: str, surface_h: int, rng: _random.Random) -> bool:
+        tree_chance = {
+            "minecraft:plains": 0.015,
+            "minecraft:forest": 0.08,
+            "minecraft:flower_forest": 0.07,
+            "minecraft:birch_forest": 0.08,
+            "minecraft:dark_forest": 0.09,
+            "minecraft:jungle": 0.10,
+            "minecraft:bamboo_jungle": 0.08,
+            "minecraft:sparse_jungle": 0.05,
+            "minecraft:taiga": 0.07,
+            "minecraft:old_growth_pine_taiga": 0.08,
+            "minecraft:old_growth_spruce_taiga": 0.08,
+            "minecraft:cherry_grove": 0.06,
+            "minecraft:savanna": 0.035,
+            "minecraft:savanna_plateau": 0.03,
+            "minecraft:windswept_savanna": 0.025,
+            "minecraft:mangrove_swamp": 0.04,
+            "minecraft:swamp": 0.03,
+        }.get(biome, 0.0)
+
+        if surface_h > 130:
+            tree_chance *= 0.3
+        return rng.random() < tree_chance
+
+    def _is_clear_for_tree(self, blocks, lx: int, lz: int, trunk_base_y: int,
+                           radius: int = 2, height: int = 7) -> bool:
+        for y in range(trunk_base_y, min(trunk_base_y + height, WORLD_HEIGHT)):
+            for dz in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    nx, nz = lx + dx, lz + dz
+                    if not (0 <= nx < 16 and 0 <= nz < 16):
+                        return False
+                    if blocks[y][nz][nx] not in (AIR, WATER):
+                        return False
+        return True
+
+    def _place_tree(self, blocks, biome: str, lx: int, lz: int, trunk_base_y: int,
+                    rng: _random.Random):
+        log_block = OAK_LOG
+        leaves_block = OAK_LEAVES
+        trunk_height = 4 + rng.randint(0, 2)
+        canopy_radius = 2
+
+        if biome in {"minecraft:birch_forest", "minecraft:old_growth_birch_forest"}:
+            log_block = BIRCH_LOG
+            leaves_block = BIRCH_LEAVES
+        elif biome in {"minecraft:taiga", "minecraft:old_growth_pine_taiga", "minecraft:old_growth_spruce_taiga"}:
+            log_block = SPRUCE_LOG
+            leaves_block = SPRUCE_LEAVES
+            trunk_height = 5 + rng.randint(0, 2)
+        elif biome in {"minecraft:jungle", "minecraft:bamboo_jungle", "minecraft:sparse_jungle"}:
+            log_block = JUNGLE_LOG
+            leaves_block = JUNGLE_LEAVES
+            trunk_height = 6 + rng.randint(0, 2)
+        elif biome in {"minecraft:savanna", "minecraft:savanna_plateau", "minecraft:windswept_savanna"}:
+            log_block = ACACIA_LOG
+            leaves_block = ACACIA_LEAVES
+        elif biome == "minecraft:cherry_grove":
+            log_block = CHERRY_LOG
+            leaves_block = CHERRY_LEAVES
+        elif biome in {"minecraft:dark_forest"}:
+            log_block = DARK_OAK_LOG
+            leaves_block = DARK_OAK_LEAVES
+            trunk_height = 5 + rng.randint(0, 1)
+        elif biome in {"minecraft:mangrove_swamp", "minecraft:swamp"}:
+            log_block = MANGROVE_LOG if biome == "minecraft:mangrove_swamp" else OAK_LOG
+            leaves_block = MANGROVE_LEAVES if biome == "minecraft:mangrove_swamp" else OAK_LEAVES
+
+        top_y = min(WORLD_HEIGHT - 1, trunk_base_y + trunk_height)
+        for y in range(trunk_base_y, top_y):
+            blocks[y][lz][lx] = log_block
+
+        canopy_base = max(trunk_base_y, top_y - 3)
+        for y in range(canopy_base, min(top_y + 2, WORLD_HEIGHT)):
+            radius = canopy_radius - (1 if y >= top_y else 0)
+            for dz in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    if abs(dx) + abs(dz) > radius + 1 and rng.random() < 0.6:
+                        continue
+                    nx, nz = lx + dx, lz + dz
+                    if 0 <= nx < 16 and 0 <= nz < 16 and blocks[y][nz][nx] == AIR:
+                        blocks[y][nz][nx] = leaves_block
+
+        if top_y < WORLD_HEIGHT and blocks[top_y][lz][lx] == AIR:
+            blocks[top_y][lz][lx] = leaves_block
+
+    def _place_surface_plant(self, blocks, biome: str, lx: int, lz: int, plant_y: int,
+                             rng: _random.Random):
+        flower_tables = {
+            "minecraft:flower_forest": [DANDELION, POPPY, ALLIUM, AZURE_BLUET,
+                                        RED_TULIP, ORANGE_TULIP, WHITE_TULIP,
+                                        PINK_TULIP, OXEYE_DAISY, CORNFLOWER,
+                                        LILY_OF_THE_VALLEY],
+            "minecraft:cherry_grove": [PINK_TULIP, WHITE_TULIP, ALLIUM],
+            "minecraft:meadow": [ALLIUM, AZURE_BLUET, CORNFLOWER, OXEYE_DAISY],
+            "minecraft:swamp": [BLUE_ORCHID],
+            "minecraft:mangrove_swamp": [BLUE_ORCHID],
+            "minecraft:plains": [DANDELION, POPPY, CORNFLOWER],
+            "minecraft:sunflower_plains": [DANDELION, POPPY, CORNFLOWER],
+        }
+
+        if biome in flower_tables and rng.random() < 0.18:
+            blocks[plant_y][lz][lx] = rng.choice(flower_tables[biome])
+        elif biome in {"minecraft:plains", "minecraft:forest", "minecraft:birch_forest",
+                       "minecraft:flower_forest", "minecraft:meadow", "minecraft:taiga",
+                       "minecraft:old_growth_pine_taiga", "minecraft:old_growth_spruce_taiga"} and rng.random() < 0.35:
+            blocks[plant_y][lz][lx] = SHORT_GRASS
+
+    def _place_underwater_decor(self, blocks, biome: str, lx: int, lz: int, floor_y: int,
+                                rng: _random.Random):
+        water_y = floor_y + 1
+        if water_y >= WORLD_HEIGHT or blocks[water_y][lz][lx] != WATER:
+            return
+
+        if biome in {"minecraft:warm_ocean", "minecraft:lukewarm_ocean"} and rng.random() < 0.08:
+            coral_blocks = [
+                TUBE_CORAL_BLOCK, BRAIN_CORAL_BLOCK, BUBBLE_CORAL_BLOCK,
+                FIRE_CORAL_BLOCK, HORN_CORAL_BLOCK,
+            ]
+            coral_fans = [
+                TUBE_CORAL_FAN, BRAIN_CORAL_FAN, BUBBLE_CORAL_FAN,
+                FIRE_CORAL_FAN, HORN_CORAL_FAN,
+            ]
+            blocks[floor_y][lz][lx] = rng.choice(coral_blocks)
+            if water_y < WORLD_HEIGHT and blocks[water_y][lz][lx] == WATER:
+                blocks[water_y][lz][lx] = rng.choice(coral_fans)
+            return
+
+        if biome in {"minecraft:ocean", "minecraft:deep_ocean", "minecraft:cold_ocean",
+                     "minecraft:deep_cold_ocean", "minecraft:lukewarm_ocean",
+                     "minecraft:warm_ocean"}:
+            if rng.random() < 0.22:
+                height = 1 + rng.randint(0, 4)
+                for i in range(height):
+                    y = water_y + i
+                    if y >= WORLD_HEIGHT or blocks[y][lz][lx] != WATER:
+                        break
+                    blocks[y][lz][lx] = KELP if i == height - 1 else KELP_PLANT
+            elif rng.random() < 0.35:
+                blocks[water_y][lz][lx] = SEAGRASS
 
     def _block_hash(self, x: int, y: int, z: int) -> float:
         """
