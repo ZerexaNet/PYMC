@@ -54,6 +54,7 @@ from world.chunk import (
 from world.terrain import TerrainGenerator
 
 logger = logging.getLogger("PyMC.游戏")
+JOIN_IMMEDIATE_RADIUS = 2
 
 COMMAND_ALIASES = {
     "teleport": "tp",
@@ -164,90 +165,52 @@ async def send_join_game(conn: Connection, server):
     # --- 1. Login (Join Game) 数据包 ---
     await _send_login_play(conn, server)
 
-    # --- 2. 计算出生点高度 ---
-    spawn_height = int(server.spawn_position[1])
-    await _send_spawn_position(conn, *server.spawn_position)
-
-    # --- 3. 发送游戏事件: 等待区块 ---
+    # --- 2. 发送游戏事件: 等待区块 ---
     await _send_game_event(conn, 13, 0.0)  # 事件13: Start waiting for chunks
 
-    # --- 4. 设置区块中心 ---
+    # --- 3. 设置区块中心 ---
     center_cx = int(server.spawn_position[0]) >> 4
     center_cz = int(server.spawn_position[2]) >> 4
     await _send_center_chunk(conn, center_cx, center_cz)
     await conn.send_packet(0x55, write_varint(server.view_distance))  # Set Chunk Cache Radius
 
-    # --- 5. 发送区块数据 (使用 Chunk Batch 协议) ---
-    # 发送 Chunk Batch Start (0x0D)
-    await conn.send_packet(0x0D, b'')
-
     view_distance = server.view_distance
-    chunk_coords = [(cx, cz)
-                    for cx in range(center_cx - view_distance, center_cx + view_distance + 1)
-                    for cz in range(center_cz - view_distance, center_cz + view_distance + 1)]
+    chunk_coords = _sorted_chunk_coords(center_cx, center_cz, view_distance)
+    immediate_radius = min(JOIN_IMMEDIATE_RADIUS, view_distance)
+    immediate_count = (immediate_radius * 2 + 1) ** 2
+    immediate_coords = chunk_coords[:immediate_count]
+    deferred_coords = chunk_coords[immediate_count:]
 
     # 在线程池中预生成所有区块数据 (避免阻塞事件循环)
     loop = asyncio.get_event_loop()
-    logger.info(f"正在生成 {len(chunk_coords)} 个区块 (视距={view_distance}, "
+    logger.info(f"正在准备 {len(chunk_coords)} 个区块 (视距={view_distance}, "
                 f"引擎={'C++' if use_native else 'Python'})...")
     gen_start = time.time()
 
-    storage = server.world_storage
-
-    def _generate_all_chunks():
-        """在工作线程中批量生成区块数据 (优先从存档加载)。"""
-        results = []
-        loaded = 0
-        generated = 0
-        for cx, cz in chunk_coords:
-            # 先尝试从存档加载
-            chunk_blocks = storage.load_generated_chunk(cx, cz)
-            if chunk_blocks is not None:
-                loaded += 1
-                motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
-                world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
-                chunk_data = build_chunk_column_from_terrain(chunk_blocks)
-                results.append((cx, cz, motion_blocking, world_surface, chunk_data))
-                continue
-
-            # 存档中没有，使用生成器生成
-            if use_native:
-                chunk_blocks, _ = terrain.generate_chunk_with_heightmap(cx, cz)
-            else:
-                chunk_blocks = terrain.generate_chunk(cx, cz)
-
-            motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
-            world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
-            chunk_data = build_chunk_column_from_terrain(chunk_blocks)
-            results.append((cx, cz, motion_blocking, world_surface, chunk_data))
-
-            # 保存到 Linear V2 存档
-            storage.save_generated_chunk(cx, cz, chunk_blocks)
-            generated += 1
-
+    def _generate_chunks(coords):
+        """在工作线程中批量准备区块数据。"""
+        results, loaded, generated = server.generate_chunk_results(coords)
         if loaded > 0:
             logger.info(f"从存档加载 {loaded} 个区块")
         if generated > 0:
             logger.info(f"新生成 {generated} 个区块")
-            # 批量写入磁盘
-            storage.flush()
-
         return results
 
-    chunk_results = await loop.run_in_executor(None, _generate_all_chunks)
+    immediate_results = await loop.run_in_executor(None, _generate_chunks, immediate_coords)
     gen_elapsed = time.time() - gen_start
-    logger.info(f"区块生成完成: {len(chunk_results)} 个, 耗时 {gen_elapsed:.1f}s")
+    logger.info(f"出生点附近区块已准备完成: {len(immediate_results)} 个, 耗时 {gen_elapsed:.1f}s")
 
-    # 依次发送预生成的区块
-    for cx, cz, motion_blocking, world_surface, chunk_data in chunk_results:
-        await _send_prebuilt_chunk(conn, cx, cz, motion_blocking, world_surface, chunk_data)
+    await _send_chunk_batch(conn, immediate_results)
 
-    # 发送 Chunk Batch Finished (0x0C)
-    await conn.send_packet(0x0C, write_varint(len(chunk_results)))
+    # --- 5. 基于实际出生区块修正出生点 ---
+    spawn_x, _, spawn_z = server.spawn_position
+    actual_spawn_y = _resolve_spawn_height(server, spawn_x, spawn_z)
+    server.spawn_position = (int(spawn_x), int(actual_spawn_y), int(spawn_z))
+    await _send_spawn_position(conn, *server.spawn_position)
 
     # --- 6. 同步玩家位置 ---
     conn.x = float(server.spawn_position[0]) + 0.5
-    conn.y = float(spawn_height)
+    conn.y = float(actual_spawn_y)
     conn.z = float(server.spawn_position[2]) + 0.5
     await _send_synchronize_position(conn)
 
@@ -256,7 +219,12 @@ async def send_join_game(conn: Connection, server):
 
     load_elapsed = time.time() - load_start
     logger.info(f"加载完成，用时 {load_elapsed:.1f}s")
-    logger.info(f"玩家 {conn.username} 已成功加入游戏 (出生高度: {spawn_height})")
+    logger.info(f"玩家 {conn.username} 已成功加入游戏 (出生高度: {actual_spawn_y})")
+
+    if deferred_coords:
+        asyncio.create_task(_send_deferred_chunks(
+            conn, server, deferred_coords, len(chunk_coords)
+        ))
 
 
 async def _send_login_play(conn: Connection, server):
@@ -530,6 +498,70 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
         payload.extend(block_light_section)
 
     await conn.send_packet(0x27, bytes(payload))
+
+
+def _resolve_spawn_height(server, block_x: int, block_z: int) -> int:
+    """
+    从实际区块数据中解析出生高度。
+    如果区块还未落盘，则回退到配置中的出生高度。
+    """
+    chunk_x = int(block_x) >> 4
+    chunk_z = int(block_z) >> 4
+    chunk_blocks = server.world_storage.load_generated_chunk(chunk_x, chunk_z)
+    if chunk_blocks is None:
+        return int(server.spawn_position[1])
+
+    local_x = int(block_x) & 15
+    local_z = int(block_z) & 15
+    for y_index in range(len(chunk_blocks) - 1, -1, -1):
+        if chunk_blocks[y_index][local_z][local_x] != 0:
+            return y_index - 64 + 1
+    return int(server.spawn_position[1])
+
+
+def _sorted_chunk_coords(center_cx: int, center_cz: int, view_distance: int) -> list[tuple[int, int]]:
+    """按与出生点区块的 Chebyshev 距离从近到远排序。"""
+    coords = [
+        (cx, cz)
+        for cx in range(center_cx - view_distance, center_cx + view_distance + 1)
+        for cz in range(center_cz - view_distance, center_cz + view_distance + 1)
+    ]
+    coords.sort(key=lambda pos: (max(abs(pos[0] - center_cx), abs(pos[1] - center_cz)),
+                                 abs(pos[0] - center_cx) + abs(pos[1] - center_cz),
+                                 pos[0], pos[1]))
+    return coords
+
+
+async def _send_chunk_batch(conn: Connection, chunk_results):
+    """发送一批区块。"""
+    if not chunk_results or not conn.alive:
+        return
+
+    await conn.send_packet(0x0D, b'')
+    for cx, cz, motion_blocking, world_surface, chunk_data in chunk_results:
+        if not conn.alive:
+            break
+        await _send_prebuilt_chunk(conn, cx, cz, motion_blocking, world_surface, chunk_data)
+    await conn.send_packet(0x0C, write_varint(len(chunk_results)))
+
+
+async def _send_deferred_chunks(conn: Connection, server, chunk_coords, total_count: int):
+    """后台发送出生点外圈区块。"""
+    if not conn.alive or not chunk_coords:
+        return
+
+    loop = asyncio.get_event_loop()
+    start = time.time()
+
+    def _generate_deferred():
+        return server.generate_chunk_results(chunk_coords)[0]
+
+    chunk_results = await loop.run_in_executor(None, _generate_deferred)
+    await _send_chunk_batch(conn, chunk_results)
+    logger.info(
+        f"已向 {conn.username} 补发远距离区块 {len(chunk_results)} 个 "
+        f"(总计 {total_count} 个, 用时 {time.time() - start:.1f}s)"
+    )
 
 
 async def _send_synchronize_position(conn: Connection):

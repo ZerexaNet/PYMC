@@ -5,7 +5,9 @@
 
 import asyncio
 import logging
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from admin.permissions import PermissionManager
 from admin.web import WebAdminServer
@@ -18,6 +20,7 @@ from handlers.play import handle_play
 from world.storage import WorldStorage
 from world.terrain import TerrainGenerator
 from world.terrain_native import NativeTerrainGenerator
+from world.chunk import build_chunk_column_from_terrain, build_heightmap_from_terrain
 
 logger = logging.getLogger("PyMC.服务器")
 
@@ -41,6 +44,10 @@ class MinecraftServer:
         self.world_time = 1000
         self.weather = "clear"
         self.spawn_position = (0, 100, 0)
+        self.chunk_generation_multithreading = config.get(
+            "chunk-generation-multithreading", False
+        )
+        self.chunk_generation_workers = max(2, os.cpu_count() or 2)
 
         # 世界存储
         world_name = config.get("level-name", "world")
@@ -60,6 +67,7 @@ class MinecraftServer:
         self._tick_task: Optional[asyncio.Task] = None
         self.terrain_generator = None
         self._use_native_terrain = False
+        self._chunk_executor: ThreadPoolExecutor | None = None
 
     def get_next_entity_id(self) -> int:
         """获取下一个可用的实体 ID。"""
@@ -130,6 +138,13 @@ class MinecraftServer:
         logger.info(f"最大玩家数: {self.max_players}")
         logger.info(f"在线模式: {'开启' if self.online_mode else '关闭 (离线模式)'}")
         logger.info(f"数据包压缩阈值: {self.compression_threshold} 字节")
+        if self.should_use_multithreaded_generation():
+            logger.info(f"区块生成模式: 多线程 ({self.chunk_generation_workers} 线程)")
+        else:
+            mode = "单线程"
+            if self.chunk_generation_multithreading and self._use_native_terrain:
+                mode += " (原生生成器当前使用单线程)"
+            logger.info(f"区块生成模式: {mode}")
 
         startup_time = time.time() - self.start_time
         logger.info(f"启动完成，用时 {startup_time:.1f}s")
@@ -169,6 +184,80 @@ class MinecraftServer:
             spawn_y = self.terrain_generator.get_terrain_height(int(spawn_x), int(spawn_z)) + 2
         self.spawn_position = (int(spawn_x), int(spawn_y), int(spawn_z))
 
+    def should_use_multithreaded_generation(self) -> bool:
+        """是否启用多线程区块生成。"""
+        return self.chunk_generation_multithreading and not self._use_native_terrain
+
+    def _get_chunk_executor(self) -> ThreadPoolExecutor:
+        """懒初始化区块生成线程池。"""
+        if self._chunk_executor is None:
+            self._chunk_executor = ThreadPoolExecutor(
+                max_workers=self.chunk_generation_workers,
+                thread_name_prefix="PyMCChunkGen",
+            )
+        return self._chunk_executor
+
+    def _generate_or_load_chunk_result(self, cx: int, cz: int):
+        """
+        加载或生成单个区块，并返回网络发送所需的预编码结果。
+
+        返回:
+            (cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks)
+        """
+        storage = self.world_storage
+        terrain = self.terrain_generator
+
+        chunk_blocks = storage.load_generated_chunk(cx, cz)
+        was_loaded = chunk_blocks is not None
+
+        if chunk_blocks is None:
+            if self._use_native_terrain:
+                chunk_blocks, _ = terrain.generate_chunk_with_heightmap(cx, cz)
+            else:
+                chunk_blocks = terrain.generate_chunk(cx, cz)
+
+        motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
+        world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
+        chunk_data = build_chunk_column_from_terrain(chunk_blocks)
+        return (cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks)
+
+    def generate_chunk_results(self, chunk_coords: list[tuple[int, int]]):
+        """
+        批量加载/生成区块。
+
+        返回:
+            (results, loaded, generated)
+            results: [(cx, cz, motion_blocking, world_surface, chunk_data), ...]
+        """
+        results = []
+        loaded = 0
+        generated = 0
+
+        if self.should_use_multithreaded_generation():
+            executor = self._get_chunk_executor()
+            chunk_records = list(executor.map(
+                lambda pos: self._generate_or_load_chunk_result(*pos),
+                chunk_coords,
+            ))
+        else:
+            chunk_records = [
+                self._generate_or_load_chunk_result(cx, cz)
+                for cx, cz in chunk_coords
+            ]
+
+        for cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks in chunk_records:
+            results.append((cx, cz, motion_blocking, world_surface, chunk_data))
+            if was_loaded:
+                loaded += 1
+                continue
+            self.world_storage.save_generated_chunk(cx, cz, chunk_blocks)
+            generated += 1
+
+        if generated:
+            self.world_storage.flush()
+
+        return results, loaded, generated
+
     async def _pregenerate_spawn_area(self):
         """服务器启动时预生成出生点视距范围内的区块，并写入 Linear V2。"""
         spawn_x, _, spawn_z = self.spawn_position
@@ -185,28 +274,8 @@ class MinecraftServer:
             f"(中心={center_cx},{center_cz} 视距={self.view_distance})..."
         )
 
-        terrain = self.terrain_generator
-        use_native = self._use_native_terrain
-        storage = self.world_storage
-
         def _generate_spawn_chunks():
-            loaded = 0
-            generated = 0
-            for cx, cz in chunk_coords:
-                if storage.load_generated_chunk(cx, cz) is not None:
-                    loaded += 1
-                    continue
-
-                if use_native:
-                    chunk_blocks, _ = terrain.generate_chunk_with_heightmap(cx, cz)
-                else:
-                    chunk_blocks = terrain.generate_chunk(cx, cz)
-
-                storage.save_generated_chunk(cx, cz, chunk_blocks)
-                generated += 1
-
-            if generated:
-                storage.flush()
+            _, loaded, generated = self.generate_chunk_results(chunk_coords)
             return loaded, generated
 
         start = time.time()
@@ -231,6 +300,10 @@ class MinecraftServer:
         if self.web_admin:
             self.web_admin.stop()
             self.web_admin = None
+
+        if self._chunk_executor:
+            self._chunk_executor.shutdown(wait=False, cancel_futures=False)
+            self._chunk_executor = None
 
         # 断开所有连接
         for conn in list(self.connections):
