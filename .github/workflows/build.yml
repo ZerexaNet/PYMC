@@ -114,7 +114,7 @@ jobs:
           name: pymc-linux
           path: dist/PyMC-linux
 
-  release:
+    release:
     name: 发布 Release
     needs:
       - build-windows
@@ -133,3 +133,28 @@ jobs:
         with:
           name: pymc-linux
           path: release_files
+
+      - name: 列出发布文件
+        run: find release_files -maxdepth 3 -type f
+
+      - name: 生成发布版本号
+        id: release_version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=build-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_version.outputs.tag }}
+          name: PyMC ${{ steps.release_version.outputs.tag }}
+          files: |
+            release_files/**/PyMC-windows.exe
+            release_files/**/PyMC-linux
+          draft: false
+          prerelease: true
+          generate_release_notes: true
