@@ -10,8 +10,10 @@ name: 构建并发布
 
 on:
   push:
+    branches:
+      - '**'
     tags:
-      - '*'
+      - '**'
 
 permissions:
   contents: write
@@ -27,7 +29,6 @@ jobs:
         uses: actions/checkout@v4
 
       # --- 安装 Python 3.13 ---
-      # Nuitka 4.x 对 3.14 仅实验性支持，CI 中使用稳定的 3.13
       - name: 安装 Python
         uses: actions/setup-python@v5
         with:
@@ -71,11 +72,16 @@ jobs:
           dir dist\PyMC.exe
           echo "构建成功"
 
-      # --- 从 tag 提取版本号 ---
-      - name: 提取版本号
+      # --- 生成发布版本号 ---
+      - name: 生成版本号
         id: version
         shell: bash
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=build-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       # --- 创建 Release 并上传 ---
       - name: 创建 Release
@@ -98,4 +104,5 @@ jobs:
             - C++ 原生地形生成器 (已内置)
           files: dist/PyMC.exe
           draft: false
-          prerelease: false
+          prerelease: true
+          generate_release_notes: true
