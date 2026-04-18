@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import load_config
 from network.server import MinecraftServer
+from handlers.play import execute_server_command
 
 
 def setup_logging():
@@ -89,6 +90,7 @@ async def main():
 
     # 创建服务器实例
     server = MinecraftServer(config)
+    console_task = None
 
     # 注册信号处理 (优雅关闭)
     loop = asyncio.get_event_loop()
@@ -107,6 +109,7 @@ async def main():
 
     # 启动服务器
     try:
+        console_task = asyncio.create_task(console_input_loop(server))
         await server.start()
     except KeyboardInterrupt:
         logger.info("检测到键盘中断...")
@@ -115,7 +118,37 @@ async def main():
         import traceback
         traceback.print_exc()
     finally:
+        if console_task:
+            console_task.cancel()
         await server.stop()
+
+
+async def console_input_loop(server: MinecraftServer):
+    """后台读取服务端控制台命令。"""
+    logger = logging.getLogger("PyMC.控制台")
+    await asyncio.sleep(0)
+    logger.info("控制台已就绪，可输入 help 查看命令")
+
+    while True:
+        try:
+            line = await asyncio.to_thread(sys.stdin.readline)
+        except (asyncio.CancelledError, RuntimeError):
+            raise
+        except Exception as e:
+            logger.warning(f"读取控制台输入失败: {e}")
+            return
+
+        if line == "":
+            await asyncio.sleep(0.1)
+            if not server.running:
+                return
+            continue
+
+        command = line.strip()
+        if not command:
+            continue
+
+        await execute_server_command(server, command)
 
 
 if __name__ == "__main__":
