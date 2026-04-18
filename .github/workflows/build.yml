@@ -1,0 +1,101 @@
+# ============================================================
+# PyMC 自动构建 & 发布
+# 推送 tag (如 v1.0.0) 时自动触发:
+#   1. 编译 C++ 原生地形生成器 (terrain_gen.exe)
+#   2. Nuitka 打包 Python 服务端 (PyMC.exe)
+#   3. 上传到 GitHub Release
+# ============================================================
+
+name: 构建并发布
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 构建 Windows 版本
+    runs-on: windows-latest
+
+    steps:
+      # --- 拉取代码 ---
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # --- 安装 Python 3.13 ---
+      # Nuitka 4.x 对 3.14 仅实验性支持，CI 中使用稳定的 3.13
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # --- 安装 Nuitka 及依赖 ---
+      - name: 安装 Nuitka
+        run: pip install nuitka ordered-set zstandard
+
+      # --- 安装 MinGW (用于 C++ 编译和 Nuitka 后端) ---
+      - name: 安装 MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+          version: 13.2.0
+
+      # --- 编译 C++ 原生地形生成器 ---
+      - name: 编译 terrain_gen.exe
+        run: |
+          g++ -O3 -std=c++17 -static -o native/terrain_gen.exe native/terrain_gen.cpp
+          echo "terrain_gen.exe 编译完成"
+          dir native\terrain_gen.exe
+
+      # --- Nuitka 打包 ---
+      - name: Nuitka 打包
+        run: >
+          python -m nuitka
+          --standalone
+          --onefile
+          --assume-yes-for-downloads
+          --mingw64
+          --output-dir=dist
+          --include-data-dir=native=native
+          --windows-console-mode=force
+          --output-filename=PyMC.exe
+          main.py
+
+      # --- 验证产物 ---
+      - name: 验证构建产物
+        run: |
+          dir dist\PyMC.exe
+          echo "构建成功"
+
+      # --- 从 tag 提取版本号 ---
+      - name: 提取版本号
+        id: version
+        shell: bash
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      # --- 创建 Release 并上传 ---
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: PyMC ${{ steps.version.outputs.tag }}
+          body: |
+            ## PyMC ${{ steps.version.outputs.tag }}
+
+            Minecraft Java Edition 1.21.1 (协议版本 767) 纯 Python 服务端。
+
+            ### 使用方法
+            1. 下载 `PyMC.exe`
+            2. 双击运行，服务端监听 `25565` 端口
+            3. Minecraft 客户端连接 `localhost`
+
+            ### 包含
+            - Python 服务端 (Nuitka 编译)
+            - C++ 原生地形生成器 (已内置)
+          files: dist/PyMC.exe
+          draft: false
+          prerelease: false

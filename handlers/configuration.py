@@ -1,0 +1,250 @@
+# ============================================================
+# PyMC - 配置阶段处理器
+# 发送注册表数据、完成配置并进入游戏阶段
+# ============================================================
+
+import logging
+from protocol.data_types import (
+    write_string, write_varint, write_boolean, write_identifier
+)
+from protocol.nbt import (
+    encode_nbt, NbtByte, NbtFloat, NbtLong, NbtDouble
+)
+from network.connection import Connection, ConnectionState
+
+logger = logging.getLogger("PyMC.配置")
+
+
+async def handle_configuration(conn: Connection, packet_id: int,
+                                payload: bytes, server):
+    """处理配置阶段的数据包。"""
+
+    if packet_id == 0x00:
+        # Client Information - 客户端设置信息
+        logger.debug(f"收到客户端设置信息: {conn.username}")
+
+    elif packet_id == 0x01:
+        # Custom Payload (Plugin Message) - 品牌信息等
+        logger.debug(f"收到插件消息: {conn.username}")
+
+    elif packet_id == 0x03:
+        # Finish Configuration - 客户端确认配置完成
+        await _handle_finish_configuration(conn, server)
+
+    elif packet_id == 0x07:
+        # Known Packs
+        logger.debug(f"收到已知资源包信息: {conn.username}")
+
+    else:
+        logger.debug(f"配置阶段忽略数据包: 0x{packet_id:02X}")
+
+
+async def send_configuration_packets(conn: Connection, server):
+    """发送配置阶段所需的所有数据包。"""
+
+    # 1. 发送服务端品牌信息
+    await _send_plugin_message(conn, "minecraft:brand", b'\x04PyMC')
+
+    # 2. 发送已知资源包 (Known Packs)
+    await _send_known_packs(conn)
+
+    # 3. 发送注册表数据 (Registry Data)
+    await _send_registry_data(conn)
+
+    # 4. 发送完成配置信号
+    await _send_finish_configuration(conn)
+
+
+async def _send_plugin_message(conn: Connection, channel: str, data: bytes):
+    """发送 Plugin Message 数据包 (配置阶段: 0x01)。"""
+    payload = write_identifier(channel) + data
+    await conn.send_packet(0x01, payload)
+
+
+async def _send_known_packs(conn: Connection):
+    """
+    发送 Known Packs 数据包 (0x0E)。
+    告诉客户端服务器知道的资源包。
+    """
+    payload = bytearray()
+    # 已知包数量: 1 (核心资源包)
+    payload.extend(write_varint(1))
+    payload.extend(write_string("minecraft"))   # 命名空间
+    payload.extend(write_string("core"))        # ID
+    payload.extend(write_string("1.21.1"))      # 版本
+    await conn.send_packet(0x0E, bytes(payload))
+
+
+async def _send_registry_data(conn: Connection):
+    """
+    发送所有必需的注册表数据。
+    1.20.2+ 使用 Registry Data 数据包 (0x07) 逐个发送注册表。
+    """
+
+    # --- 维度类型注册表 ---
+    await _send_single_registry(conn, "minecraft:dimension_type", {
+        "minecraft:overworld": {
+            "has_skylight": NbtByte(1),
+            "has_ceiling": NbtByte(0),
+            "ultrawarm": NbtByte(0),
+            "natural": NbtByte(1),
+            "coordinate_scale": NbtDouble(1.0),
+            "bed_works": NbtByte(1),
+            "respawn_anchor_works": NbtByte(0),
+            "min_y": 0,
+            "height": 384,
+            "logical_height": 384,
+            "infiniburn": "#minecraft:infiniburn_overworld",
+            "effects": "minecraft:overworld",
+            "ambient_light": NbtFloat(0.0),
+            "piglin_safe": NbtByte(0),
+            "has_raids": NbtByte(1),
+            "monster_spawn_light_level": 0,
+            "monster_spawn_block_light_limit": 0,
+        },
+        "minecraft:the_nether": {
+            "has_skylight": NbtByte(0),
+            "has_ceiling": NbtByte(1),
+            "ultrawarm": NbtByte(1),
+            "natural": NbtByte(0),
+            "coordinate_scale": NbtDouble(8.0),
+            "bed_works": NbtByte(0),
+            "respawn_anchor_works": NbtByte(1),
+            "min_y": 0,
+            "height": 256,
+            "logical_height": 128,
+            "infiniburn": "#minecraft:infiniburn_nether",
+            "effects": "minecraft:the_nether",
+            "ambient_light": NbtFloat(0.1),
+            "piglin_safe": NbtByte(1),
+            "has_raids": NbtByte(0),
+            "monster_spawn_light_level": 7,
+            "monster_spawn_block_light_limit": 15,
+            "fixed_time": NbtLong(18000),
+        },
+        "minecraft:the_end": {
+            "has_skylight": NbtByte(0),
+            "has_ceiling": NbtByte(0),
+            "ultrawarm": NbtByte(0),
+            "natural": NbtByte(0),
+            "coordinate_scale": NbtDouble(1.0),
+            "bed_works": NbtByte(0),
+            "respawn_anchor_works": NbtByte(0),
+            "min_y": 0,
+            "height": 256,
+            "logical_height": 256,
+            "infiniburn": "#minecraft:infiniburn_end",
+            "effects": "minecraft:the_end",
+            "ambient_light": NbtFloat(0.0),
+            "piglin_safe": NbtByte(0),
+            "has_raids": NbtByte(1),
+            "monster_spawn_light_level": 0,
+            "monster_spawn_block_light_limit": 0,
+            "fixed_time": NbtLong(6000),
+        },
+    })
+
+    # --- 生物群系注册表 ---
+    await _send_single_registry(conn, "minecraft:worldgen/biome", {
+        "minecraft:plains": {
+            "has_precipitation": NbtByte(1),
+            "temperature": NbtFloat(0.8),
+            "downfall": NbtFloat(0.4),
+            "effects": {
+                "sky_color": 7907327,
+                "water_color": 4159204,
+                "water_fog_color": 329011,
+                "fog_color": 12638463,
+            }
+        },
+    })
+
+    # --- 聊天类型注册表 ---
+    await _send_single_registry(conn, "minecraft:chat_type", {
+        "minecraft:chat": {
+            "chat": {
+                "translation_key": "chat.type.text",
+                "parameters": ["sender", "content"],
+            },
+            "narration": {
+                "translation_key": "chat.type.text.narrate",
+                "parameters": ["sender", "content"],
+            }
+        },
+    })
+
+    # --- 伤害类型注册表 ---
+    await _send_single_registry(conn, "minecraft:damage_type", {
+        "minecraft:generic": {
+            "message_id": "generic",
+            "scaling": "never",
+            "exhaustion": NbtFloat(0.0),
+        },
+        "minecraft:generic_kill": {
+            "message_id": "genericKill",
+            "scaling": "never",
+            "exhaustion": NbtFloat(0.0),
+        },
+    })
+
+    # --- 画作种类注册表 (可为空但必须发送) ---
+    await _send_single_registry(conn, "minecraft:painting_variant", {
+        "minecraft:kebab": {
+            "asset_id": "minecraft:kebab",
+            "width": 1,
+            "height": 1,
+        },
+    })
+
+    # --- 狼变种注册表 ---
+    await _send_single_registry(conn, "minecraft:wolf_variant", {
+        "minecraft:pale": {
+            "wild_texture": "minecraft:entity/wolf/wolf",
+            "tame_texture": "minecraft:entity/wolf/wolf_tame",
+            "angry_texture": "minecraft:entity/wolf/wolf_angry",
+            "biomes": "minecraft:plains",
+        },
+    })
+
+
+async def _send_single_registry(conn: Connection, registry_id: str,
+                                 entries: dict):
+    """
+    发送单个注册表的 Registry Data 数据包 (0x07)。
+    
+    格式:
+        - Identifier: 注册表 ID
+        - VarInt: 条目数量
+        - 每个条目:
+            - Identifier: 条目 ID
+            - Boolean: 是否有数据
+            - NBT: 条目数据 (如果有)
+    """
+    payload = bytearray()
+    payload.extend(write_identifier(registry_id))
+    payload.extend(write_varint(len(entries)))
+
+    for entry_id, entry_data in entries.items():
+        payload.extend(write_identifier(entry_id))
+        payload.extend(write_boolean(True))  # 有数据
+        payload.extend(encode_nbt(entry_data, with_type=True))
+
+    await conn.send_packet(0x07, bytes(payload))
+
+
+async def _send_finish_configuration(conn: Connection):
+    """发送 Finish Configuration 数据包 (0x03)。"""
+    await conn.send_packet(0x03, b'')
+
+
+async def _handle_finish_configuration(conn: Connection, server):
+    """
+    处理 Finish Configuration 数据包 (0x03)。
+    客户端确认配置完成，进入游戏阶段。
+    """
+    conn.state = ConnectionState.PLAY
+    logger.info(f"玩家 {conn.username} 完成配置，进入游戏")
+
+    # 发送 Play 阶段的初始数据包
+    from handlers.play import send_join_game
+    await send_join_game(conn, server)
