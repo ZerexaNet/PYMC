@@ -112,6 +112,32 @@ class MinecraftServer:
         from handlers.play import build_system_message_payload
         self.broadcast_packet(0x6C, build_system_message_payload(text), exclude=exclude)
 
+    def save_player_state(self, conn: Connection):
+        """保存单个玩家存档。"""
+        if not conn.username:
+            return
+        self.world_storage.save_player_data(
+            str(conn.uuid),
+            {
+                "username": conn.username,
+                "x": conn.x,
+                "y": conn.y,
+                "z": conn.z,
+                "yaw": conn.yaw,
+                "pitch": conn.pitch,
+                "health": conn.health,
+                "food": conn.food,
+                "saturation": conn.saturation,
+                "gamemode": conn.gamemode,
+                "on_ground": conn.on_ground,
+            },
+        )
+
+    def save_all_player_states(self):
+        """保存所有在线玩家存档。"""
+        for conn in self.get_online_players():
+            self.save_player_state(conn)
+
     async def start(self):
         """启动服务器。"""
         self.running = True
@@ -319,6 +345,8 @@ class MinecraftServer:
         logger.info("正在关闭服务器...")
         self.running = False
 
+        self.save_all_player_states()
+
         # 保存世界数据
         logger.info("正在保存世界数据...")
         self.world_storage.close()
@@ -390,6 +418,7 @@ class MinecraftServer:
 
             # 如果玩家已登录，通知其他玩家
             if conn.username and conn.state == ConnectionState.PLAY:
+                self.save_player_state(conn)
                 logger.info(f"玩家 {conn.username} 离开了游戏")
                 await self._handle_player_leave(conn)
 
@@ -429,6 +458,7 @@ class MinecraftServer:
 
             # 自动保存世界数据
             if self.autosave_enabled and tick_count % autosave_interval == 0:
+                self.save_all_player_states()
                 self.world_storage.flush()
 
             # 清理无效连接

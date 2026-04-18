@@ -206,22 +206,28 @@ async def send_join_game(conn: Connection, server):
     await _send_chunk_batch(conn, immediate_results)
     conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in immediate_results)
 
-    # --- 5. 基于实际出生区块修正出生点 ---
-    spawn_x, _, spawn_z = server.spawn_position
-    actual_spawn_x, actual_spawn_y, actual_spawn_z = _resolve_spawn_location(
-        server, spawn_x, spawn_z
-    )
-    server.spawn_position = (
-        int(actual_spawn_x), int(actual_spawn_y), int(actual_spawn_z)
+    # --- 5. 恢复玩家存档位置，必要时回退到安全出生点 ---
+    player_state = server.world_storage.load_player_data(str(conn.uuid))
+    target_x, target_y, target_z = _resolve_initial_player_location(
+        server, player_state
     )
     await _send_spawn_position(conn, *server.spawn_position)
 
     # --- 6. 同步玩家位置 ---
-    conn.x = float(server.spawn_position[0]) + 0.5
-    conn.y = float(actual_spawn_y)
-    conn.z = float(server.spawn_position[2]) + 0.5
+    conn.x = float(target_x) + 0.5
+    conn.y = float(target_y)
+    conn.z = float(target_z) + 0.5
+    if player_state:
+        conn.yaw = float(player_state.get("yaw", conn.yaw))
+        conn.pitch = float(player_state.get("pitch", conn.pitch))
+        conn.health = float(player_state.get("health", conn.health))
+        conn.food = int(player_state.get("food", conn.food))
+        conn.saturation = float(player_state.get("saturation", conn.saturation))
+        conn.gamemode = str(player_state.get("gamemode", server.config.get("gamemode", "creative")))
+        conn.on_ground = bool(player_state.get("on_ground", True))
+    else:
+        conn.gamemode = server.config.get("gamemode", "creative")
     conn.fall_start_y = conn.y
-    conn.gamemode = server.config.get("gamemode", "creative")
     await _send_synchronize_position(conn)
     await _send_update_health(conn)
     await _send_time_update(conn, server)
@@ -233,7 +239,7 @@ async def send_join_game(conn: Connection, server):
     logger.info(f"加载完成，用时 {load_elapsed:.1f}s")
     logger.info(
         f"玩家 {conn.username} 已成功加入游戏 "
-        f"(出生点: {server.spawn_position[0]}, {server.spawn_position[1]}, {server.spawn_position[2]})"
+        f"(位置: {int(conn.x)}, {int(conn.y)}, {int(conn.z)})"
     )
 
     if deferred_coords:
@@ -650,6 +656,48 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
     if best_choice is not None:
         return best_choice
     return int(block_x), fallback_y, int(block_z)
+
+
+def _get_block_at(server, world_x: int, world_y: int, world_z: int) -> int | None:
+    """读取世界坐标处的方块 ID。"""
+    if world_y < -64 or world_y >= 320:
+        return None
+    chunk_x = int(world_x) >> 4
+    chunk_z = int(world_z) >> 4
+    chunk_blocks = server.world_storage.load_generated_chunk(chunk_x, chunk_z)
+    if chunk_blocks is None:
+        return None
+    local_x = int(world_x) & 15
+    local_z = int(world_z) & 15
+    return int(chunk_blocks[world_y + 64][local_z][local_x])
+
+
+def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -> bool:
+    """判断一个玩家站立位置是否安全。"""
+    foot_block = _get_block_at(server, world_x, world_y, world_z)
+    head_block = _get_block_at(server, world_x, world_y + 1, world_z)
+    below_block = _get_block_at(server, world_x, world_y - 1, world_z)
+    if foot_block is None or head_block is None or below_block is None:
+        return False
+    if foot_block not in (AIR, WATER) or head_block not in (AIR, WATER):
+        return False
+    return below_block not in (AIR, WATER, LAVA)
+
+
+def _resolve_initial_player_location(server, player_state: dict | None) -> tuple[int, int, int]:
+    """优先使用玩家存档位置，位置无效时回退到安全出生点。"""
+    if player_state is not None:
+        saved_x = int(float(player_state.get("x", server.spawn_position[0])))
+        saved_y = int(float(player_state.get("y", server.spawn_position[1])))
+        saved_z = int(float(player_state.get("z", server.spawn_position[2])))
+        if _is_safe_player_location(server, saved_x, saved_y, saved_z):
+            return saved_x, saved_y, saved_z
+        return _resolve_spawn_location(server, saved_x, saved_z)
+
+    spawn_x, _, spawn_z = server.spawn_position
+    resolved = _resolve_spawn_location(server, spawn_x, spawn_z)
+    server.spawn_position = (int(resolved[0]), int(resolved[1]), int(resolved[2]))
+    return resolved
 
 
 def _sorted_chunk_coords(center_cx: int, center_cz: int, view_distance: int) -> list[tuple[int, int]]:
