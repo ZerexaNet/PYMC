@@ -74,6 +74,27 @@ def _find_native_binary() -> str | None:
                     seen.add(candidate)
                     candidates.append(candidate)
 
+        # 兼容 standalone / onefile 等不同打包布局，在根目录附近再做一次浅层扫描。
+        for name in binary_names:
+            direct = root / name
+            if direct not in seen:
+                seen.add(direct)
+                candidates.append(direct)
+        try:
+            for pattern in ("terrain_gen*", "native/terrain_gen*"):
+                for candidate in root.glob(pattern):
+                    resolved = candidate.resolve()
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        candidates.append(resolved)
+                for candidate in root.glob(f"*/{pattern}"):
+                    resolved = candidate.resolve()
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        candidates.append(resolved)
+        except Exception:
+            pass
+
     for path in candidates:
         if path.exists() and path.is_file():
             if os.name == "nt" or os.access(path, os.X_OK):
