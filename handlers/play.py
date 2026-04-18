@@ -318,9 +318,6 @@ async def _send_login_play(conn: Connection, server):
     # Portal Cooldown (VarInt)
     payload.extend(write_varint(0))
 
-    # Sea Level (VarInt) - 1.21.1 新增
-    payload.extend(write_varint(63))
-
     # Enforces Secure Chat (Boolean)
     payload.extend(write_boolean(False))
 
