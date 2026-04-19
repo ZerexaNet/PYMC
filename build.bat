@@ -94,6 +94,7 @@ echo.
     --include-package=world ^
     --include-module=config ^
     --include-data-dir=native=native ^
+    --include-data-files=native/terrain_gen.exe=terrain_gen.exe ^
     --include-data-files=world/blocks.json=world/blocks.json ^
     --follow-imports ^
     --assume-yes-for-downloads ^

@@ -37,6 +37,7 @@ import struct
 import time
 import uuid
 import asyncio
+import math
 from protocol.data_types import (
     write_varint, write_string, write_boolean, write_int, write_long,
     write_byte, write_ubyte, write_float, write_double, write_short,
@@ -687,9 +688,9 @@ def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -
 def _resolve_initial_player_location(server, player_state: dict | None) -> tuple[int, int, int]:
     """优先使用玩家存档位置，位置无效时回退到安全出生点。"""
     if player_state is not None:
-        saved_x = int(float(player_state.get("x", server.spawn_position[0])))
-        saved_y = int(float(player_state.get("y", server.spawn_position[1])))
-        saved_z = int(float(player_state.get("z", server.spawn_position[2])))
+        saved_x = math.floor(float(player_state.get("x", server.spawn_position[0])))
+        saved_y = math.floor(float(player_state.get("y", server.spawn_position[1])))
+        saved_z = math.floor(float(player_state.get("z", server.spawn_position[2])))
         if _is_safe_player_location(server, saved_x, saved_y, saved_z):
             return saved_x, saved_y, saved_z
         return _resolve_spawn_location(server, saved_x, saved_z)
