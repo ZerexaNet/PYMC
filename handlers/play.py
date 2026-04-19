@@ -155,7 +155,7 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
 
     elif packet_id == 0x1F:
         # Player On Ground
-        _handle_player_on_ground(conn, payload)
+        await _handle_player_on_ground(conn, payload, server)
 
     else:
         # 忽略未处理的数据包
@@ -1733,13 +1733,26 @@ def _handle_keepalive(conn: Connection, payload: bytes):
         logger.debug(f"{conn.username} KeepAlive 响应: {keepalive_id}")
 
 
+def _read_movement_on_ground(payload: bytes, offset: int) -> tuple[bool, int]:
+    """
+    读取 1.21.1 的 MovementFlags。
+
+    低位 bit 0 表示 on_ground，其它位保留给水平碰撞等状态。
+    旧协议这里是单独 boolean，1.21.1 已改成 flags。
+    """
+    if offset >= len(payload):
+        return False, offset
+    flags = payload[offset]
+    return (flags & 0x01) != 0, offset + 1
+
+
 async def _handle_player_position(conn: Connection, payload: bytes, server):
     """处理 Player Position (0x1A)。"""
     offset = 0
     x, offset = read_double(payload, offset)
     y, offset = read_double(payload, offset)
     z, offset = read_double(payload, offset)
-    on_ground, offset = read_boolean(payload, offset)
+    on_ground, offset = _read_movement_on_ground(payload, offset)
 
     await _update_player_motion_state(conn, y, on_ground, server)
     conn.x = x
@@ -1758,7 +1771,7 @@ async def _handle_player_position_rotation(conn: Connection, payload: bytes,
     z, offset = read_double(payload, offset)
     yaw, offset = read_float(payload, offset)
     pitch, offset = read_float(payload, offset)
-    on_ground, offset = read_boolean(payload, offset)
+    on_ground, offset = _read_movement_on_ground(payload, offset)
 
     await _update_player_motion_state(conn, y, on_ground, server)
     conn.x = x
@@ -1775,7 +1788,7 @@ async def _handle_player_rotation(conn: Connection, payload: bytes, server):
     offset = 0
     yaw, offset = read_float(payload, offset)
     pitch, offset = read_float(payload, offset)
-    on_ground, offset = read_boolean(payload, offset)
+    on_ground, offset = _read_movement_on_ground(payload, offset)
 
     await _update_player_motion_state(conn, conn.y, on_ground, server)
     conn.yaw = yaw
@@ -1783,7 +1796,8 @@ async def _handle_player_rotation(conn: Connection, payload: bytes, server):
     conn.on_ground = on_ground
 
 
-def _handle_player_on_ground(conn: Connection, payload: bytes):
-    """处理 Player On Ground (0x1D)。"""
-    if payload:
-        conn.on_ground = payload[0] != 0
+async def _handle_player_on_ground(conn: Connection, payload: bytes, server):
+    """处理 Player On Ground (0x1F / StatusOnly)。"""
+    on_ground, _ = _read_movement_on_ground(payload, 0)
+    await _update_player_motion_state(conn, conn.y, on_ground, server)
+    conn.on_ground = on_ground
