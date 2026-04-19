@@ -328,6 +328,8 @@ class MinecraftServer:
         results = []
         loaded = 0
         generated = 0
+        storage = self.world_storage
+        terrain = self.terrain_generator
 
         chunk_record_map = {}
         missing_coords: list[tuple[int, int]] = []
