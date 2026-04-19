@@ -386,6 +386,56 @@ class MinecraftServer:
 
         return results, loaded, generated
 
+    def pregenerate_chunks(self, chunk_coords: list[tuple[int, int]]):
+        """
+        仅为存档预生成区块。
+
+        与 generate_chunk_results 不同，这里不会构建 biome / heightmap / chunk packet，
+        只做“检查缓存 -> 生成 -> 落盘”，避免启动阶段浪费大量 CPU 在网络编码上。
+        """
+        loaded = 0
+        generated = 0
+        storage = self.world_storage
+        terrain = self.terrain_generator
+
+        missing_coords: list[tuple[int, int]] = []
+        for cx, cz in chunk_coords:
+            if storage.load_generated_chunk(cx, cz) is not None:
+                loaded += 1
+            else:
+                missing_coords.append((cx, cz))
+
+        if not missing_coords:
+            return loaded, generated
+
+        generated_chunks: list[tuple[tuple[int, int], list[list[list[int]]]]] = []
+        if self._use_native_terrain and hasattr(terrain, "generate_chunks_with_heightmaps"):
+            native_results = terrain.generate_chunks_with_heightmaps(missing_coords)
+            generated_chunks = [
+                ((cx, cz), chunk_blocks)
+                for (cx, cz), (chunk_blocks, _) in zip(missing_coords, native_results)
+            ]
+        elif self.should_use_multithreaded_generation():
+            executor = self._get_chunk_executor()
+            generated_chunks = list(executor.map(
+                lambda pos: (pos, terrain.generate_chunk(*pos)),
+                missing_coords,
+            ))
+        else:
+            generated_chunks = [
+                ((cx, cz), terrain.generate_chunk(cx, cz))
+                for cx, cz in missing_coords
+            ]
+
+        for (cx, cz), chunk_blocks in generated_chunks:
+            storage.save_generated_chunk(cx, cz, chunk_blocks)
+            generated += 1
+
+        if generated:
+            storage.flush()
+
+        return loaded, generated
+
     async def _pregenerate_spawn_area(self):
         """服务器启动时预生成出生点视距范围内的区块，并写入 Linear V2。"""
         spawn_x, _, spawn_z = self.spawn_position
@@ -403,7 +453,7 @@ class MinecraftServer:
         )
 
         def _generate_spawn_chunks():
-            _, loaded, generated = self.generate_chunk_results(chunk_coords)
+            loaded, generated = self.pregenerate_chunks(chunk_coords)
             return loaded, generated
 
         start = time.time()
