@@ -24,6 +24,7 @@ from world.terrain import TerrainGenerator
 from world.terrain_native import NativeTerrainGenerator
 from world.chunk import build_chunk_column_from_terrain, build_heightmap_from_terrain
 from world.biomes import BiomeSampler
+from world.entities import EntityManager
 
 logger = logging.getLogger("PyMC.服务器")
 
@@ -81,12 +82,26 @@ class MinecraftServer:
         self.biome_sampler = None
         self._use_native_terrain = False
         self._chunk_executor: ThreadPoolExecutor | None = None
+        self.entity_manager = EntityManager(self)
 
     def get_next_entity_id(self) -> int:
         """获取下一个可用的实体 ID。"""
         eid = self.next_entity_id
         self.next_entity_id += 1
         return eid
+
+    def get_block_at(self, world_x: int, world_y: int, world_z: int) -> int | None:
+        """读取世界坐标处的方块 ID。"""
+        if world_y < -64 or world_y >= 320:
+            return None
+        chunk_x = int(world_x) >> 4
+        chunk_z = int(world_z) >> 4
+        chunk_blocks = self.world_storage.load_generated_chunk(chunk_x, chunk_z)
+        if chunk_blocks is None:
+            return None
+        local_x = int(world_x) & 15
+        local_z = int(world_z) & 15
+        return int(chunk_blocks[world_y + 64][local_z][local_x])
 
     def get_online_players(self) -> list[Connection]:
         """获取所有在线玩家 (已进入 Play 状态)。"""
@@ -131,6 +146,9 @@ class MinecraftServer:
                 "saturation": conn.saturation,
                 "gamemode": conn.gamemode,
                 "on_ground": conn.on_ground,
+                "air_supply": conn.air_supply,
+                "fire_ticks": conn.fire_ticks,
+                "freeze_ticks": conn.freeze_ticks,
             },
         )
 
@@ -487,6 +505,7 @@ class MinecraftServer:
 
             # 基础玩家生存规则
             await self._tick_players(tick_count)
+            self.entity_manager.tick()
 
             # 计算 tick 用时，补偿延迟
             elapsed = time.time() - tick_start
@@ -505,11 +524,13 @@ class MinecraftServer:
 
     async def _tick_players(self, tick_count: int):
         """处理最基础的玩家伤害与时间同步。"""
-        from handlers.play import _damage_player, _send_time_update
+        from handlers.play import _damage_player, _send_time_update, _tick_damage_effects
 
         for conn in self.get_online_players():
             if conn.y < -80:
                 await _damage_player(conn, 20.0, "虚空", self)
+
+            await _tick_damage_effects(conn, self, tick_count)
 
             if tick_count % 40 == 0:
                 await _send_time_update(conn, self)
