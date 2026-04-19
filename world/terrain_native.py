@@ -49,7 +49,7 @@ def _find_native_binary() -> str | None:
     """查找跨平台 terrain_gen 可执行文件路径。"""
     binary_names = ["terrain_gen.exe", "terrain_gen"]
     compiled = globals().get("__compiled__")
-    search_roots = [
+    base_roots = [
         Path(compiled.containing_dir).resolve()
         if compiled is not None and hasattr(compiled, "containing_dir")
         else None,
@@ -60,12 +60,23 @@ def _find_native_binary() -> str | None:
         Path.cwd(),
     ]
 
+    search_roots: list[Path] = []
+    for root in base_roots:
+        if root is None:
+            continue
+        current = root
+        for _ in range(4):
+            if current not in search_roots:
+                search_roots.append(current)
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+
     seen: set[Path] = set()
     candidates: list[Path] = []
 
     for root in search_roots:
-        if root is None:
-            continue
         for relative in ("native", "."):
             base = root / relative
             for name in binary_names:
@@ -88,6 +99,11 @@ def _find_native_binary() -> str | None:
                         seen.add(resolved)
                         candidates.append(resolved)
                 for candidate in root.glob(f"*/{pattern}"):
+                    resolved = candidate.resolve()
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        candidates.append(resolved)
+                for candidate in root.glob(f"*/*/{pattern}"):
                     resolved = candidate.resolve()
                     if resolved not in seen:
                         seen.add(resolved)
@@ -151,10 +167,10 @@ class NativeTerrainGenerator:
     如果子进程崩溃会自动重启。
     """
 
-    def __init__(self, seed: int):
+    def __init__(self, seed: int, binary_path: str | None = None):
         self.seed = seed
         self._process: subprocess.Popen | None = None
-        self._binary_path = _find_native_binary()
+        self._binary_path = binary_path or _find_native_binary()
 
         if self._binary_path:
             logger.info(f"找到原生地形生成器: {self._binary_path}")

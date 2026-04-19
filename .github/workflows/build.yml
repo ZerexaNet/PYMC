@@ -57,6 +57,7 @@ jobs:
           --msvc=latest
           --output-dir=dist
           --include-data-dir=native=native
+          --include-data-files=native/terrain_gen.exe=terrain_gen.exe
           --include-data-files=world/blocks.json=world/blocks.json
           --windows-console-mode=force
           --output-filename=PyMC-windows.exe
@@ -110,6 +111,7 @@ jobs:
             --assume-yes-for-downloads \
             --output-dir=dist \
             --include-data-dir=native=native \
+            --include-data-files=native/terrain_gen=terrain_gen \
             --include-data-files=world/blocks.json=world/blocks.json \
             --output-filename=PyMC-linux \
             main.py
@@ -160,6 +162,7 @@ jobs:
             --assume-yes-for-downloads \
             --output-dir=dist \
             --include-data-dir=native=native \
+            --include-data-files=native/terrain_gen=terrain_gen \
             --include-data-files=world/blocks.json=world/blocks.json \
             --output-filename=PyMC-macos \
             main.py

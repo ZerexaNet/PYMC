@@ -8,6 +8,7 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional
 from config import save_config
 from admin.permissions import PermissionManager
@@ -202,7 +203,27 @@ class MinecraftServer:
             except ValueError:
                 seed = hash(seed)
 
-        native_gen = NativeTerrainGenerator(seed)
+        explicit_native_path = None
+        binary_names = ["terrain_gen.exe", "terrain_gen"]
+        search_roots = [
+            Path.cwd(),
+            Path(__file__).resolve().parent.parent,
+            Path(getattr(os, "_MEIPASS", Path.cwd())),
+        ]
+        for root in search_roots:
+            for relative in ("native", "."):
+                base = root / relative
+                for name in binary_names:
+                    candidate = (base / name).resolve()
+                    if candidate.exists() and candidate.is_file():
+                        explicit_native_path = str(candidate)
+                        break
+                if explicit_native_path:
+                    break
+            if explicit_native_path:
+                break
+
+        native_gen = NativeTerrainGenerator(seed, binary_path=explicit_native_path)
         self.biome_sampler = BiomeSampler(seed)
         if native_gen.available:
             self.terrain_generator = native_gen

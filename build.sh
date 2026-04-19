@@ -57,6 +57,7 @@ python3 -m nuitka \
     --include-package=world \
     --include-module=config \
     --include-data-dir=native=native \
+    --include-data-files=native/terrain_gen=terrain_gen \
     --include-data-files=world/blocks.json=world/blocks.json \
     --follow-imports \
     --assume-yes-for-downloads \
