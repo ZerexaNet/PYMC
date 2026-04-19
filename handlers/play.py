@@ -55,10 +55,17 @@ from world.terrain import TerrainGenerator
 from world.blocks import (
     AIR, WATER, LAVA, GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL,
     MOSS_BLOCK, SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY, STONE,
+    FIRE, SOUL_FIRE, CACTUS, WATER_CAULDRON, LAVA_CAULDRON,
+    MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH,
+    POWDER_SNOW, POWDER_SNOW_CAULDRON,
 )
 
 logger = logging.getLogger("PyMC.游戏")
 CHUNK_STREAM_BATCH_SIZE = 32
+PASSABLE_BLOCKS = {
+    AIR, WATER, LAVA, FIRE, SOUL_FIRE, WATER_CAULDRON, LAVA_CAULDRON,
+    POWDER_SNOW, POWDER_SNOW_CAULDRON,
+}
 
 COMMAND_ALIASES = {
     "teleport": "tp",
@@ -74,9 +81,9 @@ RECOGNIZED_BUT_UNSUPPORTED = {
     "forceload", "function", "gamerule", "give", "item", "jfr", "locate",
     "loot", "particle", "perf", "place", "playsound", "publish", "random",
     "recipe", "return", "ride", "schedule", "scoreboard", "setblock",
-    "setidletimeout", "spawnpoint", "spectate", "spreadplayers", "summon",
+    "setidletimeout", "spawnpoint", "spectate", "spreadplayers",
     "tag", "team", "teammsg", "tellraw", "title", "transfer", "trigger",
-    "worldborder", "xp", "kill",
+    "worldborder", "xp",
 }
 
 ALL_VANILLA_COMMAND_NAMES = sorted({
@@ -93,7 +100,7 @@ ALL_VANILLA_COMMAND_NAMES = sorted({
     "teleport", "tell", "tellraw", "time", "title", "tm", "tp", "transfer",
     "trigger", "w", "weather", "whitelist", "worldborder", "xp",
     # PyMC 扩展
-    "group", "perm", "save-status",
+    "group", "perm", "save-status", "entities",
 })
 
 
@@ -227,6 +234,9 @@ async def send_join_game(conn: Connection, server):
         conn.saturation = float(player_state.get("saturation", conn.saturation))
         conn.gamemode = str(player_state.get("gamemode", server.config.get("gamemode", "creative")))
         conn.on_ground = bool(player_state.get("on_ground", True))
+        conn.air_supply = int(player_state.get("air_supply", 300))
+        conn.fire_ticks = int(player_state.get("fire_ticks", 0))
+        conn.freeze_ticks = int(player_state.get("freeze_ticks", 0))
     else:
         conn.gamemode = server.config.get("gamemode", "creative")
     conn.fall_start_y = conn.y
@@ -674,6 +684,16 @@ def _get_block_at(server, world_x: int, world_y: int, world_z: int) -> int | Non
     return int(chunk_blocks[world_y + 64][local_z][local_x])
 
 
+def _player_block_position(conn: Connection) -> tuple[int, int, int]:
+    """将玩家坐标转换为脚部所在方块坐标。"""
+    return math.floor(conn.x), math.floor(conn.y), math.floor(conn.z)
+
+
+def _is_suffocating_block(block_id: int | None) -> bool:
+    """是否为会造成窒息的实体方块。"""
+    return block_id is not None and block_id not in PASSABLE_BLOCKS
+
+
 def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -> bool:
     """判断一个玩家站立位置是否安全。"""
     foot_block = _get_block_at(server, world_x, world_y, world_z)
@@ -719,8 +739,12 @@ async def _damage_player(conn: Connection, amount: float, reason: str, server):
     """对玩家造成基础伤害。死亡时回到出生点。"""
     if not conn.alive or conn.gamemode in {"creative", "spectator"}:
         return
+    if conn.damage_cooldown_ticks > 0 and conn.last_damage_reason == reason:
+        return
 
     conn.health = max(0.0, conn.health - amount)
+    conn.damage_cooldown_ticks = 10
+    conn.last_damage_reason = reason
     await _send_update_health(conn)
 
     if conn.health > 0:
@@ -738,6 +762,11 @@ async def _damage_player(conn: Connection, amount: float, reason: str, server):
     conn.health = 20.0
     conn.food = 20
     conn.saturation = 5.0
+    conn.air_supply = 300
+    conn.fire_ticks = 0
+    conn.freeze_ticks = 0
+    conn.damage_cooldown_ticks = 0
+    conn.last_damage_reason = ""
     await _send_synchronize_position(conn)
     await _send_update_health(conn)
 
@@ -883,6 +912,91 @@ async def _send_update_health(conn: Connection):
     payload.extend(write_varint(int(conn.food)))
     payload.extend(write_float(float(conn.saturation)))
     await conn.send_packet(0x62, bytes(payload))
+
+
+async def _tick_damage_effects(conn: Connection, server, tick_count: int):
+    """结算基础环境伤害与简化生存回复。"""
+    if not conn.alive or conn.gamemode in {"creative", "spectator"}:
+        conn.air_supply = 300
+        conn.fire_ticks = 0
+        conn.freeze_ticks = 0
+        conn.damage_cooldown_ticks = 0
+        conn.last_damage_reason = ""
+        return
+
+    if conn.damage_cooldown_ticks > 0:
+        conn.damage_cooldown_ticks -= 1
+        if conn.damage_cooldown_ticks == 0:
+            conn.last_damage_reason = ""
+
+    block_x, block_y, block_z = _player_block_position(conn)
+    foot_block = _get_block_at(server, block_x, block_y, block_z)
+    head_block = _get_block_at(server, block_x, block_y + 1, block_z)
+    below_block = _get_block_at(server, block_x, block_y - 1, block_z)
+
+    side_blocks = {
+        _get_block_at(server, block_x + 1, block_y, block_z),
+        _get_block_at(server, block_x - 1, block_y, block_z),
+        _get_block_at(server, block_x, block_y, block_z + 1),
+        _get_block_at(server, block_x, block_y, block_z - 1),
+        _get_block_at(server, block_x + 1, block_y + 1, block_z),
+        _get_block_at(server, block_x - 1, block_y + 1, block_z),
+        _get_block_at(server, block_x, block_y + 1, block_z + 1),
+        _get_block_at(server, block_x, block_y + 1, block_z - 1),
+    }
+
+    if _is_suffocating_block(foot_block) or _is_suffocating_block(head_block):
+        await _damage_player(conn, 1.0, "窒息", server)
+
+    if head_block in {WATER, WATER_CAULDRON}:
+        conn.air_supply = max(0, conn.air_supply - 1)
+        if conn.air_supply == 0 and tick_count % 20 == 0:
+            await _damage_player(conn, 2.0, "溺水", server)
+    else:
+        conn.air_supply = min(300, conn.air_supply + 5)
+
+    in_lava = foot_block in {LAVA, LAVA_CAULDRON} or head_block in {LAVA, LAVA_CAULDRON}
+    in_fire = foot_block in {FIRE, SOUL_FIRE} or head_block in {FIRE, SOUL_FIRE}
+    on_hot_floor = conn.on_ground and below_block in {MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE}
+    touching_cactus = CACTUS in side_blocks or foot_block == CACTUS or head_block == CACTUS
+    touching_berry = SWEET_BERRY_BUSH in side_blocks or foot_block == SWEET_BERRY_BUSH or head_block == SWEET_BERRY_BUSH
+    in_powder_snow = foot_block in {POWDER_SNOW, POWDER_SNOW_CAULDRON} or head_block in {POWDER_SNOW, POWDER_SNOW_CAULDRON}
+
+    if in_lava:
+        conn.fire_ticks = max(conn.fire_ticks, 200)
+        if tick_count % 10 == 0:
+            await _damage_player(conn, 4.0, "岩浆", server)
+    elif in_fire:
+        conn.fire_ticks = max(conn.fire_ticks, 160)
+        if tick_count % 10 == 0:
+            await _damage_player(conn, 1.0, "火焰", server)
+    elif on_hot_floor and tick_count % 20 == 0:
+        await _damage_player(conn, 1.0, "高温地面", server)
+
+    if touching_cactus and tick_count % 10 == 0:
+        await _damage_player(conn, 1.0, "仙人掌", server)
+
+    if touching_berry and tick_count % 10 == 0:
+        await _damage_player(conn, 1.0, "甜浆果丛", server)
+
+    if conn.fire_ticks > 0:
+        conn.fire_ticks = max(0, conn.fire_ticks - 1)
+        if tick_count % 20 == 0:
+            await _damage_player(conn, 1.0, "燃烧", server)
+
+    if in_powder_snow:
+        conn.freeze_ticks = min(140, conn.freeze_ticks + 1)
+        if conn.freeze_ticks >= 140 and tick_count % 40 == 0:
+            await _damage_player(conn, 1.0, "冰冻", server)
+    else:
+        conn.freeze_ticks = max(0, conn.freeze_ticks - 4)
+
+    if conn.food <= 0:
+        if tick_count % 80 == 0 and conn.health > 1.0:
+            await _damage_player(conn, 1.0, "饥饿", server)
+    elif conn.health < 20.0 and conn.food >= 18 and tick_count % 80 == 0:
+        conn.health = min(20.0, conn.health + 1.0)
+        await _send_update_health(conn)
 
 
 async def _send_time_update(conn: Connection, server):
@@ -1052,15 +1166,24 @@ async def execute_server_command(server, command: str,
         if source_conn is not None:
             level = server.permissions.get_permission_level(source_conn.username)
             await reply(f"[PyMC] 你的权限组: {level}")
-            await reply("[PyMC] 已识别原版指令: /help, /list, /msg, /me, /tp, /gamemode, /kick, /ban, /op, /whitelist, /time, /weather, /stop 等")
+            await reply("[PyMC] 已识别原版指令: /help, /list, /msg, /me, /tp, /gamemode, /summon, /kill, /entities, /kick, /ban, /op, /whitelist, /time, /weather, /stop 等")
         else:
-            await reply("[PyMC] 控制台命令: help, list, say, tp, gamemode, kick, ban, ban-ip, op, deop, whitelist, group, perm, stop")
+            await reply("[PyMC] 控制台命令: help, list, entities, summon, kill, say, tp, gamemode, kick, ban, ban-ip, op, deop, whitelist, group, perm, stop")
         return True
 
     if cmd == "list":
         players = server.get_online_players()
         names = ", ".join(p.username for p in players) if players else "无"
         await reply(f"[PyMC] 在线玩家 ({len(players)}/{server.max_players}): {names}")
+        return True
+
+    if cmd == "entities":
+        counts = server.entity_manager.count_by_kind()
+        if not counts:
+            await reply("[PyMC] 当前没有非玩家实体")
+            return True
+        summary = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
+        await reply(f"[PyMC] 当前实体统计: {summary}")
         return True
 
     if cmd == "say":
@@ -1129,6 +1252,73 @@ async def execute_server_command(server, command: str,
             await reply(f"[PyMC] 已将 {target.username} 传送到 ({x}, {y}, {z})")
         return True
 
+    if cmd == "summon":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: summon <item|pig|cow|sheep|zombie> [x] [y] [z] [额外参数]")
+            return True
+
+        entity_type = parts[1].lower()
+        coord_index = 2
+        if len(parts) >= coord_index + 3:
+            try:
+                x = float(parts[coord_index])
+                y = float(parts[coord_index + 1])
+                z = float(parts[coord_index + 2])
+                extra_index = coord_index + 3
+            except (ValueError, IndexError):
+                await reply("[PyMC] 坐标格式无效")
+                return True
+        elif source_conn is not None:
+            x, y, z = source_conn.x, source_conn.y, source_conn.z
+            extra_index = coord_index
+        else:
+            await reply("[PyMC] 控制台用法: summon <类型> <x> <y> <z> [额外参数]")
+            return True
+
+        if entity_type == "item":
+            item_name = parts[extra_index] if len(parts) > extra_index else "minecraft:stone"
+            count = 1
+            if len(parts) > extra_index + 1:
+                try:
+                    count = max(1, int(parts[extra_index + 1]))
+                except ValueError:
+                    await reply("[PyMC] 物品数量格式无效")
+                    return True
+            entity = server.entity_manager.create_item(x, y, z, item_name=item_name, count=count)
+            await reply(f"[PyMC] 已生成 item 实体 #{entity.entity_id}: {item_name} x{count}")
+            return True
+
+        if entity_type in {"pig", "cow", "sheep", "zombie"}:
+            entity = server.entity_manager.create_mob(x, y, z, mob_type=entity_type)
+            await reply(f"[PyMC] 已生成 {entity_type} 实体 #{entity.entity_id}")
+            return True
+
+        await reply("[PyMC] 当前支持 summon: item, pig, cow, sheep, zombie")
+        return True
+
+    if cmd == "kill":
+        if len(parts) < 2:
+            await reply("[PyMC] 用法: kill <实体ID|@e>")
+            return True
+        target_spec = parts[1]
+        if target_spec == "@e":
+            entities = list(server.entity_manager.list_entities())
+            for entity in entities:
+                server.entity_manager.remove_entity(entity.entity_id)
+            await reply(f"[PyMC] 已移除 {len(entities)} 个实体")
+            return True
+        try:
+            entity_id = int(target_spec)
+        except ValueError:
+            await reply("[PyMC] 实体 ID 格式无效")
+            return True
+        entity = server.entity_manager.remove_entity(entity_id)
+        if entity is None:
+            await reply(f"[PyMC] 未找到实体: {entity_id}")
+            return True
+        await reply(f"[PyMC] 已移除实体 #{entity_id} ({entity.kind})")
+        return True
+
     if cmd == "gamemode":
         target = source_conn
         mode_name = parts[1].lower() if len(parts) >= 2 else None
@@ -1151,6 +1341,13 @@ async def execute_server_command(server, command: str,
             return True
 
         mode = mode_map[mode_name]
+        normalized_mode = {
+            0: "survival",
+            1: "creative",
+            2: "adventure",
+            3: "spectator",
+        }[mode]
+        target.gamemode = normalized_mode
         await _send_game_event(target, 3, float(mode))
         await send_system_message(target, f"[PyMC] 游戏模式已切换为 {mode_names.get(mode, '未知')}")
         if source_conn is None:
@@ -1161,6 +1358,36 @@ async def execute_server_command(server, command: str,
         seed = server.config.get("level-seed", "")
         text = f"[PyMC] 世界种子: {seed if seed != '' else 0}"
         await reply(text)
+        return True
+
+    if cmd == "damage":
+        target = source_conn
+        amount_index = 1
+        reason = "命令"
+        if source_conn is None:
+            if len(parts) < 3:
+                await reply("[PyMC] 用法: damage <玩家> <伤害值> [原因]")
+                return True
+            target = server.find_player(parts[1])
+            amount_index = 2
+            if target is None:
+                await reply(f"[PyMC] 未找到玩家: {parts[1]}")
+                return True
+        elif len(parts) < 2:
+            await reply("[PyMC] 用法: /damage <伤害值> [原因]")
+            return True
+
+        try:
+            amount = float(parts[amount_index])
+        except (ValueError, IndexError):
+            await reply("[PyMC] 伤害值格式无效")
+            return True
+
+        if len(parts) > amount_index + 1:
+            reason = " ".join(parts[amount_index + 1:])
+        await _damage_player(target, max(0.0, amount), reason, server)
+        if source_conn is None:
+            await reply(f"[PyMC] 已对 {target.username} 造成 {amount:.1f} 点{reason}伤害")
         return True
 
     if cmd == "difficulty":
