@@ -474,7 +474,7 @@ class MinecraftServer:
         remove_info = build_player_info_remove(conn)
         remove_entity = build_remove_entities([conn.entity_id])
         self.broadcast_packet(0x3D, remove_info)  # Player Info Remove
-        self.broadcast_packet(0x42, remove_entity)  # Remove Entities
+        self.broadcast_packet(0x47, remove_entity)  # Remove Entities
 
     async def _game_loop(self):
         """
@@ -506,6 +506,8 @@ class MinecraftServer:
             # 基础玩家生存规则
             await self._tick_players(tick_count)
             self.entity_manager.tick()
+            if tick_count % 10 == 0:
+                await self._tick_entity_sync()
 
             # 计算 tick 用时，补偿延迟
             elapsed = time.time() - tick_start
@@ -534,3 +536,25 @@ class MinecraftServer:
 
             if tick_count % 40 == 0:
                 await _send_time_update(conn, self)
+
+    async def _tick_entity_sync(self):
+        """向客户端同步基础实体位置与移除。"""
+        from handlers.play import _send_entity_teleport, broadcast_entity_remove
+
+        removed_ids: list[int] = []
+        entities = self.entity_manager.list_entities()
+        live_ids = {entity.entity_id for entity in entities}
+        for entity_id in list(self.entity_manager.entities.keys()):
+            if entity_id not in live_ids:
+                removed_ids.append(entity_id)
+
+        if removed_ids:
+            await broadcast_entity_remove(self, removed_ids)
+
+        for conn in self.get_online_players():
+            for entity in entities:
+                if entity.kind != "orb":
+                    continue
+                if entity.distance_squared_to(conn.x, conn.y, conn.z) > (self.view_distance * 16) ** 2:
+                    continue
+                await _send_entity_teleport(conn, entity)
