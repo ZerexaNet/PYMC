@@ -508,7 +508,7 @@ class MinecraftServer:
         remove_info = build_player_info_remove(conn)
         remove_entity = build_remove_entities([conn.entity_id])
         self.broadcast_packet(0x3D, remove_info)  # Player Info Remove
-        self.broadcast_packet(0x47, remove_entity)  # Remove Entities
+        self.broadcast_packet(0x42, remove_entity)  # Remove Entities
 
     async def _game_loop(self):
         """

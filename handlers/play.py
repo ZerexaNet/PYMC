@@ -19,7 +19,10 @@ Play 阶段数据包处理器。
   0x42  - Remove Entities (entity_destroy)
   0x54  - Set Center Chunk (update_view_position)
   0x56  - Set Default Spawn Position (spawn_position)
+  0x5D  - Update Health
+  0x64  - Update Time
   0x6C  - System Chat Message (system_chat)
+  0x70  - Entity Teleport
 
 --- 客户端发送 (Serverbound) ---
   0x00  - Confirm Teleportation
@@ -912,7 +915,7 @@ async def _send_update_health(conn: Connection):
     payload.extend(write_float(float(conn.health)))
     payload.extend(write_varint(int(conn.food)))
     payload.extend(write_float(float(conn.saturation)))
-    await conn.send_packet(0x62, bytes(payload))
+    await conn.send_packet(0x5D, bytes(payload))
 
 
 async def _tick_damage_effects(conn: Connection, server, tick_count: int):
@@ -1005,8 +1008,7 @@ async def _send_time_update(conn: Connection, server):
     payload = bytearray()
     payload.extend(write_long(int(server.world_time)))
     payload.extend(write_long(int(server.world_time)))
-    payload.extend(write_boolean(True))
-    await conn.send_packet(0x6B, bytes(payload))
+    await conn.send_packet(0x64, bytes(payload))
 
 
 def _entity_within_tracking_range(entity, conn: Connection, range_chunks: int = 10) -> bool:
@@ -1033,14 +1035,14 @@ async def _send_entity_teleport(conn: Connection, entity):
     payload.extend(write_angle(entity.yaw))
     payload.extend(write_angle(entity.pitch))
     payload.extend(write_boolean(entity.on_ground))
-    await conn.send_packet(0x77, bytes(payload))
+    await conn.send_packet(0x70, bytes(payload))
 
 
 async def _send_entity_remove(conn: Connection, entity_ids: list[int]):
     if not entity_ids:
         return
     payload = build_remove_entities(entity_ids)
-    await conn.send_packet(0x47, payload)
+    await conn.send_packet(0x42, payload)
 
 
 async def _send_visible_entities_to_player(conn: Connection, server):
