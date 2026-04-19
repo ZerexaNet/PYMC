@@ -26,13 +26,15 @@ Play 阶段数据包处理器。
 
 --- 客户端发送 (Serverbound) ---
   0x00  - Confirm Teleportation
-  0x04  - Chat Command
-  0x05  - Chat Message
-  0x18  - Keep Alive
-  0x1A  - Player Position
-  0x1B  - Player Position and Rotation
-  0x1C  - Player Rotation
-  0x1D  - Player On Ground
+  0x05  - Chat Command
+  0x06  - Signed Chat Command
+  0x07  - Chat Message
+  0x09  - Chunk Batch Received
+  0x1A  - Keep Alive
+  0x1C  - Player Position
+  0x1D  - Player Position and Rotation
+  0x1E  - Player Rotation
+  0x1F  - Player On Ground
 """
 
 import logging
@@ -119,39 +121,39 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
         # Confirm Teleportation
         _handle_confirm_teleportation(conn, payload)
 
-    elif packet_id == 0x03:
-        # Chat Command (聊天命令, 带签名)
-        await _handle_chat_command(conn, payload, server)
-
-    elif packet_id == 0x04:
-        # Chat Command (聊天命令, 无签名)
-        await _handle_chat_command(conn, payload, server)
-
     elif packet_id == 0x05:
+        # Chat Command
+        await _handle_chat_command(conn, payload, server)
+
+    elif packet_id == 0x06:
+        # Signed Chat Command
+        await _handle_chat_command(conn, payload, server)
+
+    elif packet_id == 0x07:
         # Chat Message (聊天消息)
         await _handle_chat_message(conn, payload, server)
 
-    elif packet_id == 0x07:
+    elif packet_id == 0x09:
         # Chunk Batch Received (客户端确认区块批次)
         pass  # 不需要特殊处理
 
-    elif packet_id == 0x18:
+    elif packet_id == 0x1A:
         # Keep Alive
         _handle_keepalive(conn, payload)
 
-    elif packet_id == 0x1A:
+    elif packet_id == 0x1C:
         # Player Position
         await _handle_player_position(conn, payload, server)
 
-    elif packet_id == 0x1B:
+    elif packet_id == 0x1D:
         # Player Position and Rotation
         await _handle_player_position_rotation(conn, payload, server)
 
-    elif packet_id == 0x1C:
+    elif packet_id == 0x1E:
         # Player Rotation
         await _handle_player_rotation(conn, payload, server)
 
-    elif packet_id == 0x1D:
+    elif packet_id == 0x1F:
         # Player On Ground
         _handle_player_on_ground(conn, payload)
 
