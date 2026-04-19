@@ -158,6 +158,42 @@ class MobEntity(Entity):
             self.on_ground = False
 
 
+@dataclass
+class ExperienceOrbEntity(Entity):
+    count: int = 1
+
+    def __init__(self, entity_id: int, x: float, y: float, z: float, count: int = 1):
+        super().__init__(entity_id=entity_id, kind="orb", x=x, y=y, z=z)
+        self.count = count
+        self.metadata = {"count": count}
+
+    def tick(self, server):
+        super().tick(server)
+        self.vy = _clamp(self.vy - 0.03, -3.92, 3.92)
+        self.x += self.vx
+        self.y += self.vy
+        self.z += self.vz
+        self.vx *= 0.98
+        self.vy *= 0.98
+        self.vz *= 0.98
+
+        foot_x = math.floor(self.x)
+        foot_y = math.floor(self.y - 0.1)
+        foot_z = math.floor(self.z)
+        block_below = server.get_block_at(foot_x, foot_y, foot_z)
+        if block_below not in (None, 0, 80):
+            self.on_ground = True
+            self.vy = 0.0
+            self.y = foot_y + 0.2
+            self.vx *= 0.7
+            self.vz *= 0.7
+        else:
+            self.on_ground = False
+
+        if self.age_ticks >= 6000 and not self.persistent:
+            self.alive = False
+
+
 class EntityManager:
     def __init__(self, server):
         self.server = server
@@ -172,6 +208,11 @@ class EntityManager:
 
     def create_mob(self, x: float, y: float, z: float, mob_type: str = "pig") -> MobEntity:
         entity = MobEntity(self.server.get_next_entity_id(), x, y, z, mob_type)
+        self.add_entity(entity)
+        return entity
+
+    def create_experience_orb(self, x: float, y: float, z: float, count: int = 1) -> ExperienceOrbEntity:
+        entity = ExperienceOrbEntity(self.server.get_next_entity_id(), x, y, z, count)
         self.add_entity(entity)
         return entity
 

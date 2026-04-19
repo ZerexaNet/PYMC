@@ -41,7 +41,7 @@ import math
 from protocol.data_types import (
     write_varint, write_string, write_boolean, write_int, write_long,
     write_byte, write_ubyte, write_float, write_double, write_short,
-    write_uuid, write_identifier, write_position,
+    write_uuid, write_identifier, write_position, write_angle,
     read_varint, read_string, read_double, read_float, read_boolean,
     read_long, read_byte
 )
@@ -246,6 +246,7 @@ async def send_join_game(conn: Connection, server):
 
     # --- 7. 通知其他玩家 ---
     await _broadcast_player_join(conn, server)
+    await _send_visible_entities_to_player(conn, server)
 
     load_elapsed = time.time() - load_start
     logger.info(f"加载完成，用时 {load_elapsed:.1f}s")
@@ -1008,6 +1009,59 @@ async def _send_time_update(conn: Connection, server):
     await conn.send_packet(0x6B, bytes(payload))
 
 
+def _entity_within_tracking_range(entity, conn: Connection, range_chunks: int = 10) -> bool:
+    max_distance = (range_chunks * 16) ** 2
+    return entity.distance_squared_to(conn.x, conn.y, conn.z) <= max_distance
+
+
+async def _send_experience_orb_spawn(conn: Connection, entity):
+    payload = bytearray()
+    payload.extend(write_varint(entity.entity_id))
+    payload.extend(write_double(entity.x))
+    payload.extend(write_double(entity.y))
+    payload.extend(write_double(entity.z))
+    payload.extend(write_short(int(entity.metadata.get("count", 1))))
+    await conn.send_packet(0x02, bytes(payload))
+
+
+async def _send_entity_teleport(conn: Connection, entity):
+    payload = bytearray()
+    payload.extend(write_varint(entity.entity_id))
+    payload.extend(write_double(entity.x))
+    payload.extend(write_double(entity.y))
+    payload.extend(write_double(entity.z))
+    payload.extend(write_angle(entity.yaw))
+    payload.extend(write_angle(entity.pitch))
+    payload.extend(write_boolean(entity.on_ground))
+    await conn.send_packet(0x77, bytes(payload))
+
+
+async def _send_entity_remove(conn: Connection, entity_ids: list[int]):
+    if not entity_ids:
+        return
+    payload = build_remove_entities(entity_ids)
+    await conn.send_packet(0x47, payload)
+
+
+async def _send_visible_entities_to_player(conn: Connection, server):
+    for entity in server.entity_manager.list_entities():
+        if entity.kind == "orb" and _entity_within_tracking_range(entity, conn, server.view_distance):
+            await _send_experience_orb_spawn(conn, entity)
+
+
+async def broadcast_entity_spawn(server, entity):
+    for conn in server.get_online_players():
+        if not _entity_within_tracking_range(entity, conn, server.view_distance):
+            continue
+        if entity.kind == "orb":
+            await _send_experience_orb_spawn(conn, entity)
+
+
+async def broadcast_entity_remove(server, entity_ids: list[int]):
+    for conn in server.get_online_players():
+        await _send_entity_remove(conn, entity_ids)
+
+
 # ============================================================
 # 玩家信息 (Player Info) 构建
 # ============================================================
@@ -1254,7 +1308,7 @@ async def execute_server_command(server, command: str,
 
     if cmd == "summon":
         if len(parts) < 2:
-            await reply("[PyMC] 用法: summon <item|pig|cow|sheep|zombie> [x] [y] [z] [额外参数]")
+            await reply("[PyMC] 用法: summon <orb|item|pig|cow|sheep|zombie> [x] [y] [z] [额外参数]")
             return True
 
         entity_type = parts[1].lower()
@@ -1273,6 +1327,19 @@ async def execute_server_command(server, command: str,
             extra_index = coord_index
         else:
             await reply("[PyMC] 控制台用法: summon <类型> <x> <y> <z> [额外参数]")
+            return True
+
+        if entity_type == "orb":
+            count = 1
+            if len(parts) > extra_index:
+                try:
+                    count = max(1, int(parts[extra_index]))
+                except ValueError:
+                    await reply("[PyMC] 经验球数量格式无效")
+                    return True
+            entity = server.entity_manager.create_experience_orb(x, y, z, count=count)
+            await broadcast_entity_spawn(server, entity)
+            await reply(f"[PyMC] 已生成经验球实体 #{entity.entity_id} x{count}")
             return True
 
         if entity_type == "item":
@@ -1303,8 +1370,10 @@ async def execute_server_command(server, command: str,
         target_spec = parts[1]
         if target_spec == "@e":
             entities = list(server.entity_manager.list_entities())
+            removed_ids = [entity.entity_id for entity in entities]
             for entity in entities:
                 server.entity_manager.remove_entity(entity.entity_id)
+            await broadcast_entity_remove(server, removed_ids)
             await reply(f"[PyMC] 已移除 {len(entities)} 个实体")
             return True
         try:
@@ -1316,6 +1385,7 @@ async def execute_server_command(server, command: str,
         if entity is None:
             await reply(f"[PyMC] 未找到实体: {entity_id}")
             return True
+        await broadcast_entity_remove(server, [entity_id])
         await reply(f"[PyMC] 已移除实体 #{entity_id} ({entity.kind})")
         return True
 
