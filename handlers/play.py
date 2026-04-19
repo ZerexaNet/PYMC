@@ -983,7 +983,6 @@ def _set_world_block(server, x: int, y: int, z: int, block_state: int) -> bool:
     chunk_blocks[y_index][local_z][local_x] = int(block_state)
     chunk_biomes = server.biome_sampler.build_chunk_biome_sections(chunk_x, chunk_z, chunk_blocks)
     server.world_storage.save_generated_chunk(chunk_x, chunk_z, chunk_blocks, chunk_biomes)
-    server.world_storage.flush()
     return True
 
 
@@ -1880,15 +1879,15 @@ def _handle_held_item_slot(conn: Connection, payload: bytes):
 
 
 async def _handle_block_dig(conn: Connection, payload: bytes, server):
-    """处理挖方块。当前在 start/finish dig 时都直接更新方块并落盘。"""
+    """处理挖方块。仅在 finished digging 时真正破坏方块。"""
     offset = 0
     status, offset = read_varint(payload, offset)
     (x, y, z), offset = read_position(payload, offset)
     _, offset = read_byte(payload, offset)  # face
     _, offset = read_varint(payload, offset)  # sequence
 
-    # 0 = started digging, 2 = finished digging
-    if status not in {0, 2}:
+    # 2 = finished digging
+    if status != 2:
         return
     current = _get_block_at(server, x, y, z)
     if current is None or current == AIR:
