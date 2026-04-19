@@ -48,7 +48,7 @@ from protocol.data_types import (
     write_byte, write_ubyte, write_float, write_double, write_short,
     write_uuid, write_identifier, write_position, write_angle,
     read_varint, read_string, read_double, read_float, read_boolean,
-    read_long, read_byte
+    read_long, read_byte, read_position
 )
 from protocol.nbt import encode_nbt, NbtLong, NbtLongArray
 from network.connection import Connection, ConnectionState
@@ -63,6 +63,7 @@ from world.blocks import (
     FIRE, SOUL_FIRE, CACTUS, WATER_CAULDRON, LAVA_CAULDRON,
     MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH,
     POWDER_SNOW, POWDER_SNOW_CAULDRON,
+    COBBLESTONE, OAK_PLANKS, GLASS, OAK_LOG, TORCH,
 )
 
 logger = logging.getLogger("PyMC.游戏")
@@ -70,6 +71,18 @@ CHUNK_STREAM_BATCH_SIZE = 32
 PASSABLE_BLOCKS = {
     AIR, WATER, LAVA, FIRE, SOUL_FIRE, WATER_CAULDRON, LAVA_CAULDRON,
     POWDER_SNOW, POWDER_SNOW_CAULDRON,
+}
+HOTBAR_PLACEABLES = [
+    STONE, GRASS_BLOCK, DIRT, COBBLESTONE, OAK_PLANKS,
+    GLASS, SAND, OAK_LOG, TORCH,
+]
+FACE_OFFSETS = {
+    0: (0, -1, 0),
+    1: (0, 1, 0),
+    2: (0, 0, -1),
+    3: (0, 0, 1),
+    4: (-1, 0, 0),
+    5: (1, 0, 0),
 }
 
 COMMAND_ALIASES = {
@@ -156,6 +169,18 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
     elif packet_id == 0x1F:
         # Player On Ground
         await _handle_player_on_ground(conn, payload, server)
+
+    elif packet_id == 0x26:
+        # Block Dig
+        await _handle_block_dig(conn, payload, server)
+
+    elif packet_id == 0x31:
+        # Held Item Slot
+        _handle_held_item_slot(conn, payload)
+
+    elif packet_id == 0x3A:
+        # Use Item On / Block Place
+        await _handle_block_place(conn, payload, server)
 
     else:
         # 忽略未处理的数据包
@@ -918,6 +943,48 @@ async def _send_update_health(conn: Connection):
     payload.extend(write_varint(int(conn.food)))
     payload.extend(write_float(float(conn.saturation)))
     await conn.send_packet(0x5D, bytes(payload))
+
+
+async def _send_block_change(conn: Connection, x: int, y: int, z: int, block_state: int):
+    payload = bytearray()
+    payload.extend(write_position(x, y, z))
+    payload.extend(write_varint(block_state))
+    await conn.send_packet(0x09, bytes(payload))
+
+
+async def _broadcast_block_change(server, x: int, y: int, z: int, block_state: int):
+    for player in server.get_online_players():
+        if abs(player.x - x) > server.view_distance * 16 or abs(player.z - z) > server.view_distance * 16:
+            continue
+        await _send_block_change(player, x, y, z, block_state)
+
+
+def _load_chunk_for_edit(server, chunk_x: int, chunk_z: int):
+    chunk_blocks = server.world_storage.load_generated_chunk(chunk_x, chunk_z)
+    if chunk_blocks is None:
+        if getattr(server, "_use_native_terrain", False) and hasattr(server.terrain_generator, "generate_chunk_with_heightmap"):
+            chunk_blocks, _ = server.terrain_generator.generate_chunk_with_heightmap(chunk_x, chunk_z)
+        else:
+            chunk_blocks = server.terrain_generator.generate_chunk(chunk_x, chunk_z)
+    return chunk_blocks
+
+
+def _set_world_block(server, x: int, y: int, z: int, block_state: int) -> bool:
+    if y < -64 or y >= 320:
+        return False
+    chunk_x = x >> 4
+    chunk_z = z >> 4
+    chunk_blocks = _load_chunk_for_edit(server, chunk_x, chunk_z)
+    local_x = x & 15
+    local_z = z & 15
+    y_index = y + 64
+    if y_index < 0 or y_index >= len(chunk_blocks):
+        return False
+    chunk_blocks[y_index][local_z][local_x] = int(block_state)
+    chunk_biomes = server.biome_sampler.build_chunk_biome_sections(chunk_x, chunk_z, chunk_blocks)
+    server.world_storage.save_generated_chunk(chunk_x, chunk_z, chunk_blocks, chunk_biomes)
+    server.world_storage.flush()
+    return True
 
 
 async def _tick_damage_effects(conn: Connection, server, tick_count: int):
@@ -1801,3 +1868,61 @@ async def _handle_player_on_ground(conn: Connection, payload: bytes, server):
     on_ground, _ = _read_movement_on_ground(payload, 0)
     await _update_player_motion_state(conn, conn.y, on_ground, server)
     conn.on_ground = on_ground
+
+
+def _handle_held_item_slot(conn: Connection, payload: bytes):
+    """处理热键栏选中槽位。"""
+    if len(payload) < 2:
+        return
+    slot = struct.unpack_from(">h", payload, 0)[0]
+    if 0 <= slot < 9:
+        conn.selected_hotbar_slot = slot
+
+
+async def _handle_block_dig(conn: Connection, payload: bytes, server):
+    """处理挖方块。当前在 start/finish dig 时都直接更新方块并落盘。"""
+    offset = 0
+    status, offset = read_varint(payload, offset)
+    (x, y, z), offset = read_position(payload, offset)
+    _, offset = read_byte(payload, offset)  # face
+    _, offset = read_varint(payload, offset)  # sequence
+
+    # 0 = started digging, 2 = finished digging
+    if status not in {0, 2}:
+        return
+    current = _get_block_at(server, x, y, z)
+    if current is None or current == AIR:
+        return
+    if not _set_world_block(server, x, y, z, AIR):
+        return
+    await _broadcast_block_change(server, x, y, z, AIR)
+
+
+async def _handle_block_place(conn: Connection, payload: bytes, server):
+    """处理基础放方块。使用固定热键栏方块映射，先把存档读写链打通。"""
+    offset = 0
+    _, offset = read_varint(payload, offset)  # hand
+    (target_x, target_y, target_z), offset = read_position(payload, offset)
+    face, offset = read_varint(payload, offset)
+    _, offset = read_float(payload, offset)  # cursorX
+    _, offset = read_float(payload, offset)  # cursorY
+    _, offset = read_float(payload, offset)  # cursorZ
+    _, offset = read_boolean(payload, offset)  # insideBlock
+    _, offset = read_boolean(payload, offset)  # worldBorderHit
+    _, offset = read_varint(payload, offset)  # sequence
+
+    dx, dy, dz = FACE_OFFSETS.get(face, (0, 1, 0))
+    place_x = target_x + dx
+    place_y = target_y + dy
+    place_z = target_z + dz
+
+    if place_y < -64 or place_y >= 320:
+        return
+    existing = _get_block_at(server, place_x, place_y, place_z)
+    if existing is None or existing != AIR:
+        return
+
+    block_state = HOTBAR_PLACEABLES[conn.selected_hotbar_slot % len(HOTBAR_PLACEABLES)]
+    if not _set_world_block(server, place_x, place_y, place_z, block_state):
+        return
+    await _broadcast_block_change(server, place_x, place_y, place_z, block_state)
