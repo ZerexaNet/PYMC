@@ -199,8 +199,8 @@ class MinecraftServer:
             logger.info(f"区块生成模式: 多线程 ({self.chunk_generation_workers} 线程)")
         else:
             mode = "单线程"
-            if self.chunk_generation_multithreading and self._use_native_terrain:
-                mode += " (原生生成器当前使用单线程)"
+            if self._use_native_terrain:
+                mode = f"原生生成器内部并行 ({max(2, os.cpu_count() or 2)} 线程)"
             logger.info(f"区块生成模式: {mode}")
 
         startup_time = time.time() - self.start_time
@@ -241,7 +241,11 @@ class MinecraftServer:
             if explicit_native_path:
                 break
 
-        native_gen = NativeTerrainGenerator(seed, binary_path=explicit_native_path)
+        native_gen = NativeTerrainGenerator(
+            seed,
+            binary_path=explicit_native_path,
+            worker_count=max(2, os.cpu_count() or 2),
+        )
         self.biome_sampler = BiomeSampler(seed)
         if native_gen.available:
             self.terrain_generator = native_gen
@@ -276,7 +280,7 @@ class MinecraftServer:
         save_config(self.config, self.config_path)
 
     def should_use_multithreaded_generation(self) -> bool:
-        """是否启用多线程区块生成。"""
+        """是否启用 Python 侧多线程区块生成。"""
         return self.chunk_generation_multithreading and not self._use_native_terrain
 
     def _get_chunk_executor(self) -> ThreadPoolExecutor:
@@ -325,17 +329,47 @@ class MinecraftServer:
         loaded = 0
         generated = 0
 
-        if self.should_use_multithreaded_generation():
-            executor = self._get_chunk_executor()
-            chunk_records = list(executor.map(
-                lambda pos: self._generate_or_load_chunk_result(*pos),
-                chunk_coords,
-            ))
-        else:
-            chunk_records = [
-                self._generate_or_load_chunk_result(cx, cz)
-                for cx, cz in chunk_coords
-            ]
+        chunk_record_map = {}
+        missing_coords: list[tuple[int, int]] = []
+
+        for cx, cz in chunk_coords:
+            chunk_blocks = storage.load_generated_chunk(cx, cz)
+            if chunk_blocks is not None:
+                chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
+                motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
+                world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
+                chunk_data = build_chunk_column_from_terrain(chunk_blocks, chunk_biomes)
+                chunk_record_map[(cx, cz)] = (
+                    cx, cz, motion_blocking, world_surface, chunk_data, True, chunk_blocks, chunk_biomes
+                )
+            else:
+                missing_coords.append((cx, cz))
+
+        if missing_coords:
+            if self._use_native_terrain and hasattr(terrain, "generate_chunks_with_heightmaps"):
+                native_results = terrain.generate_chunks_with_heightmaps(missing_coords)
+                for (cx, cz), (chunk_blocks, _) in zip(missing_coords, native_results):
+                    chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
+                    motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
+                    world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
+                    chunk_data = build_chunk_column_from_terrain(chunk_blocks, chunk_biomes)
+                    chunk_record_map[(cx, cz)] = (
+                        cx, cz, motion_blocking, world_surface, chunk_data, False, chunk_blocks, chunk_biomes
+                    )
+            elif self.should_use_multithreaded_generation():
+                executor = self._get_chunk_executor()
+                generated_records = executor.map(
+                    lambda pos: self._generate_or_load_chunk_result(*pos),
+                    missing_coords,
+                )
+                for record in generated_records:
+                    chunk_record_map[(record[0], record[1])] = record
+            else:
+                for cx, cz in missing_coords:
+                    record = self._generate_or_load_chunk_result(cx, cz)
+                    chunk_record_map[(cx, cz)] = record
+
+        chunk_records = [chunk_record_map[(cx, cz)] for cx, cz in chunk_coords]
 
         for cx, cz, motion_blocking, world_surface, chunk_data, was_loaded, chunk_blocks, chunk_biomes in chunk_records:
             results.append((cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks))
