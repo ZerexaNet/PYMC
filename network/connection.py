@@ -61,6 +61,7 @@ class Connection:
         self.freeze_ticks: int = 0
         self.damage_cooldown_ticks: int = 0
         self.last_damage_reason: str = ""
+        self.selected_hotbar_slot: int = 0
         self.loaded_chunks: set[tuple[int, int]] = set()
         self.chunk_center: tuple[int, int] = (0, 0)
         self.chunk_stream_task: asyncio.Task | None = None
