@@ -216,10 +216,11 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            version="${GITHUB_REF#refs/tags/}"
           else
-            echo "tag=build-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            version="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
           fi
+          echo "tag=$version" >> "$GITHUB_OUTPUT"
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
