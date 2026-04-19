@@ -58,6 +58,7 @@ from world.blocks import (
 )
 
 logger = logging.getLogger("PyMC.游戏")
+CHUNK_STREAM_BATCH_SIZE = 32
 
 COMMAND_ALIASES = {
     "teleport": "tp",
@@ -774,6 +775,20 @@ async def _send_chunk_batch(conn: Connection, chunk_results):
     await conn.send_packet(0x0C, write_varint(len(chunk_results)))
 
 
+async def _send_chunk_results_streamed(conn: Connection, chunk_results,
+                                       batch_size: int = CHUNK_STREAM_BATCH_SIZE):
+    """将大量区块按小批次流式发送，减少客户端一次性吃包压力。"""
+    if not chunk_results or not conn.alive:
+        return
+
+    for index in range(0, len(chunk_results), batch_size):
+        if not conn.alive:
+            break
+        batch = chunk_results[index:index + batch_size]
+        await _send_chunk_batch(conn, batch)
+        await asyncio.sleep(0)
+
+
 async def _send_deferred_chunks(conn: Connection, server, chunk_coords, total_count: int):
     """后台发送出生点外圈区块。"""
     if not conn.alive or not chunk_coords:
@@ -786,7 +801,7 @@ async def _send_deferred_chunks(conn: Connection, server, chunk_coords, total_co
         return server.generate_chunk_results(chunk_coords)[0]
 
     chunk_results = await loop.run_in_executor(None, _generate_deferred)
-    await _send_chunk_batch(conn, chunk_results)
+    await _send_chunk_results_streamed(conn, chunk_results)
     conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
     logger.info(
         f"已向 {conn.username} 补发远距离区块 {len(chunk_results)} 个 "
@@ -828,7 +843,7 @@ async def _stream_chunks_around_player(conn: Connection, server):
         if not conn.alive:
             return
 
-        await _send_chunk_batch(conn, chunk_results)
+        await _send_chunk_results_streamed(conn, chunk_results)
         conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
         conn.loaded_chunks.intersection_update(desired_coords)
 
