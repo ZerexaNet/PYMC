@@ -40,9 +40,13 @@ HEIGHTMAP_COUNT = 256
 HEIGHTMAP_BYTES = HEIGHTMAP_COUNT * 2  # 512
 PAYLOAD_SIZE = BLOCKS_BYTES + HEIGHTMAP_BYTES  # 197120
 
-# 请求格式: int32 + int32 + int64 = 16 字节
-REQUEST_FORMAT = '<iiq'
-REQUEST_SIZE = struct.calcsize(REQUEST_FORMAT)  # 16
+SINGLE_COMMAND = b'C'
+BATCH_COMMAND = b'B'
+SINGLE_REQUEST_FORMAT = '<iiq'
+BATCH_HEADER_FORMAT = '<qI'
+CHUNK_COORD_FORMAT = '<ii'
+SINGLE_RESPONSE_HEADER_FORMAT = '<I'
+BATCH_RESPONSE_HEADER_FORMAT = '<I'
 
 
 def _find_native_binary() -> str | None:
@@ -167,10 +171,11 @@ class NativeTerrainGenerator:
     如果子进程崩溃会自动重启。
     """
 
-    def __init__(self, seed: int, binary_path: str | None = None):
+    def __init__(self, seed: int, binary_path: str | None = None, worker_count: int | None = None):
         self.seed = seed
         self._process: subprocess.Popen | None = None
         self._binary_path = binary_path or _find_native_binary()
+        self.worker_count = max(1, int(worker_count or (os.cpu_count() or 1)))
 
         if self._binary_path:
             logger.info(f"找到原生地形生成器: {self._binary_path}")
@@ -190,7 +195,7 @@ class NativeTerrainGenerator:
 
         try:
             self._process = subprocess.Popen(
-                [self._binary_path],
+                [self._binary_path, "--threads", str(self.worker_count)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -227,20 +232,31 @@ class NativeTerrainGenerator:
             data += chunk
         return data
 
-    def _send_request(self, chunk_x: int, chunk_z: int):
-        """发送二进制请求到子进程。"""
-        request = struct.pack(REQUEST_FORMAT, chunk_x, chunk_z, self.seed)
+    def _send_single_request(self, chunk_x: int, chunk_z: int):
+        """发送单区块二进制请求到子进程。"""
+        request = bytearray()
+        request.extend(SINGLE_COMMAND)
+        request.extend(struct.pack(SINGLE_REQUEST_FORMAT, chunk_x, chunk_z, self.seed))
         self._process.stdin.write(request)
         self._process.stdin.flush()
 
-    def _recv_response(self) -> tuple[bytes, bytes]:
+    def _send_batch_request(self, chunk_coords: list[tuple[int, int]]):
+        """发送批量区块请求到子进程。"""
+        request = bytearray()
+        request.extend(BATCH_COMMAND)
+        request.extend(struct.pack(BATCH_HEADER_FORMAT, self.seed, len(chunk_coords)))
+        for chunk_x, chunk_z in chunk_coords:
+            request.extend(struct.pack(CHUNK_COORD_FORMAT, chunk_x, chunk_z))
+        self._process.stdin.write(request)
+        self._process.stdin.flush()
+
+    def _recv_single_response(self) -> tuple[bytes, bytes]:
         """
-        接收二进制响应。
+        接收单区块二进制响应。
         返回 (方块数据 bytes, 高度图数据 bytes)。
         """
-        # 读取 4 字节长度头
         header = self._read_exact(4)
-        payload_size = struct.unpack('<I', header)[0]
+        payload_size = struct.unpack(SINGLE_RESPONSE_HEADER_FORMAT, header)[0]
 
         if payload_size != PAYLOAD_SIZE:
             raise RuntimeError(f"响应数据长度异常: 期望 {PAYLOAD_SIZE}, 收到 {payload_size}")
@@ -252,6 +268,25 @@ class NativeTerrainGenerator:
         heightmap_data = payload[BLOCKS_BYTES:]
 
         return blocks_data, heightmap_data
+
+    def _recv_batch_response(self, expected_count: int) -> list[tuple[bytes, bytes]]:
+        """接收批量区块响应。"""
+        header = self._read_exact(4)
+        chunk_count = struct.unpack(BATCH_RESPONSE_HEADER_FORMAT, header)[0]
+        if chunk_count != expected_count:
+            raise RuntimeError(f"批量响应数量异常: 期望 {expected_count}, 收到 {chunk_count}")
+
+        payload = self._read_exact(chunk_count * PAYLOAD_SIZE)
+        chunks: list[tuple[bytes, bytes]] = []
+        offset = 0
+        for _ in range(chunk_count):
+            chunk_payload = payload[offset:offset + PAYLOAD_SIZE]
+            offset += PAYLOAD_SIZE
+            chunks.append((
+                chunk_payload[:BLOCKS_BYTES],
+                chunk_payload[BLOCKS_BYTES:],
+            ))
+        return chunks
 
     def generate_chunk(self, chunk_x: int, chunk_z: int) -> list[list[list[int]]]:
         """
@@ -270,8 +305,8 @@ class NativeTerrainGenerator:
                 raise RuntimeError("原生地形生成器不可用")
 
         try:
-            self._send_request(chunk_x, chunk_z)
-            blocks_data, _ = self._recv_response()
+            self._send_single_request(chunk_x, chunk_z)
+            blocks_data, _ = self._recv_single_response()
             return _decode_binary_blocks(blocks_data)
 
         except Exception as e:
@@ -296,8 +331,8 @@ class NativeTerrainGenerator:
                 raise RuntimeError("原生地形生成器不可用")
 
         try:
-            self._send_request(chunk_x, chunk_z)
-            blocks_data, heightmap_data = self._recv_response()
+            self._send_single_request(chunk_x, chunk_z)
+            blocks_data, heightmap_data = self._recv_single_response()
 
             blocks = _decode_binary_blocks(blocks_data)
             height_map = _decode_binary_heightmap(heightmap_data)
@@ -306,6 +341,34 @@ class NativeTerrainGenerator:
 
         except Exception as e:
             logger.error(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            self.shutdown()
+            self._start_process()
+            raise
+
+    def generate_chunks_with_heightmaps(self, chunk_coords: list[tuple[int, int]]):
+        """
+        批量生成多个区块数据和高度图。
+
+        返回:
+            [(blocks, height_map), ...]，顺序与 chunk_coords 一致
+        """
+        if not chunk_coords:
+            return []
+
+        if not self.available:
+            self._start_process()
+            if not self.available:
+                raise RuntimeError("原生地形生成器不可用")
+
+        try:
+            self._send_batch_request(chunk_coords)
+            raw_chunks = self._recv_batch_response(len(chunk_coords))
+            return [
+                (_decode_binary_blocks(blocks_data), _decode_binary_heightmap(heightmap_data))
+                for blocks_data, heightmap_data in raw_chunks
+            ]
+        except Exception as e:
+            logger.error(f"原生批量区块生成失败 ({len(chunk_coords)} 个): {e}")
             self.shutdown()
             self._start_process()
             raise

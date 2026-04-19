@@ -20,6 +20,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <array>
+#include <thread>
+#include <atomic>
 
 #ifdef _WIN32
 #include <io.h>
@@ -339,7 +342,7 @@ struct TerrainGenerator {
 
     // 主生成函数: 生成 384*16*16 的方块数据
     // blocks[y][z][x] => blocks[y * 256 + z * 16 + x]
-    void generate_chunk(int chunk_x, int chunk_z, int* blocks) const {
+    void generate_chunk(int chunk_x, int chunk_z, int* blocks, int16_t* heightmap_out = nullptr) const {
         const int total = WORLD_HEIGHT * 16 * 16;
         memset(blocks, 0, total * sizeof(int));  // 全 AIR
 
@@ -356,6 +359,9 @@ struct TerrainGenerator {
                 int wz = base_z + lz;
                 int surface_h = get_terrain_height(wx, wz);
                 height_map[lz][lx] = surface_h;
+                if (heightmap_out != nullptr) {
+                    heightmap_out[lz * 16 + lx] = (int16_t)surface_h;
+                }
                 int si = surface_h - MIN_Y;
 
                 // 基岩层
@@ -667,10 +673,24 @@ static constexpr uint32_t HEIGHTMAP_COUNT = 256;
 static constexpr uint32_t HEIGHTMAP_BYTES = HEIGHTMAP_COUNT * 2;  // 512
 static constexpr uint32_t PAYLOAD_SIZE = BLOCKS_BYTES + HEIGHTMAP_BYTES;  // 197120
 
+struct ChunkResponse {
+    std::vector<uint16_t> blocks;
+    std::array<int16_t, HEIGHTMAP_COUNT> heightmap;
+
+    ChunkResponse() : blocks(BLOCKS_COUNT, 0) {
+        heightmap.fill(0);
+    }
+};
+
+struct ChunkCoord {
+    int32_t chunk_x;
+    int32_t chunk_z;
+};
+
 // ============================================================
 // 主循环: 从 stdin 读取二进制请求，生成地形，写入二进制响应
 // ============================================================
-int main() {
+int main(int argc, char** argv) {
 #ifdef _WIN32
     // Windows: 将 stdin/stdout 设为二进制模式，避免 \n -> \r\n 转换
     _setmode(_fileno(stdin), _O_BINARY);
@@ -680,6 +700,15 @@ int main() {
     // 禁用缓冲以确保即时通信
     setvbuf(stdin, nullptr, _IONBF, 0);
     setvbuf(stdout, nullptr, _IONBF, 0);
+
+    int thread_count = (int)std::thread::hardware_concurrency();
+    if (thread_count <= 0) thread_count = 4;
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            thread_count = std::max(1, std::atoi(argv[i + 1]));
+            i++;
+        }
+    }
 
     // 当前种子和生成器缓存
     int64_t current_seed = -1;
@@ -695,45 +724,108 @@ int main() {
     uint32_t payload_size_le = PAYLOAD_SIZE;
     memcpy(response_buf, &payload_size_le, 4);
 
-    // 请求缓冲区: 16 字节 (int32 + int32 + int64)
-    uint8_t request_buf[16];
+    while (true) {
+        uint8_t command = 0;
+        if (!read_exact(&command, 1)) {
+            break;
+        }
 
-    while (read_exact(request_buf, 16)) {
-        // 解析请求 (小端序, x86 原生字节序)
-        int32_t chunk_x, chunk_z;
-        int64_t seed;
-        memcpy(&chunk_x, request_buf + 0, 4);
-        memcpy(&chunk_z, request_buf + 4, 4);
-        memcpy(&seed,    request_buf + 8, 8);
+        if (command == 'C') {
+            uint8_t request_buf[16];
+            if (!read_exact(request_buf, 16)) break;
 
-        // 种子变化时重新初始化
+            int32_t chunk_x, chunk_z;
+            int64_t seed;
+            memcpy(&chunk_x, request_buf + 0, 4);
+            memcpy(&chunk_z, request_buf + 4, 4);
+            memcpy(&seed,    request_buf + 8, 8);
+
+            if (seed != current_seed) {
+                gen.init(seed);
+                current_seed = seed;
+            }
+
+            int16_t* heightmap_out = (int16_t*)(response_buf + 4 + BLOCKS_BYTES);
+            gen.generate_chunk(chunk_x, chunk_z, blocks, heightmap_out);
+
+            uint16_t* blocks_out = (uint16_t*)(response_buf + 4);
+            for (uint32_t i = 0; i < BLOCKS_COUNT; i++) {
+                blocks_out[i] = (uint16_t)blocks[i];
+            }
+
+            if (!write_exact(response_buf, 4 + PAYLOAD_SIZE)) break;
+            fflush(stdout);
+            continue;
+        }
+
+        if (command != 'B') {
+            break;
+        }
+
+        int64_t seed = 0;
+        uint32_t chunk_count = 0;
+        if (!read_exact(&seed, sizeof(seed))) break;
+        if (!read_exact(&chunk_count, sizeof(chunk_count))) break;
+
         if (seed != current_seed) {
             gen.init(seed);
             current_seed = seed;
         }
 
-        // 生成区块
-        gen.generate_chunk(chunk_x, chunk_z, blocks);
-
-        // 将 int 方块数据转换为 uint16 并写入响应缓冲区
-        uint16_t* blocks_out = (uint16_t*)(response_buf + 4);
-        for (uint32_t i = 0; i < BLOCKS_COUNT; i++) {
-            blocks_out[i] = (uint16_t)blocks[i];
+        if (chunk_count == 0) {
+            uint32_t zero = 0;
+            if (!write_exact(&zero, sizeof(zero))) break;
+            fflush(stdout);
+            continue;
         }
 
-        // 计算高度图并写入响应缓冲区
-        int16_t* heightmap_out = (int16_t*)(response_buf + 4 + BLOCKS_BYTES);
-        int bx = chunk_x * 16, bz = chunk_z * 16;
-        for (int lz = 0; lz < 16; lz++) {
-            for (int lx = 0; lx < 16; lx++) {
-                heightmap_out[lz * 16 + lx] = (int16_t)gen.get_terrain_height(bx + lx, bz + lz);
+        std::vector<ChunkCoord> coords(chunk_count);
+        if (!read_exact(coords.data(), chunk_count * sizeof(coords[0]))) break;
+
+        std::vector<ChunkResponse> results(chunk_count);
+        unsigned worker_count = std::min<unsigned>((unsigned)thread_count, chunk_count);
+        if (worker_count == 0) worker_count = 1;
+        std::atomic<uint32_t> next_index(0);
+        std::vector<std::thread> workers;
+        workers.reserve(worker_count);
+
+        for (unsigned worker = 0; worker < worker_count; worker++) {
+            workers.emplace_back([&]() {
+                std::vector<int> local_blocks(BLOCKS_COUNT);
+                while (true) {
+                    uint32_t idx = next_index.fetch_add(1);
+                    if (idx >= chunk_count) break;
+                    int32_t chunk_x = coords[idx].chunk_x;
+                    int32_t chunk_z = coords[idx].chunk_z;
+                    gen.generate_chunk(
+                        chunk_x,
+                        chunk_z,
+                        local_blocks.data(),
+                        results[idx].heightmap.data()
+                    );
+                    for (uint32_t i = 0; i < BLOCKS_COUNT; i++) {
+                        results[idx].blocks[i] = (uint16_t)local_blocks[i];
+                    }
+                }
+            });
+        }
+
+        for (auto& worker : workers) {
+            worker.join();
+        }
+
+        if (!write_exact(&chunk_count, sizeof(chunk_count))) break;
+        for (uint32_t idx = 0; idx < chunk_count; idx++) {
+            if (!write_exact(results[idx].blocks.data(), BLOCKS_BYTES)) {
+                chunk_count = 0;
+                break;
+            }
+            if (!write_exact(results[idx].heightmap.data(), HEIGHTMAP_BYTES)) {
+                chunk_count = 0;
+                break;
             }
         }
-
-        // 一次性写出整个响应
-        if (!write_exact(response_buf, 4 + PAYLOAD_SIZE)) {
-            break;  // 写入失败，退出
-        }
+        if (chunk_count == 0) break;
         fflush(stdout);
     }
 
