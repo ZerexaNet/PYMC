@@ -1,0 +1,13 @@
+/build/
+/dist/
+
+__pycache__/
+*.py[cod]
+
+*.log
+*.tmp
+
+/world/region/
+/world/playerdata/
+
+/pumpkin-ref/

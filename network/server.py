@@ -48,6 +48,13 @@ class MinecraftServer:
         self.autosave_enabled = True
         self.world_time = 1000
         self.weather = "clear"
+        self.gamerules = {
+            "doDaylightCycle": True,
+            "doMobSpawning": True,
+            "naturalRegeneration": True,
+            "keepInventory": False,
+            "doImmediateRespawn": False,
+        }
         self.spawn_position = (
             int(config.get("level-spawn-x", 0)),
             int(config.get("level-spawn-y", 100)),
@@ -144,11 +151,15 @@ class MinecraftServer:
                 "health": conn.health,
                 "food": conn.food,
                 "saturation": conn.saturation,
+                "experience_total": conn.experience_total,
+                "experience_level": conn.experience_level,
+                "experience_progress": conn.experience_progress,
                 "gamemode": conn.gamemode,
                 "on_ground": conn.on_ground,
                 "air_supply": conn.air_supply,
                 "fire_ticks": conn.fire_ticks,
                 "freeze_ticks": conn.freeze_ticks,
+                "personal_spawn": list(conn.personal_spawn) if conn.personal_spawn is not None else None,
             },
         )
 
@@ -570,12 +581,14 @@ class MinecraftServer:
         tick_interval = 0.05  # 50ms per tick
         tick_count = 0
         keepalive_interval = 200  # 每 200 tick (10秒) 发一次心跳
+        world_flush_interval = 200  # 每 10 秒尝试落盘一次脏区块
         autosave_interval = 6000  # 每 6000 tick (5分钟) 自动保存
 
         while self.running:
             tick_start = time.time()
             tick_count += 1
-            self.world_time = (self.world_time + 1) % 24000
+            if self.gamerules.get("doDaylightCycle", True):
+                self.world_time = (self.world_time + 1) % 24000
 
             # 发送 KeepAlive 心跳
             if tick_count % keepalive_interval == 0:
@@ -586,12 +599,19 @@ class MinecraftServer:
                 self.save_all_player_states()
                 self.world_storage.flush()
 
+            if self.autosave_enabled and tick_count % world_flush_interval == 0:
+                if self.world_storage.has_dirty_regions():
+                    self.world_storage.flush()
+
             # 清理无效连接
             self.connections = [c for c in self.connections if c.alive]
 
             # 基础玩家生存规则
             await self._tick_players(tick_count)
             self.entity_manager.tick()
+            if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
+                self.entity_manager.spawn_natural_mobs()
+            await self._tick_entity_interactions()
             if tick_count % 10 == 0:
                 await self._tick_entity_sync()
 
@@ -623,24 +643,94 @@ class MinecraftServer:
             if tick_count % 40 == 0:
                 await _send_time_update(conn, self)
 
+    async def _tick_entity_interactions(self):
+        """处理实体与玩家的基础交互：拾取、经验、近战伤害。"""
+        from handlers.play import (
+            _add_player_experience,
+            _damage_player,
+            _send_collect_entity,
+            send_system_message,
+        )
+
+        players = self.get_online_players()
+        if not players:
+            return
+
+        for entity in list(self.entity_manager.list_entities()):
+            if entity.kind in {"orb", "item"}:
+                for player in players:
+                    if entity.distance_squared_to(player.x, player.y, player.z) > 2.25:
+                        continue
+                    if entity.kind == "item" and getattr(entity, "pickup_delay", 0) > 0:
+                        continue
+
+                    count = int(entity.metadata.get("count", 1))
+                    self.entity_manager.remove_entity(entity.entity_id)
+                    await _send_collect_entity(player, entity.entity_id, player.entity_id, count)
+                    if entity.kind == "orb":
+                        await _add_player_experience(player, count)
+                    else:
+                        item_name = entity.metadata.get("item_name", "minecraft:stone")
+                        await send_system_message(player, f"[PyMC] 拾取 {item_name} x{count}")
+                    break
+
+            if entity.kind == "mob" and entity.metadata.get("category") == "hostile":
+                if getattr(entity, "attack_cooldown", 0) > 0:
+                    continue
+                for player in players:
+                    if player.gamemode in {"creative", "spectator"}:
+                        continue
+                    attack_range = float(getattr(entity, "profile", {}).get("attack_range", 1.7))
+                    if entity.distance_squared_to(player.x, player.y, player.z) > attack_range * attack_range:
+                        continue
+                    entity.attack_cooldown = int(getattr(entity, "profile", {}).get("attack_interval", 20))
+                    damage = float(getattr(entity, "profile", {}).get("attack_damage", 2.0))
+                    mob_name = entity.metadata.get("mob_type", "生物")
+                    await _damage_player(player, damage, mob_name, self)
+                    break
+
     async def _tick_entity_sync(self):
         """向客户端同步基础实体位置与移除。"""
-        from handlers.play import _send_entity_teleport, broadcast_entity_remove
+        from handlers.play import (
+            _send_entity_teleport,
+            _send_experience_orb_spawn,
+            _send_generic_entity_spawn,
+            _entity_within_tracking_range,
+            build_remove_entities,
+            broadcast_entity_remove,
+        )
 
-        removed_ids: list[int] = []
-        entities = self.entity_manager.list_entities()
-        live_ids = {entity.entity_id for entity in entities}
-        for entity_id in list(self.entity_manager.entities.keys()):
-            if entity_id not in live_ids:
-                removed_ids.append(entity_id)
-
+        removed_ids = self.entity_manager.consume_removed_ids()
         if removed_ids:
             await broadcast_entity_remove(self, removed_ids)
 
+        entities = self.entity_manager.list_entities()
+        live_entities = {
+            entity.entity_id: entity
+            for entity in entities
+            if entity.kind in {"orb", "item", "mob"}
+        }
+
         for conn in self.get_online_players():
-            for entity in entities:
-                if entity.kind != "orb":
+            stale_ids = [
+                entity_id for entity_id in conn.tracked_entities
+                if entity_id not in live_entities
+            ]
+            if stale_ids:
+                conn.tracked_entities.difference_update(stale_ids)
+                await conn.send_packet(0x42, build_remove_entities(stale_ids))
+
+            for entity in live_entities.values():
+                if not _entity_within_tracking_range(entity, conn, self.view_distance):
+                    if entity.entity_id in conn.tracked_entities:
+                        conn.tracked_entities.discard(entity.entity_id)
+                        await conn.send_packet(0x42, build_remove_entities([entity.entity_id]))
                     continue
-                if entity.distance_squared_to(conn.x, conn.y, conn.z) > (self.view_distance * 16) ** 2:
+                if entity.entity_id not in conn.tracked_entities:
+                    if entity.kind == "orb":
+                        await _send_experience_orb_spawn(conn, entity)
+                    else:
+                        await _send_generic_entity_spawn(conn, entity)
+                    conn.tracked_entities.add(entity.entity_id)
                     continue
                 await _send_entity_teleport(conn, entity)

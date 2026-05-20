@@ -1,175 +1,99 @@
 # PyMC
 
-PyMC 是一个使用 Python 编写的 Minecraft Java Edition `1.21.1` 服务端项目，目前以“可启动、可进服、可持续补功能”的原型服务端为目标持续开发。
+PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，协议版本 767。
 
-## 当前特性
+项目目标不是基于 Bukkit/Paper/Forge 扩展现有服务端，而是直接实现 Minecraft Java 协议、登录流程、配置注册表、区块发送、玩家同步、基础命令和世界存储。
 
-- 支持 `1.21.1` 客户端离线模式登录与基础进服流程
-- 支持纯 Python 地形生成
-- 支持原生 `C++` 地形生成器桥接
-- 启动时预生成出生点视距范围内区块
-- 生成后的区块以原版 `Chunk NBT` 形式写入 `.linear` 区域文件
-- 玩家进入世界时优先发送出生点附近区块
-- 玩家移动跨区块后会继续动态补发新区块
-- 支持基础控制台命令
-- 支持权限组、白名单、封禁列表
-- 支持简单 Web 管理台，默认监听 `0.0.0.0:25568`
-- 支持区块生成多线程开关
+## 当前能力
 
-## 已实现命令
+- 离线模式登录
+- Minecraft Java 1.21.1 协议握手、状态查询、登录、配置和 Play 阶段
+- 数据包压缩、KeepAlive、玩家移动同步
+- 类原版 384 高度主世界区块
+- 优先使用 `native/terrain_gen.exe` 原生地形生成器，失败时回退到 Python 生成器
+- Linear V2 `.linear` 区域文件读写，并支持从 Anvil `.mca` 自动转换
+- 玩家位置、生命值、饱食度、经验、游戏模式等 JSON 存档
+- 基础聊天、方块挖掘/放置、掉落物、经验球和简单生物实体
+- 原版 Goal 思路的轻量生物 AI：随机游走、看向玩家、敌对追击、近战冷却
+- 基础 `gamerule`：控制昼夜流动、自然刷怪和自然回血
+- 控制台和游戏内基础命令
+- Web 管理台、权限组、OP、封禁和白名单
 
-当前可用的管理命令包括：
+## 目录
 
-- `help`
-- `list`
-- `say`
-- `msg`
-- `me`
-- `tp`
-- `gamemode`
-- `defaultgamemode`
-- `kick`
-- `ban`
-- `ban-ip`
-- `pardon`
-- `pardon-ip`
-- `banlist`
-- `op`
-- `deop`
-- `whitelist`
-- `reload`
-- `save-all`
-- `save-on`
-- `save-off`
-- `save-status`
-- `difficulty`
-- `time`
-- `weather`
-- `setworldspawn`
-- `seed`
-- `group`
-- `perm`
-- `stop`
+- `main.py`：服务端入口
+- `config.py`：`server.properties` 配置读写
+- `network/`：TCP 监听、连接状态、tick 循环
+- `handlers/`：各协议阶段的数据包处理
+- `protocol/`：VarInt、NBT、Packet 编解码
+- `world/`：方块、区块编码、地形生成、存档、实体和世界编辑
+- `admin/`：权限系统和 Web 管理后台
+- `native/`：C++ 原生地形生成器
+- `pumpkin-ref/`：本地参考源码，不属于 PyMC 运行时
 
-其中 `difficulty`、`defaultgamemode`、`setworldspawn` 等命令的变更会回写到 `server.properties`。
+## 运行
 
-另外，项目已经识别了大量原版命令名；但像实体系统、掉落物、AI、计分板、命令函数、NBT 数据操作等依赖完整游戏系统的高级命令，当前仍会提示“已识别但未实现”。
+需要 Python 3.10 或更新版本。
 
-## Web 管理台
+```bash
+pip install -r requirements.txt
+python main.py
+```
 
-服务器启动后可以访问：
+默认监听:
 
-`http://0.0.0.0:25568`
+- Minecraft 服务端: `0.0.0.0:25565`
+- Web 管理台: `0.0.0.0:25568`
 
-当前支持：
+使用 Minecraft Java 1.21.1 客户端连接 `localhost:25565`。
 
-- 查看服务器状态
-- 执行控制台命令
-- 给玩家分配权限组
-- 编辑允许的文件
+## 配置
 
-当前允许编辑的文件包括：
+主要配置在 `server.properties`：
 
-- `server.properties`
-- `permissions.json`
-- `README.md`
+- `server-port`：Minecraft 服务端端口
+- `online-mode`：是否正版验证，目前默认 `false`
+- `view-distance`：区块视距
+- `level-seed`：世界种子
+- `gamemode`：默认游戏模式
+- `web-admin-enabled`：是否启用 Web 管理台
+- `permissions-file`：权限文件路径
+- `join-immediate-radius`：玩家入服时优先同步的近距离区块半径
 
-## 重要配置项
+权限、封禁和白名单在 `permissions.json`。
 
-### 区块与性能
+## 常用命令
 
-- `view-distance=10`
-  控制服务器视距。
+已实现或部分实现的命令包括：
 
-- `chunk-generation-multithreading=false`
-  是否开启区块生成多线程，默认关闭。
+```text
+help, list, say, me, msg, tp, gamemode, gamerule, seed, time, weather,
+setworldspawn, spawnpoint, setblock, fill, clone, summon, kill,
+kick, ban, pardon, ban-ip, pardon-ip, banlist, op, deop,
+whitelist, reload, save-all, save-on, save-off, group, perm, stop
+```
 
-- `chunk-generation-workers=0`
-  多线程生成时的线程数。`0` 表示自动按 CPU 核心数选择。
+未实现完整游戏系统的原版命令会被识别并返回提示。
 
-- `join-immediate-radius=2`
-  玩家正式放入世界前，优先发送出生点附近多少圈区块。
+## 构建
 
-### 世界
-
-- `level-name=world`
-  世界目录名称。
-
-- `level-seed=0`
-  世界种子。
-
-- `level-spawn-x`
-- `level-spawn-y`
-- `level-spawn-z`
-  持久化出生点坐标。
-
-### 网络
-
-- `server-ip=0.0.0.0`
-- `server-port=25565`
-- `max-players=20`
-- `network-compression-threshold=256`
-
-## 存档说明
-
-- 世界区块保存在 `world/region/` 目录下
-- 区域文件使用 `.linear` 格式
-- 区块内容写入为原版 `Chunk NBT`
-- 已支持从旧区块缓存格式读取
-- 已支持从 `Anvil (.mca)` 自动转换到 `.linear`
-
-## 原生地形生成器
-
-项目支持原生 `C++` 地形生成器：
-
-- Windows：`native/terrain_gen.exe`
-- Linux / macOS：`native/terrain_gen`
-
-如果运行时找不到原生生成器，会自动回退到纯 Python 生成器。
-
-## 打包
-
-### Windows 本地打包
-
-直接运行：
+Windows 下可以运行：
 
 ```bat
 build.bat
 ```
 
-### Linux / macOS 本地打包
+脚本会编译 `native/terrain_gen.exe`，然后使用 Nuitka 打包为独立可执行文件。
 
-直接运行：
+Linux/macOS 可参考 `build.sh` 和 `CMakeLists.txt`。
 
-```bash
-./build.sh
-```
+## 运行数据
 
-### GitHub Actions
+以下内容是运行产物，默认不提交到仓库：
 
-工作流会构建以下产物：
-
-- `PyMC-windows.exe`
-- `PyMC-linux`
-- `PyMC-macos`
-
-## 当前状态说明
-
-这个项目已经具备基础进服、基础地形、基础区块存档、基础命令与管理能力，但还不是完整原版服务端。下面这些系统仍在持续完善中：
-
-- 掉落物实体
-- 生物生成
-- 生物 AI
-- 完整伤害系统
-- 更完整的光照传播
-- 更完整的原版命令系统
-- 更完整的玩家状态同步
-
-如果你打算继续开发，建议优先查看这些目录：
-
-- `main.py`
-- `network/`
-- `handlers/`
-- `world/`
-- `admin/`
-
+- `pymc.log`
+- `world/region/`
+- `world/playerdata/`
+- `__pycache__/`
+- `dist/`
+- `build/`

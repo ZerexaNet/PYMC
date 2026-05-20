@@ -501,6 +501,10 @@ class WorldStorage:
         except Exception as e:
             logger.error(f"保存区域文件失败 ({rx}, {rz}): {e}")
 
+    def has_dirty_regions(self) -> bool:
+        """是否存在尚未落盘的区域修改。"""
+        return bool(self._dirty)
+
     def unload_region(self, rx: int, rz: int):
         """卸载区域文件 (先保存再释放内存)。"""
         key = (rx, rz)

@@ -7,7 +7,7 @@
 //     [4:8]   int32  chunk_z
 //     [8:16]  int64  seed
 //   响应: 197120 字节 (小端)
-//     [0:4]      uint32  数据长度 (固定 197116)
+//     [0:4]      uint32  数据长度 (固定 197120)
 //     [4:196612] uint16  方块数据 98304 个 (y*256+z*16+x 顺序)
 //     [196612:197124] int16  高度图 256 个 (z*16+x 顺序)
 // ============================================================
@@ -73,7 +73,7 @@ static constexpr int DEEPSLATE = 24905;
 static constexpr int MIN_Y = -64;
 static constexpr int MAX_Y = 319;
 static constexpr int WORLD_HEIGHT = 384;  // MAX_Y - MIN_Y + 1
-static constexpr int SEA_LEVEL = 62;
+static constexpr int SEA_LEVEL = 63;
 static constexpr int DENSITY_MARGIN = 8;
 
 // ============================================================

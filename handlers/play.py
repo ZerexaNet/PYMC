@@ -17,8 +17,10 @@ Play 阶段数据包处理器。
   0x3E  - Player Info Update (player_info)
   0x40  - Synchronize Player Position (position)
   0x42  - Remove Entities (entity_destroy)
+  0x49  - Multi Block Change
   0x54  - Set Center Chunk (update_view_position)
   0x56  - Set Default Spawn Position (spawn_position)
+  0x5C  - Set Experience
   0x5D  - Update Health
   0x64  - Update Time
   0x6C  - System Chat Message (system_chat)
@@ -46,6 +48,7 @@ import math
 from protocol.data_types import (
     write_varint, write_string, write_boolean, write_int, write_long,
     write_byte, write_ubyte, write_float, write_double, write_short,
+    write_varlong,
     write_uuid, write_identifier, write_position, write_angle,
     read_varint, read_string, read_double, read_float, read_boolean,
     read_long, read_byte, read_position
@@ -57,6 +60,10 @@ from world.chunk import (
     build_flat_chunk_column, build_heightmap_data
 )
 from world.terrain import TerrainGenerator
+from world.editing import (
+    get_world_block, set_world_block, fill_box_detailed,
+    clone_box_detailed, resolve_block_state,
+)
 from world.blocks import (
     AIR, WATER, LAVA, GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL,
     MOSS_BLOCK, SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY, STONE,
@@ -76,6 +83,20 @@ HOTBAR_PLACEABLES = [
     STONE, GRASS_BLOCK, DIRT, COBBLESTONE, OAK_PLANKS,
     GLASS, SAND, OAK_LOG, TORCH,
 ]
+BLOCK_DROPS = {
+    STONE: "minecraft:cobblestone",
+    COBBLESTONE: "minecraft:cobblestone",
+    GRASS_BLOCK: "minecraft:dirt",
+    DIRT: "minecraft:dirt",
+    COARSE_DIRT: "minecraft:dirt",
+    PODZOL: "minecraft:dirt",
+    SAND: "minecraft:sand",
+    RED_SAND: "minecraft:red_sand",
+    GRAVEL: "minecraft:gravel",
+    GLASS: "minecraft:glass",
+    OAK_LOG: "minecraft:oak_log",
+    OAK_PLANKS: "minecraft:oak_planks",
+}
 FACE_OFFSETS = {
     0: (0, -1, 0),
     1: (0, 1, 0),
@@ -94,14 +115,14 @@ COMMAND_ALIASES = {
 }
 
 RECOGNIZED_BUT_UNSUPPORTED = {
-    "advancement", "attribute", "bossbar", "clear", "clone", "damage", "data",
-    "datapack", "debug", "effect", "enchant", "execute", "fill", "fillbiome",
-    "forceload", "function", "gamerule", "give", "item", "jfr", "locate",
+    "advancement", "attribute", "bossbar", "clear", "data",
+    "datapack", "debug", "effect", "enchant", "execute", "fillbiome",
+    "forceload", "function", "give", "item", "jfr", "locate",
     "loot", "particle", "perf", "place", "playsound", "publish", "random",
-    "recipe", "return", "ride", "schedule", "scoreboard", "setblock",
-    "setidletimeout", "spawnpoint", "spectate", "spreadplayers",
+    "recipe", "return", "ride", "schedule", "scoreboard",
+    "setidletimeout", "spectate", "spreadplayers",
     "tag", "team", "teammsg", "tellraw", "title", "transfer", "trigger",
-    "worldborder", "xp",
+    "worldborder",
 }
 
 ALL_VANILLA_COMMAND_NAMES = sorted({
@@ -262,16 +283,36 @@ async def send_join_game(conn: Connection, server):
         conn.health = float(player_state.get("health", conn.health))
         conn.food = int(player_state.get("food", conn.food))
         conn.saturation = float(player_state.get("saturation", conn.saturation))
+        conn.experience_total = int(player_state.get("experience_total", conn.experience_total))
+        conn.experience_level = int(player_state.get("experience_level", conn.experience_level))
+        conn.experience_progress = float(player_state.get("experience_progress", conn.experience_progress))
         conn.gamemode = str(player_state.get("gamemode", server.config.get("gamemode", "creative")))
         conn.on_ground = bool(player_state.get("on_ground", True))
         conn.air_supply = int(player_state.get("air_supply", 300))
         conn.fire_ticks = int(player_state.get("fire_ticks", 0))
         conn.freeze_ticks = int(player_state.get("freeze_ticks", 0))
+        personal_spawn = player_state.get("personal_spawn")
+        if (
+            isinstance(personal_spawn, (list, tuple))
+            and len(personal_spawn) == 3
+        ):
+            try:
+                conn.personal_spawn = (
+                    int(personal_spawn[0]),
+                    int(personal_spawn[1]),
+                    int(personal_spawn[2]),
+                )
+            except (TypeError, ValueError):
+                conn.personal_spawn = None
+        else:
+            conn.personal_spawn = None
     else:
         conn.gamemode = server.config.get("gamemode", "creative")
+        conn.personal_spawn = None
     conn.fall_start_y = conn.y
     await _send_synchronize_position(conn)
     await _send_update_health(conn)
+    await _send_set_experience(conn)
     await _send_time_update(conn, server)
 
     # --- 7. 通知其他玩家 ---
@@ -703,16 +744,7 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
 
 def _get_block_at(server, world_x: int, world_y: int, world_z: int) -> int | None:
     """读取世界坐标处的方块 ID。"""
-    if world_y < -64 or world_y >= 320:
-        return None
-    chunk_x = int(world_x) >> 4
-    chunk_z = int(world_z) >> 4
-    chunk_blocks = server.world_storage.load_generated_chunk(chunk_x, chunk_z)
-    if chunk_blocks is None:
-        return None
-    local_x = int(world_x) & 15
-    local_z = int(world_z) & 15
-    return int(chunk_blocks[world_y + 64][local_z][local_x])
+    return get_world_block(server, int(world_x), int(world_y), int(world_z))
 
 
 def _player_block_position(conn: Connection) -> tuple[int, int, int]:
@@ -753,6 +785,20 @@ def _resolve_initial_player_location(server, player_state: dict | None) -> tuple
     return resolved
 
 
+def _resolve_player_respawn_location(conn: Connection, server) -> tuple[int, int, int]:
+    """优先使用玩家个人出生点，否则回退到世界出生点。"""
+    if conn.personal_spawn is not None:
+        spawn_x, spawn_y, spawn_z = conn.personal_spawn
+        if _is_safe_player_location(server, spawn_x, spawn_y, spawn_z):
+            return spawn_x, spawn_y, spawn_z
+        return _resolve_spawn_location(server, spawn_x, spawn_z)
+
+    spawn_x, _, spawn_z = server.spawn_position
+    respawn_x, respawn_y, respawn_z = _resolve_spawn_location(server, spawn_x, spawn_z)
+    server.spawn_position = (int(respawn_x), int(respawn_y), int(respawn_z))
+    return respawn_x, respawn_y, respawn_z
+
+
 def _sorted_chunk_coords(center_cx: int, center_cz: int, view_distance: int) -> list[tuple[int, int]]:
     """按与出生点区块的 Chebyshev 距离从近到远排序。"""
     coords = [
@@ -783,9 +829,7 @@ async def _damage_player(conn: Connection, amount: float, reason: str, server):
         return
 
     await send_system_message(conn, "[PyMC] 你死亡了，已返回出生点")
-    spawn_x, _, spawn_z = server.spawn_position
-    respawn_x, respawn_y, respawn_z = _resolve_spawn_location(server, spawn_x, spawn_z)
-    server.spawn_position = (int(respawn_x), int(respawn_y), int(respawn_z))
+    respawn_x, respawn_y, respawn_z = _resolve_player_respawn_location(conn, server)
     conn.x = float(respawn_x) + 0.5
     conn.y = float(respawn_y)
     conn.z = float(respawn_z) + 0.5
@@ -945,11 +989,87 @@ async def _send_update_health(conn: Connection):
     await conn.send_packet(0x5D, bytes(payload))
 
 
+async def _send_set_experience(conn: Connection):
+    """同步玩家经验条、等级与总经验。"""
+    payload = bytearray()
+    payload.extend(write_float(max(0.0, min(1.0, float(conn.experience_progress)))))
+    payload.extend(write_varint(max(0, int(conn.experience_level))))
+    payload.extend(write_varint(max(0, int(conn.experience_total))))
+    await conn.send_packet(0x5C, bytes(payload))
+
+
+def _experience_needed_for_next_level(level: int) -> int:
+    if level >= 30:
+        return 112 + (level - 30) * 9
+    if level >= 15:
+        return 37 + (level - 15) * 5
+    return 7 + level * 2
+
+
+async def _add_player_experience(conn: Connection, amount: int):
+    """增加玩家经验，并按原版等级曲线更新经验条。"""
+    remaining = max(0, int(amount))
+    conn.experience_total = max(0, int(conn.experience_total)) + remaining
+    while remaining > 0:
+        needed = _experience_needed_for_next_level(conn.experience_level)
+        current_points = int(conn.experience_progress * needed)
+        take = min(remaining, needed - current_points)
+        current_points += take
+        remaining -= take
+        if current_points >= needed:
+            conn.experience_level += 1
+            conn.experience_progress = 0.0
+        else:
+            conn.experience_progress = current_points / max(1, needed)
+    await _send_set_experience(conn)
+
+
+async def _send_collect_entity(
+    conn: Connection,
+    collected_entity_id: int,
+    collector_entity_id: int,
+    count: int = 1,
+):
+    """播放实体被拾取的客户端动画。"""
+    payload = bytearray()
+    payload.extend(write_varint(int(collected_entity_id)))
+    payload.extend(write_varint(int(collector_entity_id)))
+    payload.extend(write_varint(max(1, int(count))))
+    await conn.send_packet(0x6F, bytes(payload))
+
+
 async def _send_block_change(conn: Connection, x: int, y: int, z: int, block_state: int):
     payload = bytearray()
     payload.extend(write_position(x, y, z))
     payload.extend(write_varint(block_state))
     await conn.send_packet(0x09, bytes(payload))
+
+
+def _pack_section_position(section_x: int, section_y: int, section_z: int) -> int:
+    packed = (
+        ((section_x & 0x3FFFFF) << 42)
+        | ((section_z & 0x3FFFFF) << 20)
+        | (section_y & 0xFFFFF)
+    )
+    if packed >= (1 << 63):
+        packed -= (1 << 64)
+    return packed
+
+
+async def _send_multi_block_change(
+    conn: Connection,
+    section_x: int,
+    section_y: int,
+    section_z: int,
+    changes: list[tuple[int, int, int, int]],
+):
+    payload = bytearray()
+    payload.extend(write_long(_pack_section_position(section_x, section_y, section_z)))
+    payload.extend(write_varint(len(changes)))
+    for x, y, z, block_state in changes:
+        local_pos = ((x & 15) << 8) | ((z & 15) << 4) | (y & 15)
+        payload.extend(write_varlong((int(block_state) << 12) | local_pos))
+    await conn.send_packet(0x49, bytes(payload))
 
 
 async def _broadcast_block_change(server, x: int, y: int, z: int, block_state: int):
@@ -959,31 +1079,70 @@ async def _broadcast_block_change(server, x: int, y: int, z: int, block_state: i
         await _send_block_change(player, x, y, z, block_state)
 
 
+async def _broadcast_block_changes(server, changes: list[tuple[int, int, int, int]]):
+    for x, y, z, block_state in changes:
+        await _broadcast_block_change(server, x, y, z, block_state)
+
+
+async def _broadcast_multi_block_changes(server, changes: list[tuple[int, int, int, int]]):
+    section_changes: dict[tuple[int, int, int], list[tuple[int, int, int, int]]] = {}
+    for x, y, z, block_state in changes:
+        key = (x >> 4, y >> 4, z >> 4)
+        section_changes.setdefault(key, []).append((x, y, z, block_state))
+
+    for player in server.get_online_players():
+        for (section_x, section_y, section_z), section_records in section_changes.items():
+            if (section_x, section_z) not in player.loaded_chunks:
+                continue
+            await _send_multi_block_change(
+                player, section_x, section_y, section_z, section_records
+            )
+
+
 def _load_chunk_for_edit(server, chunk_x: int, chunk_z: int):
-    chunk_blocks = server.world_storage.load_generated_chunk(chunk_x, chunk_z)
-    if chunk_blocks is None:
-        if getattr(server, "_use_native_terrain", False) and hasattr(server.terrain_generator, "generate_chunk_with_heightmap"):
-            chunk_blocks, _ = server.terrain_generator.generate_chunk_with_heightmap(chunk_x, chunk_z)
-        else:
-            chunk_blocks = server.terrain_generator.generate_chunk(chunk_x, chunk_z)
-    return chunk_blocks
+    from world.editing import _load_chunk_for_edit as _load_chunk_for_edit_impl
+    return _load_chunk_for_edit_impl(server, chunk_x, chunk_z)
 
 
 def _set_world_block(server, x: int, y: int, z: int, block_state: int) -> bool:
-    if y < -64 or y >= 320:
-        return False
-    chunk_x = x >> 4
-    chunk_z = z >> 4
-    chunk_blocks = _load_chunk_for_edit(server, chunk_x, chunk_z)
-    local_x = x & 15
-    local_z = z & 15
-    y_index = y + 64
-    if y_index < 0 or y_index >= len(chunk_blocks):
-        return False
-    chunk_blocks[y_index][local_z][local_x] = int(block_state)
-    chunk_biomes = server.biome_sampler.build_chunk_biome_sections(chunk_x, chunk_z, chunk_blocks)
-    server.world_storage.save_generated_chunk(chunk_x, chunk_z, chunk_blocks, chunk_biomes)
-    return True
+    return bool(set_world_block(server, x, y, z, block_state))
+
+
+async def _refresh_chunks_for_players(server, chunk_coords: list[tuple[int, int]]):
+    """将受影响区块重新编码并发给已加载这些区块的玩家。"""
+    if not chunk_coords:
+        return
+
+    unique_coords = list(dict.fromkeys(chunk_coords))
+    chunk_results, _, _ = server.generate_chunk_results(unique_coords)
+    chunk_map = {(cx, cz): (cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks)
+                 for cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks in chunk_results}
+
+    for player in server.get_online_players():
+        visible_results = [
+            chunk_map[(cx, cz)]
+            for cx, cz in unique_coords
+            if (cx, cz) in player.loaded_chunks
+        ]
+        if visible_results:
+            await _send_chunk_batch(player, visible_results)
+
+
+async def _sync_world_edit(
+    server,
+    changed_chunks: set[tuple[int, int]],
+    changed_blocks: list[tuple[int, int, int, int]],
+):
+    """小范围改单点，中范围走 Multi Block Change，大范围整区块重刷。"""
+    if not changed_blocks:
+        return
+    if len(changed_blocks) <= 64:
+        await _broadcast_block_changes(server, changed_blocks)
+        return
+    if len(changed_blocks) <= 512:
+        await _broadcast_multi_block_changes(server, changed_blocks)
+        return
+    await _refresh_chunks_for_players(server, list(changed_chunks))
 
 
 async def _tick_damage_effects(conn: Connection, server, tick_count: int):
@@ -1066,7 +1225,12 @@ async def _tick_damage_effects(conn: Connection, server, tick_count: int):
     if conn.food <= 0:
         if tick_count % 80 == 0 and conn.health > 1.0:
             await _damage_player(conn, 1.0, "饥饿", server)
-    elif conn.health < 20.0 and conn.food >= 18 and tick_count % 80 == 0:
+    elif (
+        server.gamerules.get("naturalRegeneration", True)
+        and conn.health < 20.0
+        and conn.food >= 18
+        and tick_count % 80 == 0
+    ):
         conn.health = min(20.0, conn.health + 1.0)
         await _send_update_health(conn)
 
@@ -1094,6 +1258,42 @@ async def _send_experience_orb_spawn(conn: Connection, entity):
     await conn.send_packet(0x02, bytes(payload))
 
 
+ENTITY_TYPE_IDS = {
+    "item": 71,
+    "cow": 30,
+    "pig": 100,
+    "sheep": 111,
+    "zombie": 150,
+}
+
+
+def _encode_entity_velocity_component(value: float) -> int:
+    scaled = int(max(-3.9, min(3.9, value)) * 8000.0)
+    return max(-32768, min(32767, scaled))
+
+
+async def _send_generic_entity_spawn(conn: Connection, entity):
+    entity_type_id = ENTITY_TYPE_IDS.get(entity.metadata.get("mob_type", entity.kind))
+    if entity_type_id is None:
+        return
+
+    payload = bytearray()
+    payload.extend(write_varint(entity.entity_id))
+    payload.extend(write_uuid(entity.uuid_value))
+    payload.extend(write_varint(entity_type_id))
+    payload.extend(write_double(entity.x))
+    payload.extend(write_double(entity.y))
+    payload.extend(write_double(entity.z))
+    payload.extend(write_angle(entity.pitch))
+    payload.extend(write_angle(entity.yaw))
+    payload.extend(write_angle(entity.yaw))
+    payload.extend(write_varint(0))
+    payload.extend(write_short(_encode_entity_velocity_component(entity.vx)))
+    payload.extend(write_short(_encode_entity_velocity_component(entity.vy)))
+    payload.extend(write_short(_encode_entity_velocity_component(entity.vz)))
+    await conn.send_packet(0x01, bytes(payload))
+
+
 async def _send_entity_teleport(conn: Connection, entity):
     payload = bytearray()
     payload.extend(write_varint(entity.entity_id))
@@ -1115,8 +1315,14 @@ async def _send_entity_remove(conn: Connection, entity_ids: list[int]):
 
 async def _send_visible_entities_to_player(conn: Connection, server):
     for entity in server.entity_manager.list_entities():
-        if entity.kind == "orb" and _entity_within_tracking_range(entity, conn, server.view_distance):
+        if not _entity_within_tracking_range(entity, conn, server.view_distance):
+            continue
+        if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
+            conn.tracked_entities.add(entity.entity_id)
+        elif entity.kind in {"item", "mob"}:
+            await _send_generic_entity_spawn(conn, entity)
+            conn.tracked_entities.add(entity.entity_id)
 
 
 async def broadcast_entity_spawn(server, entity):
@@ -1125,10 +1331,15 @@ async def broadcast_entity_spawn(server, entity):
             continue
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
+            conn.tracked_entities.add(entity.entity_id)
+        elif entity.kind in {"item", "mob"}:
+            await _send_generic_entity_spawn(conn, entity)
+            conn.tracked_entities.add(entity.entity_id)
 
 
 async def broadcast_entity_remove(server, entity_ids: list[int]):
     for conn in server.get_online_players():
+        conn.tracked_entities.difference_update(entity_ids)
         await _send_entity_remove(conn, entity_ids)
 
 
@@ -1290,9 +1501,9 @@ async def execute_server_command(server, command: str,
         if source_conn is not None:
             level = server.permissions.get_permission_level(source_conn.username)
             await reply(f"[PyMC] 你的权限组: {level}")
-            await reply("[PyMC] 已识别原版指令: /help, /list, /msg, /me, /tp, /gamemode, /summon, /kill, /entities, /kick, /ban, /op, /whitelist, /time, /weather, /stop 等")
+            await reply("[PyMC] 已识别原版指令: /help, /list, /msg, /me, /tp, /gamemode, /gamerule, /summon, /kill, /entities, /setblock, /fill, /clone, /spawnpoint, /kick, /ban, /op, /whitelist, /time, /weather, /stop 等")
         else:
-            await reply("[PyMC] 控制台命令: help, list, entities, summon, kill, say, tp, gamemode, kick, ban, ban-ip, op, deop, whitelist, group, perm, stop")
+            await reply("[PyMC] 控制台命令: help, list, entities, summon, kill, say, tp, gamemode, gamerule, setblock, fill, clone, spawnpoint, kick, ban, ban-ip, op, deop, whitelist, group, perm, stop")
         return True
 
     if cmd == "list":
@@ -1308,6 +1519,34 @@ async def execute_server_command(server, command: str,
             return True
         summary = ", ".join(f"{kind}={count}" for kind, count in sorted(counts.items()))
         await reply(f"[PyMC] 当前实体统计: {summary}")
+        return True
+
+    if cmd == "gamerule":
+        rules = getattr(server, "gamerules", {})
+        if len(parts) == 1:
+            summary = ", ".join(
+                f"{name}={str(value).lower()}"
+                for name, value in sorted(rules.items())
+            )
+            await reply(f"[PyMC] 游戏规则: {summary}")
+            return True
+
+        rule_name = parts[1]
+        if rule_name not in rules:
+            known = ", ".join(sorted(rules.keys()))
+            await reply(f"[PyMC] 未知游戏规则: {rule_name}，当前支持: {known}")
+            return True
+
+        if len(parts) == 2:
+            await reply(f"[PyMC] {rule_name} = {str(rules[rule_name]).lower()}")
+            return True
+
+        raw_value = parts[2].lower()
+        if raw_value not in {"true", "false"}:
+            await reply("[PyMC] 当前 gamerule 仅支持 true/false 值")
+            return True
+        rules[rule_name] = raw_value == "true"
+        await reply(f"[PyMC] 游戏规则 {rule_name} 已设置为 {raw_value}")
         return True
 
     if cmd == "say":
@@ -1530,6 +1769,37 @@ async def execute_server_command(server, command: str,
             await reply(f"[PyMC] 已对 {target.username} 造成 {amount:.1f} 点{reason}伤害")
         return True
 
+    if cmd == "xp":
+        target = source_conn
+        amount_index = 1
+        if source_conn is None:
+            if len(parts) < 3:
+                await reply("[PyMC] 用法: xp <玩家> <数量>")
+                return True
+            target = server.find_player(parts[1])
+            amount_index = 2
+            if target is None:
+                await reply(f"[PyMC] 未找到玩家: {parts[1]}")
+                return True
+        elif len(parts) < 2:
+            await reply("[PyMC] 用法: /xp <数量>")
+            return True
+
+        try:
+            amount = int(parts[amount_index])
+        except (ValueError, IndexError):
+            await reply("[PyMC] 经验数量格式无效")
+            return True
+        if amount < 0:
+            await reply("[PyMC] 暂不支持扣除经验")
+            return True
+
+        await _add_player_experience(target, amount)
+        await send_system_message(target, f"[PyMC] 获得 {amount} 点经验")
+        if source_conn is None:
+            await reply(f"[PyMC] 已给予 {target.username} {amount} 点经验")
+        return True
+
     if cmd == "difficulty":
         if len(parts) == 1:
             await reply(f"[PyMC] 当前难度: {server.config.get('difficulty', 'normal')}")
@@ -1618,6 +1888,163 @@ async def execute_server_command(server, command: str,
         server.spawn_position = (x, y, z)
         server.save_runtime_config()
         await reply(f"[PyMC] 世界出生点已设置为 ({x}, {y}, {z})")
+        return True
+
+    if cmd == "spawnpoint":
+        target = source_conn
+        coord_index = 1
+        if len(parts) >= 2 and source_conn is None:
+            target = server.find_player(parts[1])
+            coord_index = 2
+            if target is None:
+                await reply(f"[PyMC] 未找到玩家: {parts[1]}")
+                return True
+        elif len(parts) >= 2 and source_conn is not None and len(parts) not in {1, 4}:
+            maybe_target = server.find_player(parts[1])
+            if maybe_target is not None:
+                target = maybe_target
+                coord_index = 2
+
+        if target is None:
+            await reply("[PyMC] 用法: spawnpoint [玩家] [x y z]")
+            return True
+
+        if len(parts) >= coord_index + 3:
+            try:
+                spawn_x = int(float(parts[coord_index]))
+                spawn_y = int(float(parts[coord_index + 1]))
+                spawn_z = int(float(parts[coord_index + 2]))
+            except ValueError:
+                await reply("[PyMC] 坐标格式无效")
+                return True
+        else:
+            spawn_x = math.floor(target.x)
+            spawn_y = math.floor(target.y)
+            spawn_z = math.floor(target.z)
+
+        target.personal_spawn = (spawn_x, spawn_y, spawn_z)
+        server.save_player_state(target)
+        await reply(f"[PyMC] 已将 {target.username or '玩家'} 的个人出生点设置为 ({spawn_x}, {spawn_y}, {spawn_z})")
+        return True
+
+    if cmd == "setblock":
+        if len(parts) < 5:
+            await reply("[PyMC] 用法: setblock <x> <y> <z> <方块>")
+            return True
+        try:
+            x = int(float(parts[1]))
+            y = int(float(parts[2]))
+            z = int(float(parts[3]))
+        except ValueError:
+            await reply("[PyMC] 坐标格式无效")
+            return True
+        block_state = resolve_block_state(parts[4])
+        if block_state is None:
+            await reply(f"[PyMC] 未知方块: {parts[4]}")
+            return True
+        changed_chunks = set_world_block(server, x, y, z, block_state)
+        if not changed_chunks:
+            await reply("[PyMC] 方块位置超出世界范围")
+            return True
+        await _broadcast_block_change(server, x, y, z, block_state)
+        await reply(f"[PyMC] 已设置方块 ({x}, {y}, {z}) -> {parts[4]}")
+        return True
+
+    if cmd == "fill":
+        if len(parts) < 8:
+            await reply("[PyMC] 用法: fill <x1> <y1> <z1> <x2> <y2> <z2> <方块>")
+            return True
+        try:
+            x1 = int(float(parts[1]))
+            y1 = int(float(parts[2]))
+            z1 = int(float(parts[3]))
+            x2 = int(float(parts[4]))
+            y2 = int(float(parts[5]))
+            z2 = int(float(parts[6]))
+        except ValueError:
+            await reply("[PyMC] 坐标格式无效")
+            return True
+        block_state = resolve_block_state(parts[7])
+        if block_state is None:
+            await reply(f"[PyMC] 未知方块: {parts[7]}")
+            return True
+        volume = (abs(x2 - x1) + 1) * (abs(y2 - y1) + 1) * (abs(z2 - z1) + 1)
+        if volume > 32768:
+            await reply(f"[PyMC] fill 范围过大: {volume} 个方块，当前上限 32768")
+            return True
+        changed, changed_chunks, changed_blocks = fill_box_detailed(
+            server, x1, y1, z1, x2, y2, z2, block_state
+        )
+        await _sync_world_edit(server, changed_chunks, changed_blocks)
+        await reply(f"[PyMC] 已填充 {changed} 个方块为 {parts[7]}")
+        return True
+
+    if cmd == "clone":
+        if len(parts) < 10:
+            await reply("[PyMC] 用法: clone <x1> <y1> <z1> <x2> <y2> <z2> <x> <y> <z> [replace|masked|filtered <方块>] [normal|force|move]")
+            return True
+        try:
+            x1 = int(float(parts[1]))
+            y1 = int(float(parts[2]))
+            z1 = int(float(parts[3]))
+            x2 = int(float(parts[4]))
+            y2 = int(float(parts[5]))
+            z2 = int(float(parts[6]))
+            dest_x = int(float(parts[7]))
+            dest_y = int(float(parts[8]))
+            dest_z = int(float(parts[9]))
+        except ValueError:
+            await reply("[PyMC] 坐标格式无效")
+            return True
+
+        volume = (abs(x2 - x1) + 1) * (abs(y2 - y1) + 1) * (abs(z2 - z1) + 1)
+        if volume > 32768:
+            await reply(f"[PyMC] clone 范围过大: {volume} 个方块，当前上限 32768")
+            return True
+
+        mask_mode = "replace"
+        clone_mode = "normal"
+        filter_block_state = None
+        arg_index = 10
+
+        if len(parts) > arg_index:
+            option = parts[arg_index].lower()
+            if option in {"replace", "masked"}:
+                mask_mode = option
+                arg_index += 1
+            elif option == "filtered":
+                if len(parts) <= arg_index + 1:
+                    await reply("[PyMC] 用法: clone ... filtered <方块> [normal|force|move]")
+                    return True
+                mask_mode = "filtered"
+                filter_block_state = resolve_block_state(parts[arg_index + 1])
+                if filter_block_state is None:
+                    await reply(f"[PyMC] 未知方块: {parts[arg_index + 1]}")
+                    return True
+                arg_index += 2
+
+        if len(parts) > arg_index:
+            option = parts[arg_index].lower()
+            if option not in {"normal", "force", "move"}:
+                await reply("[PyMC] clone 模式必须是 normal、force 或 move")
+                return True
+            clone_mode = option
+
+        try:
+            changed, changed_chunks, changed_blocks = clone_box_detailed(
+                server,
+                x1, y1, z1, x2, y2, z2,
+                dest_x, dest_y, dest_z,
+                mask_mode=mask_mode,
+                clone_mode=clone_mode,
+                filter_block_state=filter_block_state,
+            )
+        except ValueError:
+            await reply("[PyMC] 源区域与目标区域重叠，请使用 force 或 move")
+            return True
+
+        await _sync_world_edit(server, changed_chunks, changed_blocks)
+        await reply(f"[PyMC] 已复制 {changed} 个方块到 ({dest_x}, {dest_y}, {dest_z})")
         return True
 
     if cmd == "kick":
@@ -1743,8 +2170,9 @@ async def execute_server_command(server, command: str,
         return True
 
     if cmd == "save-all":
+        server.save_all_player_states()
         server.world_storage.flush()
-        await reply("[PyMC] 世界数据已保存")
+        await reply("[PyMC] 世界与玩家数据已保存")
         return True
 
     if cmd in {"save-on", "save-off"}:
@@ -1813,7 +2241,9 @@ def _read_movement_on_ground(payload: bytes, offset: int) -> tuple[bool, int]:
 
 
 async def _handle_player_position(conn: Connection, payload: bytes, server):
-    """处理 Player Position (0x1A)。"""
+    """处理 Player Position (0x1C)。"""
+    if len(payload) < 25:  # 3*double + byte
+        return
     offset = 0
     x, offset = read_double(payload, offset)
     y, offset = read_double(payload, offset)
@@ -1830,7 +2260,9 @@ async def _handle_player_position(conn: Connection, payload: bytes, server):
 
 async def _handle_player_position_rotation(conn: Connection, payload: bytes,
                                             server):
-    """处理 Player Position and Rotation (0x1B)。"""
+    """处理 Player Position and Rotation (0x1D)。"""
+    if len(payload) < 33:  # 3*double + 2*float + byte
+        return
     offset = 0
     x, offset = read_double(payload, offset)
     y, offset = read_double(payload, offset)
@@ -1850,7 +2282,9 @@ async def _handle_player_position_rotation(conn: Connection, payload: bytes,
 
 
 async def _handle_player_rotation(conn: Connection, payload: bytes, server):
-    """处理 Player Rotation (0x1C)。"""
+    """处理 Player Rotation (0x1E)。"""
+    if len(payload) < 9:  # 2*float + byte
+        return
     offset = 0
     yaw, offset = read_float(payload, offset)
     pitch, offset = read_float(payload, offset)
@@ -1892,9 +2326,17 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
     current = _get_block_at(server, x, y, z)
     if current is None or current == AIR:
         return
-    if not _set_world_block(server, x, y, z, AIR):
+    changed_chunks = set_world_block(server, x, y, z, AIR)
+    if not changed_chunks:
         return
     await _broadcast_block_change(server, x, y, z, AIR)
+    drop_name = BLOCK_DROPS.get(current)
+    if drop_name and conn.gamemode in {"survival", "adventure"}:
+        entity = server.entity_manager.create_item(x + 0.5, y + 0.5, z + 0.5, item_name=drop_name, count=1)
+        entity.vx = ((x * 734287 + z * 912931) % 100 - 50) / 2500.0
+        entity.vy = 0.12
+        entity.vz = ((z * 438289 + x * 193496) % 100 - 50) / 2500.0
+        await broadcast_entity_spawn(server, entity)
 
 
 async def _handle_block_place(conn: Connection, payload: bytes, server):
@@ -1922,6 +2364,7 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
         return
 
     block_state = HOTBAR_PLACEABLES[conn.selected_hotbar_slot % len(HOTBAR_PLACEABLES)]
-    if not _set_world_block(server, place_x, place_y, place_z, block_state):
+    changed_chunks = set_world_block(server, place_x, place_y, place_z, block_state)
+    if not changed_chunks:
         return
     await _broadcast_block_change(server, place_x, place_y, place_z, block_state)
