@@ -55,6 +55,9 @@ class Connection:
         self.health: float = 20.0
         self.food: int = 20
         self.saturation: float = 5.0
+        self.experience_total: int = 0
+        self.experience_level: int = 0
+        self.experience_progress: float = 0.0
         self.gamemode: str = "creative"
         self.air_supply: int = 300
         self.fire_ticks: int = 0
@@ -62,7 +65,9 @@ class Connection:
         self.damage_cooldown_ticks: int = 0
         self.last_damage_reason: str = ""
         self.selected_hotbar_slot: int = 0
+        self.personal_spawn: tuple[int, int, int] | None = None
         self.loaded_chunks: set[tuple[int, int]] = set()
+        self.tracked_entities: set[int] = set()
         self.chunk_center: tuple[int, int] = (0, 0)
         self.chunk_stream_task: asyncio.Task | None = None
 
