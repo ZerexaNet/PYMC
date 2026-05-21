@@ -74,7 +74,13 @@ static constexpr int MIN_Y = -64;
 static constexpr int MAX_Y = 319;
 static constexpr int WORLD_HEIGHT = 384;  // MAX_Y - MIN_Y + 1
 static constexpr int SEA_LEVEL = 63;
-static constexpr int DENSITY_MARGIN = 8;
+static constexpr int CELL_WIDTH = 4;       // NoiseSettings.create(-64, 384, 1, 2)
+static constexpr int CELL_HEIGHT = 8;      // QuartPos.toBlock(noiseSizeVertical)
+static constexpr int CELL_COUNT_XZ = 16 / CELL_WIDTH;
+static constexpr int CELL_COUNT_Y = WORLD_HEIGHT / CELL_HEIGHT;
+static constexpr double GLOBAL_OFFSET = -0.50375;
+static constexpr double SURFACE_DENSITY_THRESHOLD = 1.5625;
+static constexpr double CHEESE_NOISE_TARGET = -0.703125;
 
 // ============================================================
 // Perlin 排列表
@@ -278,28 +284,82 @@ struct OctaveNoise {
     }
 };
 
+static inline double clamp01(double v) {
+    return std::max(0.0, std::min(1.0, v));
+}
+
+static inline double clamped_lerp(double a, double b, double t) {
+    return lerp(clamp01(t), a, b);
+}
+
+static inline double inverse_lerp(double a, double b, double v) {
+    if (a == b) return 0.0;
+    return clamp01((v - a) / (b - a));
+}
+
+static inline double y_clamped_gradient(double y, double y0, double y1,
+                                        double v0, double v1) {
+    return clamped_lerp(v0, v1, inverse_lerp(y0, y1, y));
+}
+
+static inline double half_negative(double v) {
+    return v < 0.0 ? v * 0.5 : v;
+}
+
+static inline double quarter_negative(double v) {
+    return v < 0.0 ? v * 0.25 : v;
+}
+
+static inline double peaks_and_valleys(double v) {
+    return -(std::fabs(std::fabs(v) - 0.6666667) - 0.33333334) * 3.0;
+}
+
+static inline double density_squeeze(double v) {
+    double x = std::max(-1.0, std::min(1.0, v));
+    return x / 2.0 - x * x * x / 24.0;
+}
+
 // ============================================================
 // 地形生成器
 // ============================================================
 struct TerrainGenerator {
     int64_t seed;
+    OctaveNoise shift_noise;
     OctaveNoise continental_noise;
     OctaveNoise erosion_noise;
-    OctaveNoise peaks_noise;
-    OctaveNoise density_noise;
-    OctaveNoise detail_noise;
+    OctaveNoise ridge_noise;
+    OctaveNoise jagged_noise;
+    OctaveNoise low_noise;
+    OctaveNoise high_noise;
+    OctaveNoise selector_noise;
+    OctaveNoise cave_noise;
+    OctaveNoise cave_layer_noise;
+    OctaveNoise cave_entrance_noise;
+    OctaveNoise noodle_noise;
+    OctaveNoise noodle_ridge_noise;
     OctaveNoise surface_noise;
     OctaveNoise temperature_noise;
 
     void init(int64_t s) {
         seed = s;
-        continental_noise.init(s + 1, 3, 0.5, 2.0);
-        erosion_noise.init(s + 2, 3, 0.45, 2.0);
-        peaks_noise.init(s + 3, 3, 0.5, 2.0);
-        density_noise.init(s + 4, 2, 0.5, 2.0);
-        detail_noise.init(s + 5, 2, 0.6, 2.0);
-        surface_noise.init(s + 6, 2, 0.5, 2.0);
-        temperature_noise.init(s + 7, 2, 0.5, 2.0);
+        // Parameters mirror the 1.21.1 decompiled NoiseData keys closely
+        // enough for this native fast path while keeping the binary protocol
+        // compact and dependency-free.
+        shift_noise.init(s + 24, 4, 0.5, 2.0);          // Noises.SHIFT
+        continental_noise.init(s + 17, 9, 0.52, 2.0);   // Noises.CONTINENTALNESS
+        erosion_noise.init(s + 18, 5, 0.50, 2.0);       // Noises.EROSION
+        ridge_noise.init(s + 23, 6, 0.50, 2.0);         // Noises.RIDGE
+        jagged_noise.init(s + 53, 16, 0.50, 2.0);       // Noises.JAGGED
+        low_noise.init(s + 101, 8, 0.50, 2.0);          // BlendedNoise low
+        high_noise.init(s + 102, 8, 0.50, 2.0);         // BlendedNoise high
+        selector_noise.init(s + 103, 4, 0.50, 2.0);     // BlendedNoise selector
+        cave_noise.init(s + 44, 10, 0.50, 2.0);         // Noises.CAVE_CHEESE
+        cave_layer_noise.init(s + 43, 3, 0.50, 2.0);    // Noises.CAVE_LAYER
+        cave_entrance_noise.init(s + 42, 3, 0.50, 2.0); // Noises.CAVE_ENTRANCE
+        noodle_noise.init(s + 49, 3, 0.50, 2.0);        // Noises.NOODLE
+        noodle_ridge_noise.init(s + 51, 3, 0.50, 2.0);  // Noises.NOODLE_RIDGE_A/B
+        surface_noise.init(s + 54, 3, 0.5, 2.0);        // Noises.SURFACE
+        temperature_noise.init(s + 15, 6, 0.5, 2.0);    // Noises.TEMPERATURE
     }
 
     double block_hash(int x, int y, int z) const {
@@ -310,34 +370,125 @@ struct TerrainGenerator {
         return (double)(n & 0x7FFFFFFF) / (double)0x7FFFFFFF;
     }
 
-    int get_terrain_height(int wx, int wz) const {
-        double nx = wx / 512.0;
-        double nz = wz / 512.0;
+    struct TerrainSample {
+        double continental;
+        double erosion;
+        double ridges;
+        double peaks_valleys;
+    };
 
-        double continental = continental_noise.sample(nx, nz);
-        double erosion = erosion_noise.sample(wx / 256.0, wz / 256.0);
-        double peaks = peaks_noise.sample(wx / 128.0, wz / 128.0);
-        double ridge = 1.0 - std::fabs(peaks);
-        double detail = detail_noise.sample(wx / 16.0, wz / 16.0);
+    TerrainSample sample_terrain(int wx, int wz) const {
+        double sx = shift_noise.sample(wx / 1024.0, wz / 1024.0) * 32.0;
+        double sz = shift_noise.sample((wx + 10000) / 1024.0, (wz - 10000) / 1024.0) * 32.0;
+        double x = wx + sx;
+        double z = wz + sz;
 
-        double base_height;
-        if (continental > 0)
-            base_height = SEA_LEVEL + continental * 40.0;
-        else
-            base_height = SEA_LEVEL + continental * 30.0;
-
-        double roughness = std::max(0.0, 1.0 - (erosion + 1.0) * 0.5);
-        double peak_contribution = ridge * roughness * 60.0;
-        double height = base_height + peak_contribution + detail * 4.0;
-
-        height = std::max((double)(MIN_Y + 5), std::min((double)(MAX_Y - 10), height));
-        return (int)height;
+        TerrainSample t{};
+        t.continental = std::max(-1.2, std::min(1.2, continental_noise.sample(x / 768.0, z / 768.0) * 1.18));
+        t.erosion = std::max(-1.0, std::min(1.0, erosion_noise.sample(x / 512.0, z / 512.0) * 1.10));
+        t.ridges = std::max(-1.0, std::min(1.0, ridge_noise.sample(x / 384.0, z / 384.0) * 1.20));
+        t.peaks_valleys = peaks_and_valleys(t.ridges);
+        return t;
     }
 
-    double get_density(int wx, int wy, int wz, int surface_height) const {
-        double base_density = (surface_height - wy) / 8.0;
-        double d3d = density_noise.sample_3d(wx / 64.0, wy / 64.0, wz / 64.0);
-        return base_density + d3d * 2.0;
+    double terrain_offset(const TerrainSample& t) const {
+        double c = t.continental;
+        double e = t.erosion;
+        double pv = t.peaks_valleys;
+        if (c < -1.02) return clamped_lerp(0.044, -0.2222, inverse_lerp(-1.10, -1.02, c));
+        if (c < -0.51) return -0.2222;
+        if (c < -0.44) return clamped_lerp(-0.2222, -0.12, inverse_lerp(-0.51, -0.44, c));
+        if (c < -0.18) return -0.12;
+        if (c < -0.10) return clamped_lerp(-0.12, -0.055, inverse_lerp(-0.18, -0.10, c));
+
+        double erosion_low = 1.0 - clamp01((e + 1.0) * 0.5);
+        double inland = clamp01((c + 0.10) / 1.10);
+        double peak = clamp01((pv + 0.20) / 1.20);
+        double valley = clamp01((0.10 - std::fabs(t.ridges)) / 0.10);
+        double mountain = inland * peak * (0.35 + erosion_low * 0.95);
+        double rolling = (0.03 + 0.10 * inland) * (0.45 + erosion_low * 0.55);
+        return rolling + mountain * 0.34 - valley * 0.075;
+    }
+
+    double terrain_factor(const TerrainSample& t) const {
+        double c = t.continental;
+        double e = t.erosion;
+        double pv = t.peaks_valleys;
+        if (c < -0.19) return 3.95;
+        double erosion_low = 1.0 - clamp01((e + 1.0) * 0.5);
+        double peak = clamp01((pv + 0.15) / 1.15);
+        double base = clamped_lerp(4.69, 6.30, erosion_low);
+        return base + peak * erosion_low * 1.35;
+    }
+
+    double terrain_jaggedness(const TerrainSample& t) const {
+        if (t.continental < -0.11) return 0.0;
+        double erosion_low = 1.0 - clamp01((t.erosion + 1.0) * 0.5);
+        double peak = clamp01((t.peaks_valleys - 0.10) / 0.90);
+        return peak * erosion_low * clamp01((t.continental + 0.11) / 0.76);
+    }
+
+    double blended_base_noise(int wx, int wy, int wz) const {
+        double xz = 80.0;
+        double y = 160.0;
+        double low = low_noise.sample_3d(wx / xz, wy / y, wz / xz);
+        double high = high_noise.sample_3d(wx / xz, wy / y, wz / xz);
+        double selector = clamp01((selector_noise.sample_3d(wx / 640.0, wy / 320.0, wz / 640.0) + 1.0) * 0.5);
+        double detail = low * (1.0 - selector) + high * selector;
+        return detail * 0.82 + CHEESE_NOISE_TARGET * 0.12;
+    }
+
+    double slide_overworld(double density, int wy) const {
+        double top = y_clamped_gradient(wy, 240.0, 256.0, 1.0, 0.0);
+        density = lerp(top, -0.078125, density);
+        double bottom = y_clamped_gradient(wy, -64.0, -40.0, 0.0, 1.0);
+        density = lerp(bottom, 0.1171875, density);
+        return density;
+    }
+
+    double cave_density(int wx, int wy, int wz, double sloped_cheese) const {
+        if (wy > 96 || sloped_cheese > SURFACE_DENSITY_THRESHOLD) {
+            return sloped_cheese;
+        }
+
+        double cheese = cave_noise.sample_3d(wx / 64.0, wy / 48.0, wz / 64.0);
+        double layer = cave_layer_noise.sample_3d(wx / 96.0, wy / 40.0, wz / 96.0);
+        double roughness = std::fabs(cave_entrance_noise.sample_3d(wx / 32.0, wy / 32.0, wz / 32.0)) - 0.36;
+        double cave = std::max(layer * layer * 2.6, 0.34 + cheese + roughness * 0.35);
+
+        double noodle_gate = noodle_noise.sample_3d(wx / 96.0, wy / 96.0, wz / 96.0);
+        if (wy >= -60 && noodle_gate < 0.0) {
+            double ridge_a = std::fabs(noodle_ridge_noise.sample_3d(wx / 36.0, wy / 36.0, wz / 36.0));
+            double ridge_b = std::fabs(noodle_ridge_noise.sample_3d((wx + 20000) / 36.0, wy / 36.0, (wz - 20000) / 36.0));
+            cave = std::min(cave, -0.08 + std::max(ridge_a, ridge_b) * 1.5);
+        }
+
+        return std::min(sloped_cheese, cave);
+    }
+
+    double sample_density(int wx, int wy, int wz) const {
+        TerrainSample t = sample_terrain(wx, wz);
+        double offset = GLOBAL_OFFSET + terrain_offset(t);
+        double depth = y_clamped_gradient(wy, -64.0, 320.0, 1.5, -1.5) + offset;
+        double jagged = terrain_jaggedness(t) *
+                        half_negative(jagged_noise.sample_3d(wx / 1500.0, wy / 1500.0, wz / 1500.0));
+        double gradient = 4.0 * quarter_negative((depth + jagged) * terrain_factor(t));
+        double sloped_cheese = gradient + blended_base_noise(wx, wy, wz);
+        double density = cave_density(wx, wy, wz, sloped_cheese);
+        density = slide_overworld(density, wy);
+        return density_squeeze(density * 0.64);
+    }
+
+    static double trilerp(double tx, double ty, double tz,
+                          double c000, double c100, double c010, double c110,
+                          double c001, double c101, double c011, double c111) {
+        double x00 = lerp(tx, c000, c100);
+        double x10 = lerp(tx, c010, c110);
+        double x01 = lerp(tx, c001, c101);
+        double x11 = lerp(tx, c011, c111);
+        double y0 = lerp(ty, x00, x10);
+        double y1 = lerp(ty, x01, x11);
+        return lerp(tz, y0, y1);
     }
 
     // 主生成函数: 生成 384*16*16 的方块数据
@@ -349,64 +500,77 @@ struct TerrainGenerator {
         int base_x = chunk_x * 16;
         int base_z = chunk_z * 16;
 
-        // 高度图
         int height_map[16][16];
+        for (int z = 0; z < 16; z++) {
+            for (int x = 0; x < 16; x++) {
+                height_map[z][x] = MIN_Y;
+            }
+        }
 
-        // --- 第一步: 基础地形 ---
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                int wx = base_x + lx;
-                int wz = base_z + lz;
-                int surface_h = get_terrain_height(wx, wz);
-                height_map[lz][lx] = surface_h;
-                if (heightmap_out != nullptr) {
-                    heightmap_out[lz * 16 + lx] = (int16_t)surface_h;
+        double density[CELL_COUNT_XZ + 1][CELL_COUNT_Y + 1][CELL_COUNT_XZ + 1];
+        for (int cx = 0; cx <= CELL_COUNT_XZ; cx++) {
+            int wx = base_x + cx * CELL_WIDTH;
+            for (int cz = 0; cz <= CELL_COUNT_XZ; cz++) {
+                int wz = base_z + cz * CELL_WIDTH;
+                for (int cy = 0; cy <= CELL_COUNT_Y; cy++) {
+                    int wy = MIN_Y + cy * CELL_HEIGHT;
+                    density[cx][cy][cz] = sample_density(wx, wy, wz);
                 }
-                int si = surface_h - MIN_Y;
+            }
+        }
 
-                // 基岩层
-                blocks[0 * 256 + lz * 16 + lx] = BEDROCK;
-                for (int byi = 1; byi < 5; byi++) {
-                    double rv = block_hash(wx, MIN_Y + byi, wz);
-                    int idx = byi * 256 + lz * 16 + lx;
-                    if (rv < (5 - byi) * 0.2) {
-                        blocks[idx] = BEDROCK;
-                    } else if (MIN_Y + byi < 0) {
-                        blocks[idx] = DEEPSLATE;
-                    } else {
-                        blocks[idx] = STONE;
-                    }
-                }
+        // --- 第一步: 1.21.1 NoiseBasedChunkGenerator 风格的 cell 插值填充 ---
+        for (int cx = 0; cx < CELL_COUNT_XZ; cx++) {
+            for (int cz = 0; cz < CELL_COUNT_XZ; cz++) {
+                for (int cy = 0; cy < CELL_COUNT_Y; cy++) {
+                    double c000 = density[cx][cy][cz];
+                    double c100 = density[cx + 1][cy][cz];
+                    double c010 = density[cx][cy + 1][cz];
+                    double c110 = density[cx + 1][cy + 1][cz];
+                    double c001 = density[cx][cy][cz + 1];
+                    double c101 = density[cx + 1][cy][cz + 1];
+                    double c011 = density[cx][cy + 1][cz + 1];
+                    double c111 = density[cx + 1][cy + 1][cz + 1];
 
-                // 基岩以上 -> 密度采样区域以下: 直接固体
-                int density_bottom_yi = std::max(5, si - DENSITY_MARGIN);
-                for (int yi = 5; yi < density_bottom_yi; yi++) {
-                    int wy = MIN_Y + yi;
-                    blocks[yi * 256 + lz * 16 + lx] = (wy < 0) ? DEEPSLATE : STONE;
-                }
+                    for (int dy = 0; dy < CELL_HEIGHT; dy++) {
+                        int yi = cy * CELL_HEIGHT + dy;
+                        int wy = MIN_Y + yi;
+                        double ty = (double)dy / (double)CELL_HEIGHT;
+                        for (int dx = 0; dx < CELL_WIDTH; dx++) {
+                            int lx = cx * CELL_WIDTH + dx;
+                            int wx = base_x + lx;
+                            double tx = (double)dx / (double)CELL_WIDTH;
+                            for (int dz = 0; dz < CELL_WIDTH; dz++) {
+                                int lz = cz * CELL_WIDTH + dz;
+                                int wz = base_z + lz;
+                                double tz = (double)dz / (double)CELL_WIDTH;
+                                double d = trilerp(tx, ty, tz, c000, c100, c010, c110, c001, c101, c011, c111);
+                                int idx = yi * 256 + lz * 16 + lx;
 
-                // 密度采样区域
-                int density_top_yi = std::min(WORLD_HEIGHT, si + DENSITY_MARGIN);
-                for (int yi = density_bottom_yi; yi < density_top_yi; yi++) {
-                    int wy = MIN_Y + yi;
-                    double density = get_density(wx, wy, wz, surface_h);
-                    int idx = yi * 256 + lz * 16 + lx;
-                    if (density > 0) {
-                        blocks[idx] = (wy < 0) ? DEEPSLATE : STONE;
-                    } else {
-                        if (wy <= SEA_LEVEL && surface_h < SEA_LEVEL) {
-                            blocks[idx] = WATER;
+                                if (yi == 0 || (yi < 5 && block_hash(wx, wy, wz) < (5 - yi) * 0.2)) {
+                                    blocks[idx] = BEDROCK;
+                                } else if (d > 0.0) {
+                                    blocks[idx] = (wy < 0) ? DEEPSLATE : STONE;
+                                    if (wy > height_map[lz][lx]) {
+                                        height_map[lz][lx] = wy;
+                                    }
+                                } else if (wy <= SEA_LEVEL) {
+                                    blocks[idx] = WATER;
+                                }
+                            }
                         }
                     }
                 }
+            }
+        }
 
-                // 海平面填水
-                if (surface_h < SEA_LEVEL) {
-                    int sea_yi = SEA_LEVEL - MIN_Y;
-                    for (int yi = density_top_yi; yi <= std::min(sea_yi, WORLD_HEIGHT - 1); yi++) {
-                        int idx = yi * 256 + lz * 16 + lx;
-                        if (blocks[idx] == AIR) blocks[idx] = WATER;
-                    }
+        for (int lz = 0; lz < 16; lz++) {
+            for (int lx = 0; lx < 16; lx++) {
+                if (height_map[lz][lx] < MIN_Y + 1) {
+                    height_map[lz][lx] = MIN_Y + 1;
+                }
+                if (heightmap_out != nullptr) {
+                    heightmap_out[lz * 16 + lx] = (int16_t)height_map[lz][lx];
                 }
             }
         }
