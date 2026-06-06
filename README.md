@@ -40,7 +40,6 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [ ] 更完整的生物系统：寻路、繁殖、掉落、远程攻击、村民、Boss、刷怪规则和 mob cap。
 - [ ] 正版登录验证、加密链路和更完整的权限模型。
 - [ ] 更完整的命令系统、选择器、NBT 参数和 datapack/function 支持。
-- [ ] 跨平台构建和发布包：Windows/Linux/macOS 原生可执行文件。
 
 ### 当前限制
 
