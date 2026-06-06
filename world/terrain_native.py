@@ -15,10 +15,11 @@
     [0:4]   int32  chunk_x
     [4:8]   int32  chunk_z
     [8:16]  int64  seed
-  响应: 4 + 197120 字节
-    [0:4]        uint32  数据长度 (固定 197120)
+  响应: 4 + 200192 字节
+    [0:4]        uint32  数据长度 (固定 200192)
     [4:196612]   uint16  方块数据 98304 个 (y*256+z*16+x 顺序)
     [196612:197124] int16 高度图 256 个 (z*16+x 顺序)
+    [197124:200196] uint16 生物群系 1536 个 (section*64 + y*16 + z*4 + x)
 """
 
 import os
@@ -38,7 +39,10 @@ BLOCKS_COUNT = WORLD_HEIGHT * 16 * 16  # 98304
 BLOCKS_BYTES = BLOCKS_COUNT * 2        # 196608
 HEIGHTMAP_COUNT = 256
 HEIGHTMAP_BYTES = HEIGHTMAP_COUNT * 2  # 512
-PAYLOAD_SIZE = BLOCKS_BYTES + HEIGHTMAP_BYTES  # 197120
+BIOME_COUNT = 24 * 64
+BIOME_BYTES = BIOME_COUNT * 2
+LEGACY_PAYLOAD_SIZE = BLOCKS_BYTES + HEIGHTMAP_BYTES  # 197120
+PAYLOAD_SIZE = BLOCKS_BYTES + HEIGHTMAP_BYTES + BIOME_BYTES
 
 SINGLE_COMMAND = b'C'
 BATCH_COMMAND = b'B'
@@ -54,14 +58,14 @@ def _find_native_binary() -> str | None:
     binary_names = ["terrain_gen.exe", "terrain_gen"]
     compiled = globals().get("__compiled__")
     base_roots = [
+        Path(__file__).resolve().parent.parent,
+        Path(__file__).resolve().parent,
+        Path.cwd(),
+        Path(sys.argv[0]).resolve().parent,
         Path(compiled.containing_dir).resolve()
         if compiled is not None and hasattr(compiled, "containing_dir")
         else None,
         Path(sys.executable).resolve().parent,
-        Path(sys.argv[0]).resolve().parent,
-        Path(__file__).resolve().parent,
-        Path(__file__).resolve().parent.parent,
-        Path.cwd(),
     ]
 
     search_roots: list[Path] = []
@@ -163,6 +167,22 @@ def _decode_binary_heightmap(data: bytes) -> list[list[int]]:
     return height_map
 
 
+def _decode_binary_biomes(data: bytes) -> list[list[int]] | None:
+    """将 C++ 返回的 24 个 section biome palette ids 解码为 [[64], ...]。"""
+    if not data:
+        return None
+    flat = array.array('H')
+    flat.frombytes(data)
+    if len(flat) < BIOME_COUNT:
+        return None
+    sections = []
+    offset = 0
+    for _ in range(24):
+        sections.append(list(flat[offset:offset + 64]))
+        offset += 64
+    return sections
+
+
 class NativeTerrainGenerator:
     """
     使用 C++ 子进程的高性能地形生成器。
@@ -250,7 +270,7 @@ class NativeTerrainGenerator:
         self._process.stdin.write(request)
         self._process.stdin.flush()
 
-    def _recv_single_response(self) -> tuple[bytes, bytes]:
+    def _recv_single_response(self) -> tuple[bytes, bytes, bytes | None]:
         """
         接收单区块二进制响应。
         返回 (方块数据 bytes, 高度图数据 bytes)。
@@ -258,33 +278,38 @@ class NativeTerrainGenerator:
         header = self._read_exact(4)
         payload_size = struct.unpack(SINGLE_RESPONSE_HEADER_FORMAT, header)[0]
 
-        if payload_size != PAYLOAD_SIZE:
-            raise RuntimeError(f"响应数据长度异常: 期望 {PAYLOAD_SIZE}, 收到 {payload_size}")
+        if payload_size not in (PAYLOAD_SIZE, LEGACY_PAYLOAD_SIZE):
+            raise RuntimeError(
+                f"响应数据长度异常: 期望 {PAYLOAD_SIZE} 或 {LEGACY_PAYLOAD_SIZE}, 收到 {payload_size}"
+            )
 
         # 读取完整数据
         payload = self._read_exact(payload_size)
 
         blocks_data = payload[:BLOCKS_BYTES]
-        heightmap_data = payload[BLOCKS_BYTES:]
+        heightmap_data = payload[BLOCKS_BYTES:BLOCKS_BYTES + HEIGHTMAP_BYTES]
+        biome_data = payload[BLOCKS_BYTES + HEIGHTMAP_BYTES:] or None
 
-        return blocks_data, heightmap_data
+        return blocks_data, heightmap_data, biome_data
 
-    def _recv_batch_response(self, expected_count: int) -> list[tuple[bytes, bytes]]:
+    def _recv_batch_response(self, expected_count: int) -> list[tuple[bytes, bytes, bytes | None]]:
         """接收批量区块响应。"""
         header = self._read_exact(4)
         chunk_count = struct.unpack(BATCH_RESPONSE_HEADER_FORMAT, header)[0]
         if chunk_count != expected_count:
             raise RuntimeError(f"批量响应数量异常: 期望 {expected_count}, 收到 {chunk_count}")
 
-        payload = self._read_exact(chunk_count * PAYLOAD_SIZE)
-        chunks: list[tuple[bytes, bytes]] = []
+        payload_size_per_chunk = PAYLOAD_SIZE
+        payload = self._read_exact(chunk_count * payload_size_per_chunk)
+        chunks: list[tuple[bytes, bytes, bytes | None]] = []
         offset = 0
         for _ in range(chunk_count):
-            chunk_payload = payload[offset:offset + PAYLOAD_SIZE]
-            offset += PAYLOAD_SIZE
+            chunk_payload = payload[offset:offset + payload_size_per_chunk]
+            offset += payload_size_per_chunk
             chunks.append((
                 chunk_payload[:BLOCKS_BYTES],
-                chunk_payload[BLOCKS_BYTES:],
+                chunk_payload[BLOCKS_BYTES:BLOCKS_BYTES + HEIGHTMAP_BYTES],
+                chunk_payload[BLOCKS_BYTES + HEIGHTMAP_BYTES:] or None,
             ))
         return chunks
 
@@ -306,7 +331,7 @@ class NativeTerrainGenerator:
 
         try:
             self._send_single_request(chunk_x, chunk_z)
-            blocks_data, _ = self._recv_single_response()
+            blocks_data, _, _ = self._recv_single_response()
             return _decode_binary_blocks(blocks_data)
 
         except Exception as e:
@@ -332,13 +357,34 @@ class NativeTerrainGenerator:
 
         try:
             self._send_single_request(chunk_x, chunk_z)
-            blocks_data, heightmap_data = self._recv_single_response()
+            blocks_data, heightmap_data, _ = self._recv_single_response()
 
             blocks = _decode_binary_blocks(blocks_data)
             height_map = _decode_binary_heightmap(heightmap_data)
 
             return blocks, height_map
 
+        except Exception as e:
+            logger.error(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            self.shutdown()
+            self._start_process()
+            raise
+
+    def generate_chunk_with_metadata(self, chunk_x: int, chunk_z: int):
+        """生成区块、地形高度图和原生 biome section ids。"""
+        if not self.available:
+            self._start_process()
+            if not self.available:
+                raise RuntimeError("原生地形生成器不可用")
+
+        try:
+            self._send_single_request(chunk_x, chunk_z)
+            blocks_data, heightmap_data, biome_data = self._recv_single_response()
+            return (
+                _decode_binary_blocks(blocks_data),
+                _decode_binary_heightmap(heightmap_data),
+                _decode_binary_biomes(biome_data),
+            )
         except Exception as e:
             logger.error(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
             self.shutdown()
@@ -365,7 +411,34 @@ class NativeTerrainGenerator:
             raw_chunks = self._recv_batch_response(len(chunk_coords))
             return [
                 (_decode_binary_blocks(blocks_data), _decode_binary_heightmap(heightmap_data))
-                for blocks_data, heightmap_data in raw_chunks
+                for blocks_data, heightmap_data, _ in raw_chunks
+            ]
+        except Exception as e:
+            logger.error(f"原生批量区块生成失败 ({len(chunk_coords)} 个): {e}")
+            self.shutdown()
+            self._start_process()
+            raise
+
+    def generate_chunks_with_metadata(self, chunk_coords: list[tuple[int, int]]):
+        """批量生成区块、地形高度图和 biome section ids。"""
+        if not chunk_coords:
+            return []
+
+        if not self.available:
+            self._start_process()
+            if not self.available:
+                raise RuntimeError("原生地形生成器不可用")
+
+        try:
+            self._send_batch_request(chunk_coords)
+            raw_chunks = self._recv_batch_response(len(chunk_coords))
+            return [
+                (
+                    _decode_binary_blocks(blocks_data),
+                    _decode_binary_heightmap(heightmap_data),
+                    _decode_binary_biomes(biome_data),
+                )
+                for blocks_data, heightmap_data, biome_data in raw_chunks
             ]
         except Exception as e:
             logger.error(f"原生批量区块生成失败 ({len(chunk_coords)} 个): {e}")
@@ -388,15 +461,24 @@ class NativeTerrainGenerator:
 
     def shutdown(self):
         """关闭子进程。"""
-        if self._process:
+        if getattr(self, "_process", None):
+            process = self._process
             try:
-                self._process.stdin.close()
-                self._process.wait(timeout=5)
+                if process.stdin:
+                    process.stdin.close()
+                process.wait(timeout=5)
             except Exception:
                 try:
-                    self._process.kill()
+                    process.kill()
                 except Exception:
                     pass
+            finally:
+                for pipe in (process.stdout, process.stderr):
+                    try:
+                        if pipe:
+                            pipe.close()
+                    except Exception:
+                        pass
             self._process = None
             logger.info("原生地形生成器子进程已关闭")
 

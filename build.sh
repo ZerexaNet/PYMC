@@ -43,6 +43,14 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "[信息] 正在编译原生生物 AI..."
+g++ -O3 -std=c++17 -o native/mob_ai native/mob_ai.cpp
+
+if [ $? -ne 0 ]; then
+    echo "[错误] mob_ai 编译失败!"
+    exit 1
+fi
+
 echo "[信息] 开始编译 PyMC 服务端..."
 echo ""
 
@@ -58,6 +66,7 @@ python3 -m nuitka \
     --include-module=config \
     --include-data-dir=native=native \
     --include-data-files=native/terrain_gen=terrain_gen \
+    --include-data-files=native/mob_ai=mob_ai \
     --include-data-files=world/blocks.json=world/blocks.json \
     --follow-imports \
     --assume-yes-for-downloads \

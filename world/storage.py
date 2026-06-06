@@ -49,7 +49,7 @@ import logging
 import json
 from pathlib import Path
 from io import BytesIO
-from .chunk_io import serialize_chunk, deserialize_chunk
+from .chunk_io import serialize_chunk, deserialize_chunk, deserialize_chunk_with_biomes
 
 logger = logging.getLogger("pymc.storage")
 
@@ -449,6 +449,18 @@ class WorldStorage:
         if raw is None:
             return None
         return deserialize_chunk(raw)
+
+    def load_generated_chunk_with_biomes(self, cx: int, cz: int):
+        """
+        加载区块方块数组和 biome section ids。
+
+        返回:
+            (blocks, biomes) 或 None
+        """
+        raw = self.load_chunk(cx, cz)
+        if raw is None:
+            return None
+        return deserialize_chunk_with_biomes(raw)
 
     def save_chunk(self, cx: int, cz: int, nbt_data: bytes):
         """

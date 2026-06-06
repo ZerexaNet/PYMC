@@ -29,6 +29,35 @@ from world.entities import EntityManager
 logger = logging.getLogger("PyMC.服务器")
 
 
+def parse_vanilla_seed(seed_value) -> int:
+    """
+    Parse level-seed like vanilla Java Edition.
+
+    Numeric strings are parsed as signed 64-bit integers. Non-numeric strings
+    fall back to Java String.hashCode(), promoted to long. Python's hash() is
+    intentionally randomized between processes, so it cannot be used for
+    reproducible Minecraft seeds.
+    """
+    if isinstance(seed_value, int):
+        return seed_value
+    text = str(seed_value or "").strip()
+    if not text:
+        return 0
+    try:
+        value = int(text)
+        if -(1 << 63) <= value <= (1 << 63) - 1:
+            return value
+    except ValueError:
+        pass
+
+    h = 0
+    for ch in text:
+        h = (31 * h + ord(ch)) & 0xFFFFFFFF
+    if h >= 0x80000000:
+        h -= 0x100000000
+    return h
+
+
 class MinecraftServer:
     """
     Minecraft TCP 服务器。
@@ -225,12 +254,7 @@ class MinecraftServer:
         if self.terrain_generator is not None:
             return
 
-        seed = self.config.get("level-seed", 0)
-        if isinstance(seed, str):
-            try:
-                seed = int(seed)
-            except ValueError:
-                seed = hash(seed)
+        seed = parse_vanilla_seed(self.config.get("level-seed", 0))
 
         explicit_native_path = None
         binary_names = ["terrain_gen.exe", "terrain_gen"]
@@ -313,16 +337,23 @@ class MinecraftServer:
         storage = self.world_storage
         terrain = self.terrain_generator
 
-        chunk_blocks = storage.load_generated_chunk(cx, cz)
+        loaded_chunk = storage.load_generated_chunk_with_biomes(cx, cz)
+        if loaded_chunk is not None:
+            chunk_blocks, chunk_biomes = loaded_chunk
+        else:
+            chunk_blocks, chunk_biomes = None, None
         was_loaded = chunk_blocks is not None
 
         if chunk_blocks is None:
-            if self._use_native_terrain:
+            if self._use_native_terrain and hasattr(terrain, "generate_chunk_with_metadata"):
+                chunk_blocks, _, chunk_biomes = terrain.generate_chunk_with_metadata(cx, cz)
+            elif self._use_native_terrain:
                 chunk_blocks, _ = terrain.generate_chunk_with_heightmap(cx, cz)
             else:
                 chunk_blocks = terrain.generate_chunk(cx, cz)
 
-        chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
+        if chunk_biomes is None:
+            chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
         motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
         world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
         chunk_data = build_chunk_column_from_terrain(chunk_blocks, chunk_biomes)
@@ -346,9 +377,11 @@ class MinecraftServer:
         missing_coords: list[tuple[int, int]] = []
 
         for cx, cz in chunk_coords:
-            chunk_blocks = storage.load_generated_chunk(cx, cz)
-            if chunk_blocks is not None:
-                chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
+            loaded_chunk = storage.load_generated_chunk_with_biomes(cx, cz)
+            if loaded_chunk is not None:
+                chunk_blocks, chunk_biomes = loaded_chunk
+                if chunk_biomes is None:
+                    chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
                 motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
                 world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
                 chunk_data = build_chunk_column_from_terrain(chunk_blocks, chunk_biomes)
@@ -359,7 +392,17 @@ class MinecraftServer:
                 missing_coords.append((cx, cz))
 
         if missing_coords:
-            if self._use_native_terrain and hasattr(terrain, "generate_chunks_with_heightmaps"):
+            if self._use_native_terrain and hasattr(terrain, "generate_chunks_with_metadata"):
+                native_results = terrain.generate_chunks_with_metadata(missing_coords)
+                for (cx, cz), (chunk_blocks, _, native_biomes) in zip(missing_coords, native_results):
+                    chunk_biomes = native_biomes or self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
+                    motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
+                    world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
+                    chunk_data = build_chunk_column_from_terrain(chunk_blocks, chunk_biomes)
+                    chunk_record_map[(cx, cz)] = (
+                        cx, cz, motion_blocking, world_surface, chunk_data, False, chunk_blocks, chunk_biomes
+                    )
+            elif self._use_native_terrain and hasattr(terrain, "generate_chunks_with_heightmaps"):
                 native_results = terrain.generate_chunks_with_heightmaps(missing_coords)
                 for (cx, cz), (chunk_blocks, _) in zip(missing_coords, native_results):
                     chunk_biomes = self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
@@ -419,27 +462,34 @@ class MinecraftServer:
         if not missing_coords:
             return loaded, generated
 
-        generated_chunks: list[tuple[tuple[int, int], list[list[list[int]]]]] = []
-        if self._use_native_terrain and hasattr(terrain, "generate_chunks_with_heightmaps"):
+        generated_chunks: list[tuple[tuple[int, int], list[list[list[int]]], list[list[int]] | None]] = []
+        if self._use_native_terrain and hasattr(terrain, "generate_chunks_with_metadata"):
+            native_results = terrain.generate_chunks_with_metadata(missing_coords)
+            generated_chunks = [
+                ((cx, cz), chunk_blocks, native_biomes)
+                for (cx, cz), (chunk_blocks, _, native_biomes) in zip(missing_coords, native_results)
+            ]
+        elif self._use_native_terrain and hasattr(terrain, "generate_chunks_with_heightmaps"):
             native_results = terrain.generate_chunks_with_heightmaps(missing_coords)
             generated_chunks = [
-                ((cx, cz), chunk_blocks)
+                ((cx, cz), chunk_blocks, None)
                 for (cx, cz), (chunk_blocks, _) in zip(missing_coords, native_results)
             ]
         elif self.should_use_multithreaded_generation():
             executor = self._get_chunk_executor()
             generated_chunks = list(executor.map(
-                lambda pos: (pos, terrain.generate_chunk(*pos)),
+                lambda pos: (pos, terrain.generate_chunk(*pos), None),
                 missing_coords,
             ))
         else:
             generated_chunks = [
-                ((cx, cz), terrain.generate_chunk(cx, cz))
+                ((cx, cz), terrain.generate_chunk(cx, cz), None)
                 for cx, cz in missing_coords
             ]
 
-        for (cx, cz), chunk_blocks in generated_chunks:
-            storage.save_generated_chunk(cx, cz, chunk_blocks)
+        for (cx, cz), chunk_blocks, native_biomes in generated_chunks:
+            chunk_biomes = native_biomes or self.biome_sampler.build_chunk_biome_sections(cx, cz, chunk_blocks)
+            storage.save_generated_chunk(cx, cz, chunk_blocks, chunk_biomes)
             generated += 1
 
         if generated:
@@ -495,6 +545,12 @@ class MinecraftServer:
         if self._chunk_executor:
             self._chunk_executor.shutdown(wait=False, cancel_futures=False)
             self._chunk_executor = None
+
+        if self.terrain_generator is not None and hasattr(self.terrain_generator, "shutdown"):
+            self.terrain_generator.shutdown()
+            self.terrain_generator = None
+
+        self.entity_manager.shutdown()
 
         # 断开所有连接
         for conn in list(self.connections):

@@ -6,4 +6,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(terrain_gen native/terrain_gen.cpp)
+add_executable(mob_ai native/mob_ai.cpp)
 add_executable(rootree_worldgen src/main.cpp)
