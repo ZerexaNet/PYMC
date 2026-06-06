@@ -69,8 +69,15 @@ from world.blocks import (
     MOSS_BLOCK, SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY, STONE,
     FIRE, SOUL_FIRE, CACTUS, WATER_CAULDRON, LAVA_CAULDRON,
     MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH,
-    POWDER_SNOW, POWDER_SNOW_CAULDRON,
-    COBBLESTONE, OAK_PLANKS, GLASS, OAK_LOG, TORCH,
+    POWDER_SNOW, POWDER_SNOW_CAULDRON, SNOW,
+    SHORT_GRASS, TALL_GRASS, FERN, LARGE_FERN, DEAD_BUSH,
+    SEAGRASS, TALL_SEAGRASS, KELP, KELP_PLANT, SUGAR_CANE,
+    PUMPKIN, MELON, BAMBOO,
+    OAK_LEAVES, SPRUCE_LEAVES, BIRCH_LEAVES, JUNGLE_LEAVES,
+    ACACIA_LEAVES, CHERRY_LEAVES, DARK_OAK_LEAVES, MANGROVE_LEAVES,
+    OAK_LOG, SPRUCE_LOG, BIRCH_LOG, JUNGLE_LOG, ACACIA_LOG,
+    CHERRY_LOG, DARK_OAK_LOG, MANGROVE_LOG,
+    COBBLESTONE, OAK_PLANKS, GLASS, TORCH,
 )
 
 logger = logging.getLogger("PyMC.游戏")
@@ -78,6 +85,23 @@ CHUNK_STREAM_BATCH_SIZE = 32
 PASSABLE_BLOCKS = {
     AIR, WATER, LAVA, FIRE, SOUL_FIRE, WATER_CAULDRON, LAVA_CAULDRON,
     POWDER_SNOW, POWDER_SNOW_CAULDRON,
+    SNOW, SHORT_GRASS, TALL_GRASS, FERN, LARGE_FERN, DEAD_BUSH,
+    SEAGRASS, TALL_SEAGRASS, KELP, KELP_PLANT, SUGAR_CANE, BAMBOO,
+}
+SPAWN_CLEAR_BLOCKS = {
+    AIR, SNOW, SHORT_GRASS, TALL_GRASS, FERN, LARGE_FERN, DEAD_BUSH,
+}
+SPAWN_UNSAFE_GROUND_BLOCKS = {
+    AIR, WATER, LAVA, FIRE, SOUL_FIRE, WATER_CAULDRON, LAVA_CAULDRON,
+    POWDER_SNOW, POWDER_SNOW_CAULDRON, CACTUS, MAGMA_BLOCK,
+    CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH,
+    SEAGRASS, TALL_SEAGRASS, KELP, KELP_PLANT, SUGAR_CANE, BAMBOO,
+}
+SPAWN_CANOPY_BLOCKS = {
+    OAK_LEAVES, SPRUCE_LEAVES, BIRCH_LEAVES, JUNGLE_LEAVES,
+    ACACIA_LEAVES, CHERRY_LEAVES, DARK_OAK_LEAVES, MANGROVE_LEAVES,
+    OAK_LOG, SPRUCE_LOG, BIRCH_LOG, JUNGLE_LOG, ACACIA_LOG,
+    CHERRY_LOG, DARK_OAK_LOG, MANGROVE_LOG,
 }
 HOTBAR_PLACEABLES = [
     STONE, GRASS_BLOCK, DIRT, COBBLESTONE, OAK_PLANKS,
@@ -651,6 +675,80 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
     await conn.send_packet(0x27, bytes(payload))
 
 
+def _load_or_generate_spawn_chunk(
+    server,
+    cx: int,
+    cz: int,
+    chunk_cache: dict[tuple[int, int], list[list[list[int]]] | None],
+):
+    """Load a chunk for spawn checks, generating it when it is not on disk yet."""
+    key = (int(cx), int(cz))
+    if key in chunk_cache:
+        return chunk_cache[key]
+
+    storage = server.world_storage
+    chunk_blocks = None
+    chunk_biomes = None
+    if hasattr(storage, "load_generated_chunk_with_biomes"):
+        loaded = storage.load_generated_chunk_with_biomes(*key)
+        if loaded is not None:
+            chunk_blocks, chunk_biomes = loaded
+    if chunk_blocks is None and hasattr(storage, "load_generated_chunk"):
+        chunk_blocks = storage.load_generated_chunk(*key)
+
+    if chunk_blocks is None:
+        if getattr(server, "terrain_generator", None) is None and hasattr(server, "_initialize_terrain_generator"):
+            server._initialize_terrain_generator()
+        terrain = getattr(server, "terrain_generator", None)
+        if terrain is not None:
+            if getattr(server, "_use_native_terrain", False) and hasattr(terrain, "generate_chunk_with_metadata"):
+                chunk_blocks, _, chunk_biomes = terrain.generate_chunk_with_metadata(*key)
+            elif getattr(server, "_use_native_terrain", False) and hasattr(terrain, "generate_chunk_with_heightmap"):
+                chunk_blocks, _ = terrain.generate_chunk_with_heightmap(*key)
+            elif hasattr(terrain, "generate_chunk"):
+                chunk_blocks = terrain.generate_chunk(*key)
+
+        if chunk_blocks is not None:
+            biome_sampler = getattr(server, "biome_sampler", None)
+            if chunk_biomes is None and biome_sampler is not None:
+                chunk_biomes = biome_sampler.build_chunk_biome_sections(*key, chunk_blocks)
+            if hasattr(storage, "save_generated_chunk"):
+                storage.save_generated_chunk(*key, chunk_blocks, chunk_biomes)
+
+    chunk_cache[key] = chunk_blocks
+    return chunk_blocks
+
+
+def _is_spawn_clear_block(block_id: int | None) -> bool:
+    return block_id in SPAWN_CLEAR_BLOCKS
+
+
+def _is_spawn_ground_block(block_id: int | None) -> bool:
+    return (
+        block_id is not None
+        and block_id not in SPAWN_UNSAFE_GROUND_BLOCKS
+        and block_id not in SPAWN_CLEAR_BLOCKS
+        and block_id not in SPAWN_CANOPY_BLOCKS
+    )
+
+
+def _spawn_candidate_from_column(chunk_blocks, local_x: int, local_z: int):
+    for y_index in range(len(chunk_blocks) - 3, 0, -1):
+        ground = chunk_blocks[y_index][local_z][local_x]
+        foot = chunk_blocks[y_index + 1][local_z][local_x]
+        head = chunk_blocks[y_index + 2][local_z][local_x]
+        if not _is_spawn_ground_block(ground):
+            continue
+        if not _is_spawn_clear_block(foot) or not _is_spawn_clear_block(head):
+            continue
+        return {
+            "block_id": ground,
+            "world_y": y_index - 64,
+            "spawn_y": y_index + 1 - 64,
+        }
+    return None
+
+
 def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, int, int]:
     """
     在出生点附近选择一个更安全、更平坦的落脚点。
@@ -663,34 +761,16 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
     }
     chunk_cache: dict[tuple[int, int], list[list[list[int]]] | None] = {}
 
-    def _load_chunk(cx: int, cz: int):
-        key = (cx, cz)
-        if key not in chunk_cache:
-            chunk_cache[key] = server.world_storage.load_generated_chunk(cx, cz)
-        return chunk_cache[key]
-
     def _column_top(world_x: int, world_z: int):
         chunk_x = int(world_x) >> 4
         chunk_z = int(world_z) >> 4
-        chunk_blocks = _load_chunk(chunk_x, chunk_z)
+        chunk_blocks = _load_or_generate_spawn_chunk(server, chunk_x, chunk_z, chunk_cache)
         if chunk_blocks is None:
             return None
 
         local_x = int(world_x) & 15
         local_z = int(world_z) & 15
-        for y_index in range(len(chunk_blocks) - 1, -1, -1):
-            block_id = chunk_blocks[y_index][local_z][local_x]
-            if block_id in (AIR, WATER, LAVA):
-                continue
-
-            above_1 = chunk_blocks[y_index + 1][local_z][local_x] if y_index + 1 < len(chunk_blocks) else AIR
-            above_2 = chunk_blocks[y_index + 2][local_z][local_x] if y_index + 2 < len(chunk_blocks) else AIR
-            return {
-                "block_id": block_id,
-                "world_y": y_index - 64,
-                "clear": above_1 == AIR and above_2 == AIR,
-            }
-        return None
+        return _spawn_candidate_from_column(chunk_blocks, local_x, local_z)
 
     def _surface_slope(world_x: int, world_z: int) -> int:
         center = _column_top(world_x, world_z)
@@ -706,6 +786,8 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
 
     best_choice = None
     best_score = None
+    fallback_choice = None
+    fallback_score = None
     fallback_y = int(server.spawn_position[1])
 
     for dz in range(-search_radius, search_radius + 1):
@@ -717,34 +799,55 @@ def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, in
                 continue
 
             if dx == 0 and dz == 0:
-                fallback_y = column["world_y"] + 1
-
-            if not column["clear"]:
-                continue
-            if column["block_id"] not in preferred_blocks:
-                continue
+                fallback_y = column["spawn_y"]
 
             slope = _surface_slope(world_x, world_z)
             distance = abs(dx) + abs(dz)
             score = distance * 6 + slope * 10
-
-            if column["block_id"] in preferred_blocks:
-                score -= 40
             if column["world_y"] < 62:
                 score += 20
 
+            if fallback_score is None or score < fallback_score:
+                fallback_score = score
+                fallback_choice = (world_x, column["spawn_y"], world_z)
+
+            if column["block_id"] not in preferred_blocks:
+                continue
+
+            if column["block_id"] in preferred_blocks:
+                score -= 40
+
             if best_score is None or score < best_score:
                 best_score = score
-                best_choice = (world_x, column["world_y"] + 1, world_z)
+                best_choice = (world_x, column["spawn_y"], world_z)
 
     if best_choice is not None:
         return best_choice
+    if fallback_choice is not None:
+        return fallback_choice
     return int(block_x), fallback_y, int(block_z)
 
 
 def _get_block_at(server, world_x: int, world_y: int, world_z: int) -> int | None:
     """读取世界坐标处的方块 ID。"""
     return get_world_block(server, int(world_x), int(world_y), int(world_z))
+
+
+def _get_spawn_check_block(
+    server,
+    world_x: int,
+    world_y: int,
+    world_z: int,
+    chunk_cache: dict[tuple[int, int], list[list[list[int]]] | None],
+) -> int | None:
+    if world_y < -64 or world_y >= 320:
+        return None
+    chunk_x = int(world_x) >> 4
+    chunk_z = int(world_z) >> 4
+    chunk_blocks = _load_or_generate_spawn_chunk(server, chunk_x, chunk_z, chunk_cache)
+    if chunk_blocks is None:
+        return None
+    return int(chunk_blocks[int(world_y) + 64][int(world_z) & 15][int(world_x) & 15])
 
 
 def _player_block_position(conn: Connection) -> tuple[int, int, int]:
@@ -759,14 +862,15 @@ def _is_suffocating_block(block_id: int | None) -> bool:
 
 def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -> bool:
     """判断一个玩家站立位置是否安全。"""
-    foot_block = _get_block_at(server, world_x, world_y, world_z)
-    head_block = _get_block_at(server, world_x, world_y + 1, world_z)
-    below_block = _get_block_at(server, world_x, world_y - 1, world_z)
+    chunk_cache: dict[tuple[int, int], list[list[list[int]]] | None] = {}
+    foot_block = _get_spawn_check_block(server, world_x, world_y, world_z, chunk_cache)
+    head_block = _get_spawn_check_block(server, world_x, world_y + 1, world_z, chunk_cache)
+    below_block = _get_spawn_check_block(server, world_x, world_y - 1, world_z, chunk_cache)
     if foot_block is None or head_block is None or below_block is None:
         return False
-    if foot_block not in (AIR, WATER) or head_block not in (AIR, WATER):
+    if not _is_spawn_clear_block(foot_block) or not _is_spawn_clear_block(head_block):
         return False
-    return below_block not in (AIR, WATER, LAVA)
+    return _is_spawn_ground_block(below_block)
 
 
 def _resolve_initial_player_location(server, player_state: dict | None) -> tuple[int, int, int]:
