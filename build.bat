@@ -79,6 +79,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [信息] 正在编译原生生物 AI...
+where cl >nul 2>&1
+if not errorlevel 1 (
+    cl /O2 /EHsc /std:c++17 /Fe:native\mob_ai.exe native\mob_ai.cpp
+) else (
+    g++ -O3 -std=c++17 -o native\mob_ai.exe native\mob_ai.cpp
+)
+
+if errorlevel 1 (
+    echo [错误] mob_ai.exe 编译失败。
+    pause
+    exit /b 1
+)
+
 echo [信息] 开始编译 PyMC 服务端...
 echo.
 
@@ -95,6 +109,7 @@ echo.
     --include-module=config ^
     --include-data-dir=native=native ^
     --include-data-files=native/terrain_gen.exe=terrain_gen.exe ^
+    --include-data-files=native/mob_ai.exe=mob_ai.exe ^
     --include-data-files=world/blocks.json=world/blocks.json ^
     --follow-imports ^
     --assume-yes-for-downloads ^

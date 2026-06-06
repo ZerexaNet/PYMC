@@ -44,6 +44,36 @@ MOB_PROFILES = {
         "attack_interval": 20,
         "height": 1.95,
     },
+    "skeleton": {
+        "category": "hostile",
+        "health": 20.0,
+        "speed": 0.07,
+        "follow_range": 35.0,
+        "attack_damage": 2.0,
+        "attack_range": 15.0,
+        "attack_interval": 30,
+        "height": 1.99,
+    },
+    "creeper": {
+        "category": "hostile",
+        "health": 20.0,
+        "speed": 0.078,
+        "follow_range": 25.0,
+        "attack_damage": 8.0,
+        "attack_range": 2.4,
+        "attack_interval": 35,
+        "height": 1.7,
+    },
+    "spider": {
+        "category": "hostile",
+        "health": 16.0,
+        "speed": 0.105,
+        "follow_range": 24.0,
+        "attack_damage": 2.0,
+        "attack_range": 1.9,
+        "attack_interval": 20,
+        "height": 0.9,
+    },
 }
 
 
@@ -197,17 +227,22 @@ class MobEntity(Entity):
             "aggressive": False,
         }
 
-    def tick(self, server):
+    def tick(self, server, native_ai=None):
         super().tick(server)
         if not self.ai_enabled:
             return
         if self.attack_cooldown > 0:
             self.attack_cooldown -= 1
 
-        if self.profile.get("category") == "hostile":
-            self._tick_hostile_ai(server)
-        else:
-            self._tick_passive_ai(server)
+        used_native_ai = False
+        if native_ai is not None:
+            used_native_ai = native_ai.tick_mob(self, server)
+
+        if not used_native_ai:
+            if self.profile.get("category") == "hostile":
+                self._tick_hostile_ai(server)
+            else:
+                self._tick_passive_ai(server)
 
         self._apply_physics(server)
         self.metadata["health"] = self.health
@@ -411,6 +446,12 @@ class EntityManager:
         self.entities: dict[int, Entity] = {}
         self.spawned_at: dict[int, float] = {}
         self.removed_ids: list[int] = []
+        self.native_ai = None
+        try:
+            from .ai_native import NativeMobAiEngine
+            self.native_ai = NativeMobAiEngine()
+        except Exception:
+            self.native_ai = None
 
     def create_item(self, x: float, y: float, z: float,
                     item_name: str = "minecraft:stone", count: int = 1) -> ItemEntity:
@@ -490,7 +531,7 @@ class EntityManager:
             if not _is_solid(self.server.get_block_at(x, y - 1, z)):
                 continue
 
-            mob_type = "zombie" if is_night else rng.choice(["pig", "cow", "sheep"])
+            mob_type = rng.choice(["zombie", "skeleton", "creeper", "spider"]) if is_night else rng.choice(["pig", "cow", "sheep"])
             self.create_mob(x + 0.5, y, z + 0.5, mob_type=mob_type)
             spawned += 1
 
@@ -502,12 +543,20 @@ class EntityManager:
             if not entity.alive:
                 to_remove.append(entity.entity_id)
                 continue
-            entity.tick(self.server)
+            if isinstance(entity, MobEntity):
+                entity.tick(self.server, self.native_ai)
+            else:
+                entity.tick(self.server)
             if not entity.alive:
                 to_remove.append(entity.entity_id)
 
         for entity_id in to_remove:
             self.remove_entity(entity_id)
+
+    def shutdown(self):
+        if self.native_ai is not None:
+            self.native_ai.shutdown()
+            self.native_ai = None
 
     def consume_removed_ids(self) -> list[int]:
         removed = list(dict.fromkeys(self.removed_ids))

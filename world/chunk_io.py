@@ -394,6 +394,73 @@ def _decode_section_blocks(section: dict, target: list[list[list[int]]]):
                 target[y_start + local_y][z][x] = state_id
 
 
+def _decode_section_biomes(section: dict, target: list[list[int]]):
+    if not isinstance(section, dict):
+        return
+
+    y_tag = section.get("Y")
+    section_y = int(y_tag.value if hasattr(y_tag, "value") else y_tag)
+    section_index = section_y - MIN_SECTION_Y
+    if section_index < 0 or section_index >= NUM_SECTIONS:
+        return
+
+    biomes = section.get("biomes")
+    if not isinstance(biomes, dict):
+        return
+
+    palette = biomes.get("palette")
+    if not isinstance(palette, list) or not palette:
+        return
+
+    palette_ids = [
+        BIOME_NAME_TO_ID.get(str(entry.value if hasattr(entry, "value") else entry), BIOME_NAME_TO_ID["minecraft:plains"])
+        for entry in palette
+    ]
+    if len(palette_ids) == 1:
+        entries = [0] * 64
+    else:
+        data = biomes.get("data")
+        raw_longs = data.values if hasattr(data, "values") else list(data or [])
+        bits = max(1, math.ceil(math.log2(len(palette_ids))))
+        entries = _unpack_palette_indices(list(raw_longs), bits, 64)
+
+    decoded = []
+    for palette_index in entries[:64]:
+        decoded.append(palette_ids[palette_index] if palette_index < len(palette_ids) else BIOME_NAME_TO_ID["minecraft:plains"])
+    if len(decoded) < 64:
+        decoded.extend([BIOME_NAME_TO_ID["minecraft:plains"]] * (64 - len(decoded)))
+    target[section_index] = decoded
+
+
+def deserialize_chunk_with_biomes(data: bytes) -> tuple[list[list[list[int]]], list[list[int]] | None] | None:
+    """从区块字节数据恢复方块数组和 biome section ids。"""
+    if not data:
+        return None
+
+    blocks = deserialize_chunk(data)
+    if blocks is None:
+        return None
+
+    if is_pymc_chunk_data(data):
+        return blocks, None
+
+    try:
+        root, _ = decode_nbt(data, with_type=True, with_name=True)
+    except Exception as exc:
+        logger.warning(f"解码 Chunk NBT biome 失败: {exc}")
+        return blocks, None
+
+    chunk = _root_chunk_compound(root)
+    sections = chunk.get("sections")
+    if not isinstance(sections, list):
+        return blocks, None
+
+    biome_sections = [[BIOME_NAME_TO_ID["minecraft:plains"]] * 64 for _ in range(NUM_SECTIONS)]
+    for section in sections:
+        _decode_section_biomes(section, biome_sections)
+    return blocks, biome_sections
+
+
 def deserialize_chunk(data: bytes) -> list[list[list[int]]] | None:
     """
     从区块字节数据恢复方块数组。
