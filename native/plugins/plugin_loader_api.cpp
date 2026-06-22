@@ -91,25 +91,24 @@ int pymc_plugin_loader_disable_plugin(const char* name) {
 int pymc_plugin_loader_fire_event(const char* event_name, const char* data_json) {
     if (!g_plugin_loader || !event_name) return 0;
 
-    Event event(std::string(event_name));
+    Event evt{std::string(event_name)};
 
     // Simple JSON data parsing (key:value pairs separated by ;)
     if (data_json && strlen(data_json) > 0) {
         std::string json_str(data_json);
         // Basic parsing: {"key":"value","key2":"value2"}
         // For a full implementation, use a JSON library
-        size_t pos = 0;
         std::string input = json_str;
         // Strip braces
-        if (input.front() == '{') input = input.substr(1);
-        if (input.back() == '}') input = input.substr(0, input.size() - 1);
+        if (!input.empty() && input.front() == '{') input = input.substr(1);
+        if (!input.empty() && input.back() == '}') input = input.substr(0, input.size() - 1);
 
         // Split by commas, then by colons
         // This is a simplified parser; production would use proper JSON
     }
 
-    g_plugin_loader->fire_event(event);
-    return event.cancelled ? 0 : 1;
+    g_plugin_loader->fire_event(evt);
+    return evt.cancelled ? 0 : 1;
 }
 
 // Callback storage for Python-registered listeners
@@ -156,7 +155,7 @@ int pymc_plugin_loader_register_listener(
     return id;
 }
 
-int pymc_plugin_loader_unregister_handler(int handler_id) {
+int pymc_plugin_loader_unregister_handler(int /*handler_id*/) {
     // Simplified: in a full implementation, track handler IDs properly
     return 0;
 }

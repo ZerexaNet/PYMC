@@ -25,6 +25,7 @@
 #include <functional>
 #include <cstdint>
 #include <optional>
+#include <cmath>
 
 namespace pymc {
 namespace plugins {
@@ -276,7 +277,7 @@ public:
     void set_spawn_location(const Location& loc) { spawn_location_ = loc; }
 
     // Block operations → PYMC WorldStorage + terrain operations
-    Block get_block_at(int x, int y, int z);
+    BukkitBlock get_block_at(int x, int y, int z);
     void set_block_at(int x, int y, int z, const BlockData& data);
 
     // Chunk operations → PYMC chunk system
