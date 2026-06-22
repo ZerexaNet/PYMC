@@ -1,0 +1,54 @@
+name: Build PYMC
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ python3-dev python3-pip
+          pip install -r requirements.txt
+      - name: Build native components
+        run: |
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+      - name: Run tests
+        run: python3 -m pytest tests/ -v
+      - name: Build with Nuitka
+        run: |
+          pip install nuitka
+          python3 -m nuitka --standalone --onefile main.py -o pymc-server
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      - name: Build native components
+        run: |
+          mkdir build && cd build
+          cmake .. -G "Visual Studio 17 2022"
+          cmake --build . --config Release
+      - name: Build with Nuitka
+        run: |
+          pip install nuitka
+          python -m nuitka --standalone --onefile --mingw64 main.py -o pymc-server.exe
