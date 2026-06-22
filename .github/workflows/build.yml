@@ -7,6 +7,43 @@ on:
     branches: [main]
 
 jobs:
+  # ── Auto pre-release for non-tagged pushes ──
+  auto-prerelease:
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate pre-release tag
+        id: tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short=6 HEAD)
+          TIMESTAMP=$(date -u +%Y%m%d.%H%M%S)
+          TAG="pre-${TIMESTAMP}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Generated tag: ${TAG}"
+      - name: Create pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Pre-release ${{ steps.tag.outputs.tag }}"
+          prerelease: true
+          body: |
+            ⚠️ **Auto-generated pre-release** from `${{ steps.tag.outputs.sha }}`
+
+            This is an automated development build. Not a stable release.
+
+            Commit: [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            Branch: `${{ github.ref_name }}`
+
+      - name: Tag summary
+        run: echo "Created pre-release tag ${{ steps.tag.outputs.tag }}"
+
+  # ── Linux build ──
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -32,6 +69,7 @@ jobs:
           pip install nuitka
           python3 -m nuitka --standalone --onefile --assume-yes-for-downloads main.py -o pymc-server
 
+  # ── Windows build ──
   build-windows:
     runs-on: windows-latest
     steps:
