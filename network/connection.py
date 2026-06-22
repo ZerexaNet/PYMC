@@ -8,6 +8,7 @@ import logging
 import uuid
 from enum import IntEnum
 from protocol.packet import pack_packet, read_packet_async
+from protocol.versions import NATIVE_PROTOCOL_VERSION, get_version_name
 
 logger = logging.getLogger("PyMC.连接")
 
@@ -38,6 +39,11 @@ class Connection:
         self.address = f"{addr[0]}:{addr[1]}" if addr else "未知"
         self.state = ConnectionState.HANDSHAKE
         self.compression_threshold = -1  # -1 表示未启用压缩
+
+        # 协议版本信息
+        self.protocol_version: int = NATIVE_PROTOCOL_VERSION
+        self.mc_version: str = get_version_name(NATIVE_PROTOCOL_VERSION)
+        self.version_handler = None  # Will be set after handshake
 
         # 玩家信息 (登录后设置)
         self.username: str = ""
@@ -70,6 +76,14 @@ class Connection:
         self.tracked_entities: set[int] = set()
         self.chunk_center: tuple[int, int] = (0, 0)
         self.chunk_stream_task: asyncio.Task | None = None
+
+        # 物品栏状态
+        self.inventory_obj = None  # PlayerInventory 实例 (延迟初始化)
+        self.inventory_state_id: int = 0  # 物品栏状态序列号
+
+        # 移动速率限制
+        self._last_movement_time: float = 0.0
+        self._movement_count: int = 0
 
         # 连接状态
         self.alive = True

@@ -5,6 +5,9 @@
 # Linear V2 区域文件读写需要 zstd 压缩支持。
 zstandard>=0.22
 
+# 测试框架
+pytest>=7.0
+
 # 打包/构建时可选:
 # nuitka
 # ordered-set

@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
 from config import save_config
@@ -25,6 +25,17 @@ from world.terrain_native import NativeTerrainGenerator
 from world.chunk import build_chunk_column_from_terrain, build_heightmap_from_terrain
 from world.biomes import BiomeSampler
 from world.entities import EntityManager
+from world.redstone import RedstoneEngine
+from world.vanilla_terrain import VanillaTerrainGenerator
+from world.inventory import PlayerInventory
+from world.block_behavior import BlockBehaviorManager, container_manager
+from world.fluids import FluidSystem
+from watchdog import WatchdogManager, PlayerNetworkOptimizer
+from .managers.gamerule import GameruleManager
+from .managers.time import TimeManager
+from .managers.scheduler import TickScheduler
+from .managers.metrics import ServerMetrics
+from .managers.protocol import PacketCache, PacketBatcher
 
 logger = logging.getLogger("PyMC.服务器")
 
@@ -75,15 +86,14 @@ class MinecraftServer:
         self.compression_threshold = config.get("network-compression-threshold", 256)
         self.view_distance = config.get("view-distance", 10)
         self.autosave_enabled = True
+        # 使用 TimeManager 管理世界时间和天气
+        self._time_manager = TimeManager(initial_time=1000)
+        self._gamerule_manager = GameruleManager()
+
+        # 向后兼容属性
         self.world_time = 1000
         self.weather = "clear"
-        self.gamerules = {
-            "doDaylightCycle": True,
-            "doMobSpawning": True,
-            "naturalRegeneration": True,
-            "keepInventory": False,
-            "doImmediateRespawn": False,
-        }
+        self.gamerules = self._gamerule_manager
         self.spawn_position = (
             int(config.get("level-spawn-x", 0)),
             int(config.get("level-spawn-y", 100)),
@@ -118,7 +128,34 @@ class MinecraftServer:
         self.biome_sampler = None
         self._use_native_terrain = False
         self._chunk_executor: ThreadPoolExecutor | None = None
+        self._process_executor: ProcessPoolExecutor | None = None
         self.entity_manager = EntityManager(self)
+        self.redstone_engine: RedstoneEngine | None = None
+
+        # 流体系统
+        self.fluid_system: FluidSystem | None = None
+
+        # 网络优化器
+        self.network_optimizer: PlayerNetworkOptimizer | None = None
+
+        # Watchdog
+        self.watchdog_manager: WatchdogManager | None = None
+
+        # Mod 和插件管理器
+        self.mod_manager = None
+        self.plugin_manager = None
+
+        # 延迟任务调度器
+        self.scheduler = TickScheduler()
+
+        # 服务器指标
+        self.metrics = ServerMetrics()
+
+        # 协议优化
+        self._packet_cache = PacketCache()
+
+        # 命令框架
+        self.command_manager = None  # Initialized in main.py
 
     def get_next_entity_id(self) -> int:
         """获取下一个可用的实体 ID。"""
@@ -161,36 +198,42 @@ class MinecraftServer:
 
     def broadcast_system_message(self, text: str, exclude: Connection = None):
         """向所有在线玩家广播系统聊天消息。"""
-        from handlers.play import build_system_message_payload
-        self.broadcast_packet(0x6C, build_system_message_payload(text), exclude=exclude)
+        for conn in self.get_online_players():
+            if conn != exclude and conn.version_handler is not None:
+                asyncio.ensure_future(conn.version_handler.send_system_chat(conn, text))
 
     def save_player_state(self, conn: Connection):
         """保存单个玩家存档。"""
         if not conn.username:
             return
-        self.world_storage.save_player_data(
-            str(conn.uuid),
-            {
-                "username": conn.username,
-                "x": conn.x,
-                "y": conn.y,
-                "z": conn.z,
-                "yaw": conn.yaw,
-                "pitch": conn.pitch,
-                "health": conn.health,
-                "food": conn.food,
-                "saturation": conn.saturation,
-                "experience_total": conn.experience_total,
-                "experience_level": conn.experience_level,
-                "experience_progress": conn.experience_progress,
-                "gamemode": conn.gamemode,
-                "on_ground": conn.on_ground,
-                "air_supply": conn.air_supply,
-                "fire_ticks": conn.fire_ticks,
-                "freeze_ticks": conn.freeze_ticks,
-                "personal_spawn": list(conn.personal_spawn) if conn.personal_spawn is not None else None,
-            },
-        )
+
+        # 基础玩家状态
+        player_data = {
+            "username": conn.username,
+            "x": conn.x,
+            "y": conn.y,
+            "z": conn.z,
+            "yaw": conn.yaw,
+            "pitch": conn.pitch,
+            "health": conn.health,
+            "food": conn.food,
+            "saturation": conn.saturation,
+            "experience_total": conn.experience_total,
+            "experience_level": conn.experience_level,
+            "experience_progress": conn.experience_progress,
+            "gamemode": conn.gamemode,
+            "on_ground": conn.on_ground,
+            "air_supply": conn.air_supply,
+            "fire_ticks": conn.fire_ticks,
+            "freeze_ticks": conn.freeze_ticks,
+            "personal_spawn": list(conn.personal_spawn) if conn.personal_spawn is not None else None,
+        }
+
+        # 保存物品栏数据
+        if hasattr(conn, 'inventory_obj') and conn.inventory_obj is not None:
+            player_data["inventory"] = conn.inventory_obj.serialize()
+
+        self.world_storage.save_player_data(str(conn.uuid), player_data)
 
     def save_all_player_states(self):
         """保存所有在线玩家存档。"""
@@ -214,6 +257,49 @@ class MinecraftServer:
             self.port
         )
 
+        # 初始化红石引擎
+        if self.config.get("redstone-enabled", True):
+            self.redstone_engine = RedstoneEngine(self)
+            logger.info("红石引擎已初始化")
+        else:
+            logger.info("红石引擎已禁用 (redstone-enabled=false)")
+
+        # 初始化流体系统
+        if self.config.get("fluid-flow-enabled", True):
+            self.fluid_system = FluidSystem(self)
+            logger.info("流体系统已初始化")
+        else:
+            logger.info("流体系统已禁用 (fluid-flow-enabled=false)")
+
+        # 初始化网络优化器
+        self.network_optimizer = PlayerNetworkOptimizer(self)
+        await self.network_optimizer.start()
+
+        # 初始化命令框架 (如果 main.py 没有提前初始化)
+        if self.command_manager is None:
+            from commands import CommandManager, register_all_vanilla_commands
+            self.command_manager = CommandManager(self)
+            register_all_vanilla_commands(self.command_manager)
+            cmd_count = len(self.command_manager.commands)
+            logger.info(f"命令框架已初始化: {cmd_count} 个命令已注册")
+
+        # Mod 管理器集成 (如果 main.py 没有提前初始化)
+        if self.mod_manager is None:
+            from mods import ModManager
+            self.mod_manager = ModManager(self)
+            mods_dir = self.config.get("mods-directory", "mods")
+            discovered = self.mod_manager.scan_mods_directory(mods_dir)
+            logger.info(f"Mod 管理器已初始化: 发现 {len(discovered)} 个 Mod")
+
+        # 插件管理器集成 (如果 main.py 没有提前初始化)
+        if self.plugin_manager is None:
+            from plugins import PluginManager
+            self.plugin_manager = PluginManager(self)
+            plugins_dir = self.config.get("plugins-directory", "plugins")
+            loaded = self.plugin_manager.load_plugins_from_dir(plugins_dir)
+            self.plugin_manager.enable_all()
+            logger.info(f"插件管理器已初始化: 已加载 {loaded} 个插件")
+
         # 启动游戏循环 (20 TPS)
         self._tick_task = asyncio.create_task(self._game_loop())
 
@@ -231,7 +317,8 @@ class MinecraftServer:
 
         addr = self._server.sockets[0].getsockname()
         logger.info(f"服务器已启动，监听 {addr[0]}:{addr[1]}")
-        logger.info(f"游戏版本: 1.21.1 | 协议版本: 767")
+        logger.info(f"游戏版本: 1.21.1 | 协议版本: 767 | 多版本支持: 1.8-1.21")
+        logger.info(f"支持协议版本: {self.config.get('min-protocol-version', 47)} - {self.config.get('max-protocol-version', 770)}")
         logger.info(f"最大玩家数: {self.max_players}")
         logger.info(f"在线模式: {'开启' if self.online_mode else '关闭 (离线模式)'}")
         logger.info(f"数据包压缩阈值: {self.compression_threshold} 字节")
@@ -282,10 +369,23 @@ class MinecraftServer:
             worker_count=max(2, os.cpu_count() or 2),
         )
         self.biome_sampler = BiomeSampler(seed)
+
+        # 选择地形生成器: 原生 > Vanilla > 纯 Python
+        use_vanilla = self.config.get("vanilla-terrain", True)
         if native_gen.available:
             self.terrain_generator = native_gen
             self._use_native_terrain = True
             logger.info(f"使用 C++ 原生地形生成器 (种子: {seed})")
+        elif use_vanilla:
+            try:
+                self.terrain_generator = VanillaTerrainGenerator(seed)
+                self._use_native_terrain = False
+                logger.info(f"使用 Vanilla 地形生成器 (种子: {seed})")
+            except Exception as e:
+                logger.warning(f"Vanilla 地形生成器初始化失败: {e}，回退到基础生成器")
+                self.terrain_generator = TerrainGenerator(seed)
+                self._use_native_terrain = False
+                logger.info(f"使用纯 Python 地形生成器 (种子: {seed})")
         else:
             self.terrain_generator = TerrainGenerator(seed)
             self._use_native_terrain = False
@@ -533,6 +633,25 @@ class MinecraftServer:
 
         self.save_all_player_states()
 
+        # 停止 Watchdog
+        if self.watchdog_manager is not None:
+            await self.watchdog_manager.stop()
+            self.watchdog_manager = None
+
+        # 禁用所有插件
+        if self.plugin_manager is not None:
+            self.plugin_manager.disable_all()
+            self.plugin_manager = None
+
+        # 卸载所有 Mod
+        if self.mod_manager is not None:
+            self.mod_manager = None
+
+        # 停止网络优化器
+        if self.network_optimizer is not None:
+            await self.network_optimizer.stop()
+            self.network_optimizer = None
+
         # 保存世界数据
         logger.info("正在保存世界数据...")
         self.world_storage.close()
@@ -623,11 +742,22 @@ class MinecraftServer:
     async def _handle_player_leave(self, conn: Connection):
         """处理玩家离开游戏。"""
         from handlers.play import build_player_info_remove, build_remove_entities
+        from protocol.packet_map import get_clientbound_packet
+
         # 通知其他玩家移除该玩家
         remove_info = build_player_info_remove(conn)
         remove_entity = build_remove_entities([conn.entity_id])
-        self.broadcast_packet(0x3D, remove_info)  # Player Info Remove
-        self.broadcast_packet(0x42, remove_entity)  # Remove Entities
+
+        # Send to each player using their version-specific packet IDs
+        for other_conn in self.get_online_players():
+            if other_conn == conn:
+                continue
+            player_remove_pid = get_clientbound_packet(other_conn.protocol_version, "player_remove")
+            if player_remove_pid is not None:
+                await other_conn.send_packet(player_remove_pid, remove_info)
+            remove_entities_pid = get_clientbound_packet(other_conn.protocol_version, "remove_entities")
+            if remove_entities_pid is not None:
+                await other_conn.send_packet(remove_entities_pid, remove_entity)
 
     async def _game_loop(self):
         """
@@ -643,8 +773,18 @@ class MinecraftServer:
         while self.running:
             tick_start = time.time()
             tick_count += 1
-            if self.gamerules.get("doDaylightCycle", True):
-                self.world_time = (self.world_time + 1) % 24000
+
+            # 使用 TimeManager 推进时间
+            self._time_manager.do_daylight_cycle = self.gamerules.get("doDaylightCycle", True)
+            self._time_manager.tick()
+            self.world_time = self._time_manager.time
+            self.weather = self._time_manager.weather
+
+            # 更新指标
+            self.metrics.tick()
+
+            # 执行调度任务
+            await self.scheduler.tick()
 
             # 发送 KeepAlive 心跳
             if tick_count % keepalive_interval == 0:
@@ -671,20 +811,68 @@ class MinecraftServer:
             if tick_count % 10 == 0:
                 await self._tick_entity_sync()
 
+            # Redstone tick (every 2 game ticks = 0.1s)
+            if tick_count % 2 == 0:
+                await self._tick_redstone()
+
+            # Fluid system tick
+            if self.fluid_system is not None:
+                await self._tick_fluids(tick_count)
+
+            # Watchdog heartbeat (every second = every 20 ticks)
+            if self.watchdog_manager is not None and tick_count % 20 == 0:
+                await self.watchdog_manager.send_heartbeat()
+
+            # Network optimizer flush
+            if self.network_optimizer is not None:
+                await self.network_optimizer.flush_all()
+
+            # 定期输出服务器指标
+            if self.metrics.should_report():
+                logger.info(self.metrics.report())
+
             # 计算 tick 用时，补偿延迟
             elapsed = time.time() - tick_start
             sleep_time = max(0, tick_interval - elapsed)
             await asyncio.sleep(sleep_time)
 
+    async def _tick_redstone(self):
+        """Process a redstone tick and broadcast visual changes to players."""
+        if self.redstone_engine is None:
+            return
+
+        self.redstone_engine.tick()
+
+        # Broadcast block changes from redstone engine
+        from handlers.play import _broadcast_block_change
+        updates = self.redstone_engine.get_visual_updates()
+        for x, y, z, new_state in updates:
+            await _broadcast_block_change(self, x, y, z, new_state)
+
+    async def _tick_fluids(self, tick_count: int):
+        """Process fluid flow updates and broadcast visual changes."""
+        if self.fluid_system is None:
+            return
+
+        self.fluid_system.tick()
+
+        # Fluid system handles its own block updates internally
+        # via _broadcast_block_change in its _notify_fluid_update method
+
     async def _send_keepalive(self):
         """向所有在线玩家发送 KeepAlive 数据包。"""
         import struct
+        from protocol.packet_map import get_clientbound_packet
+
         keepalive_id = int(time.time() * 1000) & 0x7FFFFFFFFFFFFFFF
         payload = struct.pack('>q', keepalive_id)
 
         for conn in self.get_online_players():
             conn.keepalive_id = keepalive_id
-            await conn.send_packet(0x26, payload)  # KeepAlive (Play, Clientbound)
+            # Use version-specific KeepAlive packet ID
+            pid = get_clientbound_packet(conn.protocol_version, "keep_alive")
+            if pid is not None:
+                await conn.send_packet(pid, payload)
 
     async def _tick_players(self, tick_count: int):
         """处理最基础的玩家伤害与时间同步。"""

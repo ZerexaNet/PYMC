@@ -1,274 +1,54 @@
-name: 构建并发布
+name: Build PYMC
 
 on:
   push:
-    branches:
-      - '**'
-    tags:
-      - '**'
-
-permissions:
-  contents: write
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  build-windows:
-    name: 构建 Windows 版本
-    runs-on: windows-latest
-
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 安装 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: 安装 MSVC 编译环境
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: 检查 MSVC
-        shell: cmd
-        run: cl
-
-      - name: 安装 Nuitka
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          pip install nuitka ordered-set zstandard
-
-      - name: 编译 terrain_gen.exe
-        shell: cmd
-        run: |
-          cl /O2 /EHsc /std:c++17 /Fe:native\terrain_gen.exe native\terrain_gen.cpp
-
-      - name: 检查 terrain_gen.exe
-        shell: pwsh
-        run: |
-          dir native\terrain_gen.exe
-
-      - name: Nuitka 打包 Windows
-        shell: pwsh
-        run: >
-          python -m nuitka
-          --standalone
-          --onefile
-          --assume-yes-for-downloads
-          --msvc=latest
-          --output-dir=dist
-          --include-data-dir=native=native
-          --include-data-files=native/terrain_gen.exe=terrain_gen.exe
-          --include-data-files=world/blocks.json=world/blocks.json
-          --windows-console-mode=force
-          --output-filename=PyMC-windows.exe
-          main.py
-
-      - name: 验证 Windows 产物
-        shell: pwsh
-        run: |
-          dir dist\PyMC-windows.exe
-
-      - name: 上传 Windows 构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: pymc-windows
-          path: dist/PyMC-windows.exe
-          if-no-files-found: error
-
   build-linux:
-    name: 构建 Linux 版本
     runs-on: ubuntu-latest
-
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 安装 Python
+      - uses: actions/checkout@v4
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-
-      - name: 安装系统依赖
+          python-version: '3.11'
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++ patchelf upx-ucl
-
-      - name: 安装 Nuitka
+          sudo apt-get install -y cmake g++ python3-dev python3-pip
+          pip install -r requirements.txt
+      - name: Build native components
         run: |
-          python -m pip install --upgrade pip
-          pip install nuitka ordered-set zstandard
-
-      - name: 编译 terrain_gen
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+      - name: Run tests
+        run: python3 -m pytest tests/ -v
+      - name: Build with Nuitka
         run: |
-          g++ -O3 -std=c++17 -static -o native/terrain_gen native/terrain_gen.cpp
-          ls -l native/terrain_gen
+          pip install nuitka
+          python3 -m nuitka --standalone --onefile main.py -o pymc-server
 
-      - name: Nuitka 打包 Linux
-        run: |
-          python -m nuitka \
-            --standalone \
-            --onefile \
-            --assume-yes-for-downloads \
-            --output-dir=dist \
-            --include-data-dir=native=native \
-            --include-data-files=native/terrain_gen=terrain_gen \
-            --include-data-files=world/blocks.json=world/blocks.json \
-            --output-filename=PyMC-linux \
-            main.py
-
-      - name: 验证 Linux 产物
-        run: |
-          ls -l dist/PyMC-linux
-          chmod +x dist/PyMC-linux
-
-      - name: 上传 Linux 构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: pymc-linux
-          path: dist/PyMC-linux
-          if-no-files-found: error
-
-  build-macos:
-    name: 构建 macOS 版本
-    runs-on: macos-latest
-
+  build-windows:
+    runs-on: windows-latest
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 安装 Python
+      - uses: actions/checkout@v4
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
-
-      - name: 安装 Nuitka
-        shell: bash
+          python-version: '3.11'
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install nuitka ordered-set zstandard
-
-      - name: 编译 terrain_gen
-        shell: bash
+          pip install -r requirements.txt
+      - name: Build native components
         run: |
-          c++ -O3 -std=c++17 -o native/terrain_gen native/terrain_gen.cpp
-          ls -l native/terrain_gen
-
-      - name: Nuitka 打包 macOS
-        shell: bash
+          mkdir build && cd build
+          cmake .. -G "Visual Studio 17 2022"
+          cmake --build . --config Release
+      - name: Build with Nuitka
         run: |
-          python -m nuitka \
-            --standalone \
-            --onefile \
-            --assume-yes-for-downloads \
-            --output-dir=dist \
-            --include-data-dir=native=native \
-            --include-data-files=native/terrain_gen=terrain_gen \
-            --include-data-files=world/blocks.json=world/blocks.json \
-            --output-filename=PyMC-macos \
-            main.py
-
-      - name: 验证 macOS 产物
-        shell: bash
-        run: |
-          ls -l dist/PyMC-macos
-          chmod +x dist/PyMC-macos
-
-      - name: 上传 macOS 构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: pymc-macos
-          path: dist/PyMC-macos
-          if-no-files-found: error
-
-  release:
-    name: 发布 Release
-    needs:
-      - build-windows
-      - build-linux
-      - build-macos
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 下载 Windows 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: pymc-windows
-          path: release_files
-
-      - name: 下载 Linux 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: pymc-linux
-          path: release_files
-
-      - name: 下载 macOS 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: pymc-macos
-          path: release_files
-
-      - name: 列出发布文件
-        run: |
-          find release_files -maxdepth 3 -type f
-
-      - name: 生成发布版本号
-        id: release_version
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            version="${GITHUB_REF#refs/tags/}"
-            prerelease=false
-            make_latest=true
-            title="PyMC ${version}"
-          else
-            version="pre-$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
-            prerelease=true
-            make_latest=false
-            title="PyMC ${version} Pre-release"
-          fi
-          echo "tag=$version" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
-          echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
-          echo "title=$title" >> "$GITHUB_OUTPUT"
-
-      - name: 创建 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_version.outputs.tag }}
-          name: ${{ steps.release_version.outputs.title }}
-          body: |
-            ## PyMC ${{ steps.release_version.outputs.tag }}
-
-            Minecraft Java Edition 纯 Python 服务端。
-
-            ### 包含文件
-            - `PyMC-windows.exe`：Windows 版本
-            - `PyMC-linux`：Linux 版本
-            - `PyMC-macos`：macOS 版本
-
-            ### 使用方法
-
-            #### Windows
-            1. 下载 `PyMC-windows.exe`
-            2. 双击运行
-            3. Minecraft 客户端连接 `ip:25565`
-
-            #### Linux
-            1. 下载 `PyMC-linux`
-            2. 执行 `chmod +x PyMC-linux`
-            3. 运行 `./PyMC-linux`
-            4. Minecraft 客户端连接 `ip:25565`
-
-            #### macOS
-            1. 下载 `PyMC-macos`
-            2. 执行 `chmod +x PyMC-macos`
-            3. 运行 `./PyMC-macos`
-            4. Minecraft 客户端连接 `ip:25565`
-          files: |
-            release_files/**/PyMC-windows.exe
-            release_files/**/PyMC-linux
-            release_files/**/PyMC-macos
-          draft: false
-          prerelease: ${{ steps.release_version.outputs.prerelease }}
-          make_latest: ${{ steps.release_version.outputs.make_latest }}
-          generate_release_notes: true
+          pip install nuitka
+          python -m nuitka --standalone --onefile --mingw64 main.py -o pymc-server.exe

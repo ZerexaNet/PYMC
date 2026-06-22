@@ -1,0 +1,1019 @@
+# ============================================================
+# PyMC - Display Commands
+# tellraw, title, scoreboard, bossbar, team, tag
+# Consolidated display-related command implementations
+# ============================================================
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from commands.framework import Command, CommandContext, SUCCESS, FAILURE
+from commands.selector import resolve_selector
+from commands.arguments import parse_text_component, parse_display_slot, parse_criteria
+from network.connection import Connection
+
+logger = logging.getLogger("PyMC.显示命令")
+
+
+# ============================================================
+# Scoreboard Manager
+# ============================================================
+
+class ScoreboardManager:
+    """Manages scoreboard objectives and scores."""
+
+    def __init__(self):
+        self.objectives: dict[str, dict] = {}  # name -> {criteria, display_name, display_slot}
+        self.scores: dict[str, dict[str, int]] = {}  # objective_name -> {player_name -> score}
+        self.teams: dict[str, dict] = {}  # team_name -> {display_name, color, prefix, suffix, friendly_fire, see_friendly, members}
+        self.display_slots: dict[str, str | None] = {}  # slot -> objective_name
+
+    def create_objective(self, name: str, criteria: str = "dummy", display_name: str = ""):
+        if name in self.objectives:
+            raise ValueError(f"Objective '{name}' already exists")
+        self.objectives[name] = {
+            "criteria": criteria,
+            "display_name": display_name or name,
+        }
+        self.scores[name] = {}
+
+    def remove_objective(self, name: str):
+        if name not in self.objectives:
+            raise ValueError(f"Objective '{name}' does not exist")
+        del self.objectives[name]
+        self.scores.pop(name, None)
+        for slot, obj in list(self.display_slots.items()):
+            if obj == name:
+                self.display_slots[slot] = None
+
+    def set_score(self, objective: str, player: str, score: int):
+        if objective not in self.objectives:
+            raise ValueError(f"Objective '{objective}' does not exist")
+        self.scores[objective][player] = score
+
+    def get_score(self, objective: str, player: str) -> int:
+        if objective not in self.objectives:
+            return 0
+        return self.scores.get(objective, {}).get(player, 0)
+
+    def add_score(self, objective: str, player: str, amount: int) -> int:
+        current = self.get_score(objective, player)
+        new_score = current + amount
+        self.set_score(objective, player, new_score)
+        return new_score
+
+    def remove_score(self, objective: str, player: str) -> bool:
+        if objective not in self.scores:
+            return False
+        return self.scores[objective].pop(player, None) is not None
+
+    def set_display(self, slot: str, objective: str | None):
+        if objective is not None and objective not in self.objectives:
+            raise ValueError(f"Objective '{objective}' does not exist")
+        self.display_slots[slot] = objective
+
+    def list_objectives(self) -> list[tuple[str, str, str]]:
+        return [(name, obj["criteria"], obj["display_name"]) for name, obj in self.objectives.items()]
+
+    def create_team(self, name: str, display_name: str = ""):
+        if name in self.teams:
+            raise ValueError(f"Team '{name}' already exists")
+        self.teams[name] = {
+            "display_name": display_name or name,
+            "color": "white",
+            "prefix": "",
+            "suffix": "",
+            "friendly_fire": True,
+            "see_friendly_invisibles": False,
+            "members": set(),
+        }
+
+    def remove_team(self, name: str):
+        if name not in self.teams:
+            raise ValueError(f"Team '{name}' does not exist")
+        del self.teams[name]
+
+    def join_team(self, team_name: str, member: str):
+        if team_name not in self.teams:
+            raise ValueError(f"Team '{team_name}' does not exist")
+        self.teams[team_name]["members"].add(member)
+
+    def leave_team(self, team_name: str, member: str):
+        if team_name not in self.teams:
+            raise ValueError(f"Team '{team_name}' does not exist")
+        self.teams[team_name]["members"].discard(member)
+
+
+# Global scoreboard instance
+_scoreboard_manager = ScoreboardManager()
+
+
+def get_scoreboard_manager() -> ScoreboardManager:
+    return _scoreboard_manager
+
+
+# ============================================================
+# Boss Bar Storage
+# ============================================================
+
+_boss_bars: dict[str, dict] = {}  # id -> {players, name, color, style, value, max, visible}
+
+
+# ============================================================
+# Tag Storage
+# ============================================================
+
+_entity_tags: dict[int, set[str]] = {}  # entity_id -> set of tags
+
+
+# ============================================================
+# Title helpers
+# ============================================================
+
+async def _send_title_packet(conn: Connection, component: dict, action: int = 0):
+    """Send a title/subtitle/actionbar packet."""
+    from protocol.nbt import encode_nbt
+    from protocol.data_types import write_varint
+
+    payload = bytearray()
+    payload.extend(write_varint(action))
+    if action in (0, 1, 2):  # title, subtitle, actionbar need text
+        payload.extend(encode_nbt(component, with_type=True))
+    await conn.send_packet(0x6B, bytes(payload))
+
+
+async def _send_title_times(conn: Connection, fade_in: int, stay: int, fade_out: int):
+    """Send title times packet."""
+    from protocol.data_types import write_varint, write_int
+
+    payload = bytearray()
+    payload.extend(write_varint(3))  # Set title times action
+    payload.extend(write_int(fade_in))
+    payload.extend(write_int(stay))
+    payload.extend(write_int(fade_out))
+    await conn.send_packet(0x6B, bytes(payload))
+
+
+# ============================================================
+# Registration
+# ============================================================
+
+def register(manager):
+    """Register all display-related commands."""
+
+    # ========================================
+    # /tellraw
+    # ========================================
+    async def _tellraw(ctx: CommandContext) -> int:
+        from handlers.play.chat import send_system_message
+
+        tokens = ctx.arguments.get("_raw_tokens", [])
+        args = tokens[1:] if len(tokens) > 1 else []
+
+        if len(args) < 2:
+            await ctx.reply("[PyMC] 用法: tellraw <目标> <JSON文本>")
+            return FAILURE
+
+        target_spec = args[0]
+        message_str = ' '.join(args[1:])
+
+        try:
+            component = parse_text_component(message_str)
+        except Exception:
+            component = {"text": message_str}
+
+        targets = resolve_selector(ctx.server, ctx.sender, target_spec)
+        players = [t for t in targets if isinstance(t, Connection)]
+
+        if not players:
+            player = ctx.server.find_player(target_spec)
+            if player:
+                players = [player]
+
+        if not players:
+            await ctx.reply(f"[PyMC] 未找到目标: {target_spec}")
+            return FAILURE
+
+        component_str = json.dumps(component, ensure_ascii=False)
+        for player in players:
+            await send_system_message(player, component_str)
+
+        return SUCCESS
+
+    cmd_tellraw = Command(
+        name="tellraw",
+        description="发送 JSON 文本消息",
+        usage="tellraw <目标> <JSON文本>",
+        permission="command.tellraw",
+        category="display",
+    )
+    cmd_tellraw._execute_func = _tellraw
+    manager.register(cmd_tellraw)
+
+    # ========================================
+    # /title
+    # ========================================
+    async def _title(ctx: CommandContext) -> int:
+        tokens = ctx.arguments.get("_raw_tokens", [])
+        args = tokens[1:] if len(tokens) > 1 else []
+
+        if len(args) < 2:
+            await ctx.reply("[PyMC] 用法: title <目标> <title|subtitle|actionbar|clear|reset|times> <内容>")
+            return FAILURE
+
+        target_spec = args[0]
+        action = args[1].lower()
+
+        targets = resolve_selector(ctx.server, ctx.sender, target_spec)
+        players = [t for t in targets if isinstance(t, Connection)]
+
+        if not players:
+            player = ctx.server.find_player(target_spec)
+            if player:
+                players = [player]
+
+        if not players and action not in ("clear", "reset"):
+            await ctx.reply(f"[PyMC] 未找到目标: {target_spec}")
+            return FAILURE
+
+        if action == "clear":
+            for player in players:
+                await _send_title_packet(player, {"text": ""}, action=0)
+            return SUCCESS
+
+        if action == "reset":
+            for player in players:
+                await _send_title_packet(player, {"text": ""}, action=0)
+                await _send_title_times(player, 10, 70, 20)
+            return SUCCESS
+
+        if action == "times":
+            if len(args) < 5:
+                await ctx.reply("[PyMC] 用法: title <目标> times <淡入> <停留> <淡出>")
+                return FAILURE
+            try:
+                fade_in = int(args[2])
+                stay = int(args[3])
+                fade_out = int(args[4])
+            except ValueError:
+                await ctx.reply("[PyMC] 时间格式无效（单位：tick）")
+                return FAILURE
+            for player in players:
+                await _send_title_times(player, fade_in, stay, fade_out)
+            return SUCCESS
+
+        if action in ("title", "subtitle", "actionbar"):
+            if len(args) < 3:
+                await ctx.reply(f"[PyMC] 用法: title <目标> {action} <文本>")
+                return FAILURE
+
+            message_str = ' '.join(args[2:])
+            try:
+                component = parse_text_component(message_str)
+            except Exception:
+                component = {"text": message_str}
+
+            action_map = {"title": 0, "subtitle": 1, "actionbar": 2}
+            for player in players:
+                await _send_title_packet(player, component, action=action_map[action])
+
+            return SUCCESS
+
+        await ctx.reply(f"[PyMC] 未知操作: {action}. 可用: title, subtitle, actionbar, clear, reset, times")
+        return FAILURE
+
+    def _title_suggest(ctx: CommandContext) -> list[str]:
+        tokens = ctx.input_string.split()
+        if len(tokens) == 3:
+            return ["title", "subtitle", "actionbar", "clear", "reset", "times"]
+        return []
+
+    cmd_title = Command(
+        name="title",
+        description="显示标题、副标题或动作栏文本",
+        usage="title <目标> <title|subtitle|actionbar|clear|reset|times> <内容>",
+        permission="command.title",
+        category="display",
+    )
+    cmd_title._execute_func = _title
+    cmd_title._suggest_func = _title_suggest
+    manager.register(cmd_title)
+
+    # ========================================
+    # /scoreboard
+    # ========================================
+    async def _scoreboard(ctx: CommandContext) -> int:
+        tokens = ctx.arguments.get("_raw_tokens", [])
+        args = tokens[1:] if len(tokens) > 1 else []
+
+        if not args:
+            await ctx.reply("[PyMC] 用法: scoreboard <objectives|players|teams> ...")
+            return FAILURE
+
+        sb = _scoreboard_manager
+        category = args[0].lower()
+
+        # === OBJECTIVES ===
+        if category == "objectives":
+            if len(args) < 2:
+                objs = sb.list_objectives()
+                if not objs:
+                    await ctx.reply("[PyMC] 没有记分板目标")
+                else:
+                    for name, criteria, display in objs:
+                        scores = sb.scores.get(name, {})
+                        await ctx.reply(f"[PyMC] {name}: {criteria} (显示名: {display}, {len(scores)} 个分数)")
+                return SUCCESS
+
+            action = args[1].lower()
+
+            if action == "add":
+                if len(args) < 3:
+                    await ctx.reply("[PyMC] 用法: scoreboard objectives add <名称> <条件> [显示名]")
+                    return FAILURE
+                obj_name = args[2]
+                criteria = args[3].lower() if len(args) >= 4 else "dummy"
+                display_name = " ".join(args[4:]) if len(args) >= 5 else obj_name
+                try:
+                    criteria = parse_criteria(criteria)
+                    sb.create_objective(obj_name, criteria, display_name)
+                    await ctx.reply(f"[PyMC] 已创建新记分板目标: {obj_name}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "remove":
+                if len(args) < 3:
+                    await ctx.reply("[PyMC] 用法: scoreboard objectives remove <名称>")
+                    return FAILURE
+                try:
+                    sb.remove_objective(args[2])
+                    await ctx.reply(f"[PyMC] 已移除记分板目标: {args[2]}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "setdisplay":
+                if len(args) < 3:
+                    await ctx.reply("[PyMC] 用法: scoreboard objectives setdisplay <位置> [目标]")
+                    return FAILURE
+                try:
+                    slot = parse_display_slot(args[2])
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                obj_name = args[3] if len(args) >= 4 else None
+                try:
+                    sb.set_display(slot, obj_name)
+                    if obj_name:
+                        await ctx.reply(f"[PyMC] 已将目标 {obj_name} 显示在 {slot}")
+                    else:
+                        await ctx.reply(f"[PyMC] 已清除 {slot} 的显示目标")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "list":
+                objs = sb.list_objectives()
+                if not objs:
+                    await ctx.reply("[PyMC] 没有记分板目标")
+                else:
+                    for name, criteria, display in objs:
+                        await ctx.reply(f"[PyMC] - {name}: {criteria} ({display})")
+                return SUCCESS
+
+        # === PLAYERS ===
+        elif category == "players":
+            if len(args) < 2:
+                await ctx.reply("[PyMC] 用法: scoreboard players <set|add|remove|get|reset|list|enable|operation> ...")
+                return FAILURE
+
+            action = args[1].lower()
+
+            if action == "set":
+                if len(args) < 5:
+                    await ctx.reply("[PyMC] 用法: scoreboard players set <目标> <目标名> <分数>")
+                    return FAILURE
+                player = args[2]
+                obj_name = args[3]
+                try:
+                    score = int(args[4])
+                except ValueError:
+                    await ctx.reply("[PyMC] 分数格式无效")
+                    return FAILURE
+                try:
+                    sb.set_score(obj_name, player, score)
+                    await ctx.reply(f"[PyMC] 已将 {player} 的 {obj_name} 分数设置为 {score}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "add":
+                if len(args) < 5:
+                    await ctx.reply("[PyMC] 用法: scoreboard players add <目标> <目标名> <分数>")
+                    return FAILURE
+                player = args[2]
+                obj_name = args[3]
+                try:
+                    amount = int(args[4])
+                except ValueError:
+                    await ctx.reply("[PyMC] 分数格式无效")
+                    return FAILURE
+                try:
+                    new_score = sb.add_score(obj_name, player, amount)
+                    await ctx.reply(f"[PyMC] {player} 的 {obj_name} 分数现在是 {new_score}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "remove":
+                if len(args) < 5:
+                    await ctx.reply("[PyMC] 用法: scoreboard players remove <目标> <目标名> <分数>")
+                    return FAILURE
+                player = args[2]
+                obj_name = args[3]
+                try:
+                    amount = int(args[4])
+                except ValueError:
+                    await ctx.reply("[PyMC] 分数格式无效")
+                    return FAILURE
+                try:
+                    new_score = sb.add_score(obj_name, player, -amount)
+                    await ctx.reply(f"[PyMC] {player} 的 {obj_name} 分数现在是 {new_score}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "get":
+                if len(args) < 4:
+                    await ctx.reply("[PyMC] 用法: scoreboard players get <目标> <目标名>")
+                    return FAILURE
+                player = args[2]
+                obj_name = args[3]
+                score = sb.get_score(obj_name, player)
+                await ctx.reply(f"[PyMC] {player} 的 {obj_name} 分数: {score}")
+                return SUCCESS
+
+            if action == "reset":
+                if len(args) < 3:
+                    await ctx.reply("[PyMC] 用法: scoreboard players reset <目标> [目标名]")
+                    return FAILURE
+                player = args[2]
+                if len(args) >= 4:
+                    obj_name = args[3]
+                    sb.remove_score(obj_name, player)
+                    await ctx.reply(f"[PyMC] 已重置 {player} 的 {obj_name} 分数")
+                else:
+                    for obj_name in list(sb.scores.keys()):
+                        sb.remove_score(obj_name, player)
+                    await ctx.reply(f"[PyMC] 已重置 {player} 的所有分数")
+                return SUCCESS
+
+            if action == "list":
+                player = args[2] if len(args) >= 3 else None
+                if player:
+                    found = []
+                    for obj_name, scores in sb.scores.items():
+                        if player in scores:
+                            found.append(f"{obj_name}={scores[player]}")
+                    if found:
+                        await ctx.reply(f"[PyMC] {player} 的分数: {', '.join(found)}")
+                    else:
+                        await ctx.reply(f"[PyMC] {player} 没有任何分数")
+                else:
+                    all_players = set()
+                    for scores in sb.scores.values():
+                        all_players.update(scores.keys())
+                    if all_players:
+                        await ctx.reply(f"[PyMC] 跟踪的实体: {', '.join(sorted(all_players))}")
+                    else:
+                        await ctx.reply("[PyMC] 没有被跟踪的实体")
+                return SUCCESS
+
+            if action == "operation":
+                if len(args) < 6:
+                    await ctx.reply("[PyMC] 用法: scoreboard players operation <目标> <目标名> <操作> <源> <源目标名>")
+                    return FAILURE
+                target_player = args[2]
+                target_obj = args[3]
+                op = args[4]
+                source_player = args[5]
+                source_obj = args[6] if len(args) >= 7 else target_obj
+
+                source_val = sb.get_score(source_obj, source_player)
+                target_val = sb.get_score(target_obj, target_player)
+
+                if op == "+=":
+                    result = target_val + source_val
+                elif op == "-=":
+                    result = target_val - source_val
+                elif op == "*=":
+                    result = target_val * source_val
+                elif op == "/=":
+                    result = target_val // source_val if source_val != 0 else 0
+                elif op == "%=":
+                    result = target_val % source_val if source_val != 0 else 0
+                elif op == "=":
+                    result = source_val
+                elif op == "<":
+                    result = min(target_val, source_val)
+                elif op == ">":
+                    result = max(target_val, source_val)
+                elif op == "><":
+                    sb.set_score(target_obj, target_player, source_val)
+                    sb.set_score(source_obj, source_player, target_val)
+                    await ctx.reply("[PyMC] 已交换分数")
+                    return SUCCESS
+                else:
+                    await ctx.reply(f"[PyMC] 未知操作: {op}")
+                    return FAILURE
+
+                sb.set_score(target_obj, target_player, result)
+                await ctx.reply(f"[PyMC] {target_player} 的 {target_obj} = {result}")
+                return SUCCESS
+
+            await ctx.reply(f"[PyMC] 未知子命令: scoreboard players {action}")
+            return FAILURE
+
+        # === TEAMS ===
+        elif category == "teams":
+            if len(args) < 2:
+                if not sb.teams:
+                    await ctx.reply("[PyMC] 没有队伍")
+                else:
+                    for name, team in sb.teams.items():
+                        members = ", ".join(team["members"]) or "无"
+                        await ctx.reply(f"[PyMC] {name} ({team['display_name']}): {members}")
+                return SUCCESS
+
+            action = args[1].lower()
+
+            if action == "add":
+                if len(args) < 3:
+                    await ctx.reply("[PyMC] 用法: scoreboard teams add <名称> [显示名]")
+                    return FAILURE
+                team_name = args[2]
+                display_name = " ".join(args[3:]) if len(args) >= 4 else team_name
+                try:
+                    sb.create_team(team_name, display_name)
+                    await ctx.reply(f"[PyMC] 已创建队伍: {team_name}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "remove":
+                if len(args) < 3:
+                    await ctx.reply("[PyMC] 用法: scoreboard teams remove <名称>")
+                    return FAILURE
+                try:
+                    sb.remove_team(args[2])
+                    await ctx.reply(f"[PyMC] 已移除队伍: {args[2]}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "join":
+                if len(args) < 4:
+                    await ctx.reply("[PyMC] 用法: scoreboard teams join <队伍> <成员>")
+                    return FAILURE
+                try:
+                    sb.join_team(args[2], args[3])
+                    await ctx.reply(f"[PyMC] 已将 {args[3]} 加入队伍 {args[2]}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "leave":
+                if len(args) < 4:
+                    await ctx.reply("[PyMC] 用法: scoreboard teams leave <队伍> <成员>")
+                    return FAILURE
+                try:
+                    sb.leave_team(args[2], args[3])
+                    await ctx.reply(f"[PyMC] 已将 {args[3]} 移出队伍 {args[2]}")
+                except ValueError as e:
+                    await ctx.reply(f"[PyMC] {e}")
+                    return FAILURE
+                return SUCCESS
+
+            if action == "list":
+                if len(args) >= 3:
+                    team_name = args[2]
+                    if team_name not in sb.teams:
+                        await ctx.reply(f"[PyMC] 队伍不存在: {team_name}")
+                        return FAILURE
+                    members = ", ".join(sb.teams[team_name]["members"]) or "无"
+                    await ctx.reply(f"[PyMC] 队伍 {team_name} 成员: {members}")
+                else:
+                    for name, team in sb.teams.items():
+                        members = ", ".join(team["members"]) or "无"
+                        await ctx.reply(f"[PyMC] {name} ({team['display_name']}): {members}")
+                return SUCCESS
+
+            if action == "modify":
+                if len(args) < 5:
+                    await ctx.reply("[PyMC] 用法: scoreboard teams modify <队伍> <属性> <值>")
+                    return FAILURE
+                team_name = args[2]
+                if team_name not in sb.teams:
+                    await ctx.reply(f"[PyMC] 队伍不存在: {team_name}")
+                    return FAILURE
+                prop = args[3].lower()
+                value = args[4]
+                if prop == "color":
+                    sb.teams[team_name]["color"] = value.lower()
+                elif prop == "displayname":
+                    sb.teams[team_name]["display_name"] = value
+                elif prop == "prefix":
+                    sb.teams[team_name]["prefix"] = value
+                elif prop == "suffix":
+                    sb.teams[team_name]["suffix"] = value
+                elif prop == "friendlyfire":
+                    sb.teams[team_name]["friendly_fire"] = value.lower() in ("true", "1")
+                else:
+                    await ctx.reply(f"[PyMC] 未知队伍属性: {prop}")
+                    return FAILURE
+                await ctx.reply(f"[PyMC] 已修改队伍 {team_name} 的 {prop}")
+                return SUCCESS
+
+            await ctx.reply(f"[PyMC] 未知子命令: scoreboard teams {action}")
+            return FAILURE
+
+        await ctx.reply("[PyMC] 用法: scoreboard <objectives|players|teams> ...")
+        return FAILURE
+
+    def _scoreboard_suggest(ctx: CommandContext) -> list[str]:
+        tokens = ctx.input_string.split()
+        if len(tokens) == 2:
+            return ["objectives", "players", "teams"]
+        if len(tokens) == 3:
+            category = tokens[1].lower()
+            if category == "objectives":
+                return ["add", "remove", "setdisplay", "list"]
+            if category == "players":
+                return ["set", "add", "remove", "get", "reset", "list", "operation"]
+            if category == "teams":
+                return ["add", "remove", "join", "leave", "list", "modify"]
+        return []
+
+    cmd_scoreboard = Command(
+        name="scoreboard",
+        description="管理记分板",
+        usage="scoreboard <objectives|players|teams> ...",
+        permission="command.scoreboard",
+        category="display",
+    )
+    cmd_scoreboard._execute_func = _scoreboard
+    cmd_scoreboard._suggest_func = _scoreboard_suggest
+    manager.register(cmd_scoreboard)
+
+    # ========================================
+    # /bossbar
+    # ========================================
+    async def _bossbar(ctx: CommandContext) -> int:
+        tokens = ctx.arguments.get("_raw_tokens", [])
+        args = tokens[1:] if len(tokens) > 1 else []
+
+        if not args:
+            if not _boss_bars:
+                await ctx.reply("[PyMC] 没有自定义 Boss 栏")
+            else:
+                for bid, bar in _boss_bars.items():
+                    await ctx.reply(f"[PyMC] {bid}: {bar['name']} ({bar['value']}/{bar['max']})")
+            return SUCCESS
+
+        action = args[0].lower()
+
+        if action == "add":
+            if len(args) < 3:
+                await ctx.reply("[PyMC] 用法: bossbar add <ID> <名称>")
+                return FAILURE
+            bar_id = args[1]
+            name = ' '.join(args[2:])
+            if bar_id in _boss_bars:
+                await ctx.reply(f"[PyMC] Boss 栏 {bar_id} 已存在")
+                return FAILURE
+            _boss_bars[bar_id] = {
+                "name": name,
+                "color": "white",
+                "style": "progress",
+                "value": 0,
+                "max": 100,
+                "visible": True,
+                "players": [],
+            }
+            await ctx.reply(f"[PyMC] 已创建 Boss 栏: {bar_id}")
+            return SUCCESS
+
+        if action == "remove":
+            if len(args) < 2:
+                await ctx.reply("[PyMC] 用法: bossbar remove <ID>")
+                return FAILURE
+            bar_id = args[1]
+            if bar_id not in _boss_bars:
+                await ctx.reply(f"[PyMC] Boss 栏 {bar_id} 不存在")
+                return FAILURE
+            del _boss_bars[bar_id]
+            await ctx.reply(f"[PyMC] 已移除 Boss 栏: {bar_id}")
+            return SUCCESS
+
+        if action == "get":
+            if len(args) < 3:
+                await ctx.reply("[PyMC] 用法: bossbar get <ID> <max|players|value|visible|color|name|style>")
+                return FAILURE
+            bar_id = args[1]
+            prop = args[2].lower()
+            if bar_id not in _boss_bars:
+                await ctx.reply(f"[PyMC] Boss 栏 {bar_id} 不存在")
+                return FAILURE
+            bar = _boss_bars[bar_id]
+            if prop in bar:
+                await ctx.reply(f"[PyMC] {bar_id}.{prop} = {bar[prop]}")
+            else:
+                await ctx.reply(f"[PyMC] 未知属性: {prop}")
+            return SUCCESS
+
+        if action == "set":
+            if len(args) < 3:
+                await ctx.reply("[PyMC] 用法: bossbar set <ID> <属性> <值>")
+                return FAILURE
+            bar_id = args[1]
+            if bar_id not in _boss_bars:
+                await ctx.reply(f"[PyMC] Boss 栏 {bar_id} 不存在")
+                return FAILURE
+            bar = _boss_bars[bar_id]
+            prop = args[2].lower()
+            if len(args) < 4:
+                await ctx.reply("[PyMC] 缺少值")
+                return FAILURE
+            value = args[3]
+
+            if prop == "name":
+                bar["name"] = ' '.join(args[3:])
+            elif prop == "color":
+                bar["color"] = value.lower()
+            elif prop == "style":
+                bar["style"] = value.lower()
+            elif prop == "value":
+                try:
+                    bar["value"] = int(value)
+                except ValueError:
+                    await ctx.reply("[PyMC] 值格式无效")
+                    return FAILURE
+            elif prop == "max":
+                try:
+                    bar["max"] = int(value)
+                except ValueError:
+                    await ctx.reply("[PyMC] 最大值格式无效")
+                    return FAILURE
+            elif prop == "visible":
+                bar["visible"] = value.lower() in ("true", "1")
+            elif prop == "players":
+                bar["players"] = [value]
+            else:
+                await ctx.reply(f"[PyMC] 未知属性: {prop}")
+                return FAILURE
+
+            await ctx.reply(f"[PyMC] 已设置 Boss 栏 {bar_id} 的 {prop}")
+            return SUCCESS
+
+        if action == "list":
+            if not _boss_bars:
+                await ctx.reply("[PyMC] 没有自定义 Boss 栏")
+            else:
+                for bid, bar in _boss_bars.items():
+                    await ctx.reply(f"[PyMC] {bid}: {bar['name']}")
+            return SUCCESS
+
+        await ctx.reply("[PyMC] 用法: bossbar <add|remove|get|set|list> ...")
+        return FAILURE
+
+    cmd_bossbar = Command(
+        name="bossbar",
+        description="管理自定义 Boss 栏",
+        usage="bossbar <add|remove|get|set|list> ...",
+        permission="command.bossbar",
+        category="display",
+    )
+    cmd_bossbar._execute_func = _bossbar
+    manager.register(cmd_bossbar)
+
+    # ========================================
+    # /team
+    # ========================================
+    async def _team(ctx: CommandContext) -> int:
+        sb = get_scoreboard_manager()
+
+        tokens = ctx.arguments.get("_raw_tokens", [])
+        args = tokens[1:] if len(tokens) > 1 else []
+
+        if not args:
+            if not sb.teams:
+                await ctx.reply("[PyMC] 没有队伍")
+            else:
+                for name, team in sb.teams.items():
+                    members = ", ".join(team["members"]) or "无"
+                    await ctx.reply(f"[PyMC] {name} ({team['display_name']}): {members}")
+            return SUCCESS
+
+        action = args[0].lower()
+
+        if action == "add":
+            if len(args) < 2:
+                await ctx.reply("[PyMC] 用法: team add <名称> [显示名]")
+                return FAILURE
+            team_name = args[1]
+            display_name = " ".join(args[2:]) if len(args) >= 3 else team_name
+            try:
+                sb.create_team(team_name, display_name)
+                await ctx.reply(f"[PyMC] 已创建队伍: {team_name}")
+            except ValueError as e:
+                await ctx.reply(f"[PyMC] {e}")
+                return FAILURE
+            return SUCCESS
+
+        if action == "remove":
+            if len(args) < 2:
+                await ctx.reply("[PyMC] 用法: team remove <名称>")
+                return FAILURE
+            try:
+                sb.remove_team(args[1])
+                await ctx.reply(f"[PyMC] 已移除队伍: {args[1]}")
+            except ValueError as e:
+                await ctx.reply(f"[PyMC] {e}")
+                return FAILURE
+            return SUCCESS
+
+        if action == "join":
+            if len(args) < 3:
+                await ctx.reply("[PyMC] 用法: team join <队伍> <成员>")
+                return FAILURE
+            try:
+                sb.join_team(args[1], args[2])
+                await ctx.reply(f"[PyMC] 已将 {args[2]} 加入队伍 {args[1]}")
+            except ValueError as e:
+                await ctx.reply(f"[PyMC] {e}")
+                return FAILURE
+            return SUCCESS
+
+        if action == "leave":
+            if len(args) < 3:
+                await ctx.reply("[PyMC] 用法: team leave <队伍> <成员>")
+                return FAILURE
+            try:
+                sb.leave_team(args[1], args[2])
+                await ctx.reply(f"[PyMC] 已将 {args[2]} 移出队伍 {args[1]}")
+            except ValueError as e:
+                await ctx.reply(f"[PyMC] {e}")
+                return FAILURE
+            return SUCCESS
+
+        if action == "list":
+            if len(args) >= 2:
+                team_name = args[1]
+                if team_name not in sb.teams:
+                    await ctx.reply(f"[PyMC] 队伍不存在: {team_name}")
+                    return FAILURE
+                members = ", ".join(sb.teams[team_name]["members"]) or "无"
+                await ctx.reply(f"[PyMC] 队伍 {team_name} 成员: {members}")
+            else:
+                for name, team in sb.teams.items():
+                    members = ", ".join(team["members"]) or "无"
+                    await ctx.reply(f"[PyMC] {name}: {members}")
+            return SUCCESS
+
+        if action == "modify":
+            if len(args) < 4:
+                await ctx.reply("[PyMC] 用法: team modify <队伍> <属性> <值>")
+                return FAILURE
+            team_name = args[1]
+            if team_name not in sb.teams:
+                await ctx.reply(f"[PyMC] 队伍不存在: {team_name}")
+                return FAILURE
+            prop = args[2].lower()
+            value = args[3]
+            if prop == "color":
+                sb.teams[team_name]["color"] = value.lower()
+            elif prop == "displayname":
+                sb.teams[team_name]["display_name"] = value
+            elif prop == "prefix":
+                sb.teams[team_name]["prefix"] = value
+            elif prop == "suffix":
+                sb.teams[team_name]["suffix"] = value
+            elif prop == "friendlyfire":
+                sb.teams[team_name]["friendly_fire"] = value.lower() in ("true", "1")
+            elif prop == "seeFriendlyInvisibles":
+                sb.teams[team_name]["see_friendly_invisibles"] = value.lower() in ("true", "1")
+            else:
+                await ctx.reply(f"[PyMC] 未知属性: {prop}")
+                return FAILURE
+            await ctx.reply(f"[PyMC] 已修改队伍 {team_name} 的 {prop}")
+            return SUCCESS
+
+        if action == "empty":
+            if len(args) < 2:
+                await ctx.reply("[PyMC] 用法: team empty <队伍>")
+                return FAILURE
+            if args[1] not in sb.teams:
+                await ctx.reply(f"[PyMC] 队伍不存在: {args[1]}")
+                return FAILURE
+            count = len(sb.teams[args[1]]["members"])
+            sb.teams[args[1]]["members"] = set()
+            await ctx.reply(f"[PyMC] 已清空队伍 {args[1]} ({count} 个成员)")
+            return SUCCESS
+
+        await ctx.reply(f"[PyMC] 未知操作: {action}")
+        return FAILURE
+
+    cmd_team = Command(
+        name="team",
+        description="管理队伍",
+        usage="team <add|remove|join|leave|list|modify|empty> ...",
+        permission="command.team",
+        category="display",
+    )
+    cmd_team._execute_func = _team
+    manager.register(cmd_team)
+
+    # ========================================
+    # /tag
+    # ========================================
+    async def _tag(ctx: CommandContext) -> int:
+        tokens = ctx.arguments.get("_raw_tokens", [])
+        args = tokens[1:] if len(tokens) > 1 else []
+
+        if len(args) < 3:
+            await ctx.reply("[PyMC] 用法: tag <目标> <add|remove|list> <标签名>")
+            return FAILURE
+
+        targets = resolve_selector(ctx.server, ctx.sender, args[0])
+        if not targets:
+            await ctx.reply(f"[PyMC] 未找到目标: {args[0]}")
+            return FAILURE
+
+        action = args[1].lower()
+        tag_name = args[2] if len(args) >= 3 else None
+
+        if action == "add":
+            if not tag_name:
+                await ctx.reply("[PyMC] 用法: tag <目标> add <标签名>")
+                return FAILURE
+            for target in targets:
+                eid = getattr(target, 'entity_id', id(target))
+                if eid not in _entity_tags:
+                    _entity_tags[eid] = set()
+                _entity_tags[eid].add(tag_name)
+                if hasattr(target, '_tags'):
+                    target._tags.add(tag_name)
+                else:
+                    target._tags = {tag_name}
+            await ctx.reply(f"[PyMC] 已添加标签 '{tag_name}' 到 {len(targets)} 个实体")
+            return SUCCESS
+
+        if action == "remove":
+            if not tag_name:
+                await ctx.reply("[PyMC] 用法: tag <目标> remove <标签名>")
+                return FAILURE
+            for target in targets:
+                eid = getattr(target, 'entity_id', id(target))
+                if eid in _entity_tags:
+                    _entity_tags[eid].discard(tag_name)
+                if hasattr(target, '_tags'):
+                    target._tags.discard(tag_name)
+            await ctx.reply(f"[PyMC] 已移除标签 '{tag_name}' 从 {len(targets)} 个实体")
+            return SUCCESS
+
+        if action == "list":
+            for target in targets:
+                eid = getattr(target, 'entity_id', id(target))
+                tags = _entity_tags.get(eid, set())
+                if hasattr(target, '_tags'):
+                    tags = tags | target._tags
+                name = getattr(target, 'username', f"实体#{eid}")
+                tag_list = ", ".join(sorted(tags)) if tags else "无"
+                await ctx.reply(f"[PyMC] {name} 的标签: {tag_list}")
+            return SUCCESS
+
+        await ctx.reply(f"[PyMC] 未知操作: {action}")
+        return FAILURE
+
+    cmd_tag = Command(
+        name="tag",
+        description="管理实体标签",
+        usage="tag <目标> <add|remove|list> <标签名>",
+        permission="command.tag",
+        category="display",
+    )
+    cmd_tag._execute_func = _tag
+    manager.register(cmd_tag)
