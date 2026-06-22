@@ -23,25 +23,36 @@
 #include <array>
 #include <functional>
 
+// Undefine Windows macros that conflict with our enum values
+#ifdef TRANSPARENT
+#undef TRANSPARENT
+#endif
+#ifdef OPAQUE
+#undef OPAQUE
+#endif
+#ifdef FILTER
+#undef FILTER
+#endif
+
 namespace pymc {
 
 // -----------------------------------------------------------
 // Constants
 // -----------------------------------------------------------
-constexpr int SECTION_SIZE = 16;
-constexpr int CHUNK_SECTIONS = 24;      // 384 / 16
-constexpr int LIGHT_SECTIONS = 26;      // CHUNK_SECTIONS + 2 boundary sections
-constexpr int MAX_LIGHT = 15;
-constexpr int MIN_Y = -64;
+static constexpr int LIGHT_SECTION_SIZE = 16;
+static constexpr int LIGHT_CHUNK_SECTIONS = 24;      // 384 / 16
+static constexpr int LIGHT_SECTION_COUNT = 26;        // CHUNK_SECTIONS + 2 boundary sections
+static constexpr int LIGHT_MAX_LEVEL = 15;
+static constexpr int LIGHT_MIN_Y = -64;
 
 // -----------------------------------------------------------
 // Block light properties
 // -----------------------------------------------------------
 enum class LightType : uint8_t {
-    TRANSPARENT = 0,   // Air, glass, etc. — light passes through fully
-    FILTER = 1,        // Water, leaves, etc. — light decreases by 1 extra
-    OPAQUE = 2,        // Stone, dirt, etc. — blocks all light
-    SOURCE = 3,        // Glowstone, torch, etc. — emits light
+    LIGHT_TRANSPARENT = 0,   // Air, glass, etc. — light passes through fully
+    LIGHT_FILTER = 1,        // Water, leaves, etc. — light decreases by 1 extra
+    LIGHT_OPAQUE = 2,        // Stone, dirt, etc. — blocks all light
+    LIGHT_SOURCE = 3,        // Glowstone, torch, etc. — emits light
 };
 
 // Block light info for a single block
@@ -94,23 +105,14 @@ public:
 
     // ---- Full chunk lighting calculation ----
 
-    // Calculate lighting for an entire chunk column.
-    //   blocks:     24 sections of 16x16x16, indexed [section][y][z][x]
-    //               Block state IDs (0 = air, etc.)
-    //   sky_light:  Output sky light [26][16][16][16]
-    //   block_light: Output block light [26][16][16][16]
+    // Calculate lighting for an entire chunk column using flat arrays.
+    // blocks:     flat array of 98304 uint16_t (y*256 + z*16 + x ordering)
+    // sky_light:  Output sky light (LIGHT_SECTION_COUNT * 4096 bytes)
+    // block_light: Output block light (LIGHT_SECTION_COUNT * 4096 bytes)
     void calculate_chunk_lighting(
-        const uint16_t blocks[CHUNK_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE],
-        uint8_t sky_light[LIGHT_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE],
-        uint8_t block_light[LIGHT_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE]
-    );
-
-    // Simplified version with flat block array and biome data
-    // blocks: flat array of 98304 uint16_t (y*256 + z*16 + x ordering)
-    void calculate_chunk_lighting_flat(
         const uint16_t* blocks,
-        uint8_t* sky_light,    // LIGHT_SECTIONS * 4096 bytes
-        uint8_t* block_light   // LIGHT_SECTIONS * 4096 bytes
+        uint8_t* sky_light,
+        uint8_t* block_light
     );
 
     // ---- Incremental update ----
@@ -125,16 +127,12 @@ public:
     // ---- Block property lookup ----
 
     // Get the light properties of a block by its state ID.
-    // Override this to provide block-specific light behavior.
     BlockLightInfo get_block_info(uint16_t block_state) const;
 
     // Register a custom block light info
     void set_block_info(uint16_t block_state, const BlockLightInfo& info);
 
     // ---- Internal light data access ----
-
-    // For incremental updates, the engine maintains light data
-    // for loaded chunks. These methods manage that data.
 
     // Set the light data for a chunk section
     void set_section_data(int chunk_x, int section_y, int chunk_z,
@@ -150,11 +148,12 @@ private:
     std::unordered_map<uint16_t, BlockLightInfo> custom_block_info_;
 
     // Cached light data for loaded chunks
-    // Key: (chunk_x, section_y, chunk_z) packed into int64_t
+    static constexpr int SECTION_VOLUME = LIGHT_SECTION_SIZE * LIGHT_SECTION_SIZE * LIGHT_SECTION_SIZE;
+
     struct SectionData {
-        uint8_t sky_light[SECTION_SIZE * SECTION_SIZE * SECTION_SIZE];
-        uint8_t block_light[SECTION_SIZE * SECTION_SIZE * SECTION_SIZE];
-        uint16_t blocks[SECTION_SIZE * SECTION_SIZE * SECTION_SIZE];
+        uint8_t sky_light[SECTION_VOLUME];
+        uint8_t block_light[SECTION_VOLUME];
+        uint16_t blocks[SECTION_VOLUME];
     };
 
     static int64_t make_section_key(int cx, int sy, int cz) {
@@ -166,25 +165,23 @@ private:
     std::unordered_map<int64_t, SectionData> section_cache_;
 
     // ---- Internal BFS-based propagation ----
+    // These use flat pointer arrays to avoid C++ array dimension issues
+    // across different compilers and platforms.
 
-    // Propagate sky light from top down
     void propagate_sky_light(
-        uint8_t sky_light[LIGHT_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE],
-        const uint16_t blocks[CHUNK_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE],
+        uint8_t* sky_light,
+        const uint16_t* blocks,
         int chunk_x, int chunk_z
     );
 
-    // Propagate block light from sources
     void propagate_block_light(
-        uint8_t block_light[LIGHT_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE],
-        const uint16_t blocks[CHUNK_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE]
+        uint8_t* block_light,
+        const uint16_t* blocks
     );
 
-    // BFS flood fill for light propagation
-    // type=0: sky light, type=1: block light
     void bfs_propagate(
-        uint8_t light[LIGHT_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE],
-        const uint16_t blocks[CHUNK_SECTIONS][SECTION_SIZE][SECTION_SIZE][SECTION_SIZE],
+        uint8_t* light,
+        const uint16_t* blocks,
         std::deque<LightPos>& queue,
         bool is_sky_light
     );
