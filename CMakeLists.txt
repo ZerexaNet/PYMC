@@ -1,10 +1,256 @@
 cmake_minimum_required(VERSION 3.20)
 project(pymc_native_tools LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ===========================================================
+# Compiler flags
+# ===========================================================
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-O2 -Wall -Wextra -fvisibility=hidden)
+    # Position-independent code for shared libraries
+    add_compile_options(-fPIC)
+    # Threading support
+    find_package(Threads REQUIRED)
+endif()
+
+if(MSVC)
+    add_compile_options(/O2 /W3)
+    # Export all symbols for DLL
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
+# ===========================================================
+# Legacy targets (original subprocess-based tools)
+# ===========================================================
 add_executable(terrain_gen native/terrain_gen.cpp)
 add_executable(mob_ai native/mob_ai.cpp)
+
+# rootree_worldgen uses C++20 features (std::rotl)
 add_executable(rootree_worldgen src/main.cpp)
+set_target_properties(rootree_worldgen PROPERTIES CXX_STANDARD 20)
+
+# ===========================================================
+# Core IPC shared memory library
+# ===========================================================
+add_library(ipc_shm STATIC
+    native/core/ipc_shm.cpp
+)
+target_include_directories(ipc_shm PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+)
+if(UNIX)
+    target_link_libraries(ipc_shm PUBLIC Threads::Threads rt)
+endif()
+
+# ===========================================================
+# Redstone Engine
+# ===========================================================
+add_library(redstone_engine STATIC
+    native/redstone/redstone_engine.cpp
+)
+target_include_directories(redstone_engine PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/redstone
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+)
+target_link_libraries(redstone_engine PUBLIC ipc_shm)
+
+# ===========================================================
+# Light Engine
+# ===========================================================
+add_library(light_engine STATIC
+    native/lighting/light_engine.cpp
+)
+target_include_directories(light_engine PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/lighting
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+)
+target_link_libraries(light_engine PUBLIC ipc_shm)
+
+# ===========================================================
+# Physics Engine
+# ===========================================================
+add_library(physics_engine STATIC
+    native/physics/physics_engine.cpp
+)
+target_include_directories(physics_engine PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/physics
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+)
+target_link_libraries(physics_engine PUBLIC ipc_shm)
+
+# ===========================================================
+# Native server process (uses shared memory IPC)
+# ===========================================================
+add_executable(pymc_native_server
+    native/pymc_native_server.cpp
+)
+target_include_directories(pymc_native_server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/redstone
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/lighting
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/physics
+)
+target_link_libraries(pymc_native_server PRIVATE
+    ipc_shm
+    redstone_engine
+    light_engine
+    physics_engine
+)
+
+# ===========================================================
+# Combined shared library for in-process Python bindings
+# (can be loaded via ctypes/cffi)
+# ===========================================================
+add_library(pymc_native SHARED
+    native/bindings/pymc_native_api.cpp
+    native/core/ipc_shm.cpp
+    native/redstone/redstone_engine.cpp
+    native/lighting/light_engine.cpp
+    native/physics/physics_engine.cpp
+)
+target_include_directories(pymc_native PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/native
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/redstone
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/lighting
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/physics
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/bindings
+)
+if(UNIX)
+    target_link_libraries(pymc_native PUBLIC Threads::Threads rt)
+endif()
+
+# ===========================================================
+# Paper Plugin Compatibility Layer
+# ===========================================================
+
+# Event System (header-only, always built)
+add_library(plugin_event_system INTERFACE)
+target_include_directories(plugin_event_system INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+)
+
+# Bukkit API (header-only for now, implementation TBD)
+add_library(plugin_bukkit_api INTERFACE)
+target_include_directories(plugin_bukkit_api INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+)
+
+# JVM Bridge (header-only, requires JDK at runtime)
+add_library(plugin_jvm_bridge INTERFACE)
+target_include_directories(plugin_jvm_bridge INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+)
+
+# Plugin Loader (header-only, orchestrates the other components)
+add_library(plugin_loader INTERFACE)
+target_include_directories(plugin_loader INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+)
+target_link_libraries(plugin_loader INTERFACE
+    plugin_event_system
+    plugin_bukkit_api
+    plugin_jvm_bridge
+)
+
+# Combined plugin shared library for Python ctypes bindings
+# This will include C API bridge functions when implementation files are added
+add_library(pymc_plugin_loader SHARED
+    native/plugins/plugin_loader_api.cpp
+)
+target_include_directories(pymc_plugin_loader PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/native
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+)
+target_link_libraries(pymc_plugin_loader PUBLIC
+    plugin_loader
+    ipc_shm
+)
+if(UNIX)
+    target_link_libraries(pymc_plugin_loader PUBLIC Threads::Threads rt dl)
+endif()
+
+# ===========================================================
+# Mod Compatibility Layer (Fabric/Forge/NeoForge/Quilt)
+# ===========================================================
+
+# Mod Loader (header-only, core mod discovery & lifecycle management)
+add_library(mod_loader INTERFACE)
+target_include_directories(mod_loader INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+)
+
+# Fabric API Bridge (header-only, Fabric mod API -> PYMC translation)
+add_library(mod_fabric_api INTERFACE)
+target_include_directories(mod_fabric_api INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+)
+target_link_libraries(mod_fabric_api INTERFACE
+    mod_loader
+)
+
+# Forge API Bridge (header-only, Forge/NeoForge mod API -> PYMC translation)
+add_library(mod_forge_api INTERFACE)
+target_include_directories(mod_forge_api INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+)
+target_link_libraries(mod_forge_api INTERFACE
+    mod_loader
+)
+
+# JVM Interface (header-only, JNI-based mod jar loading & execution)
+add_library(mod_jvm_interface INTERFACE)
+target_include_directories(mod_jvm_interface INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+)
+target_link_libraries(mod_jvm_interface INTERFACE
+    mod_loader
+    plugin_jvm_bridge
+)
+
+# Combined mod compatibility shared library for Python ctypes bindings
+# This will include C API bridge functions when implementation files are added
+add_library(pymc_mod_loader SHARED
+    native/plugins/plugin_loader_api.cpp
+)
+target_include_directories(pymc_mod_loader PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/native
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
+    ${CMAKE_CURRENT_SOURCE_DIR}/native/core
+)
+target_link_libraries(pymc_mod_loader PUBLIC
+    mod_loader
+    mod_fabric_api
+    mod_forge_api
+    mod_jvm_interface
+    plugin_loader
+    ipc_shm
+)
+if(UNIX)
+    target_link_libraries(pymc_mod_loader PUBLIC Threads::Threads rt dl)
+endif()
+
+# ===========================================================
+# Install targets
+# ===========================================================
+install(TARGETS
+    terrain_gen
+    mob_ai
+    pymc_native_server
+    pymc_native
+    pymc_plugin_loader
+    pymc_mod_loader
+    RUNTIME DESTINATION native
+    LIBRARY DESTINATION native
+)

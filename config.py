@@ -34,6 +34,33 @@ DEFAULT_CONFIG = {
     "chunk-generation-multithreading": False,
     "chunk-generation-workers": 0,
     "join-immediate-radius": 2,
+    # Multi-version protocol support
+    "support-protocol-versions": "all",  # "all" or comma-separated list (e.g. "47,340,767")
+    "min-protocol-version": 47,            # Minimum allowed protocol version
+    "max-protocol-version": 770,           # Maximum allowed protocol version
+
+    # Watchdog dual-process mutual protection
+    "watchdog-enabled": False,             # Enable watchdog dual-process protection
+    "watchdog-health-port": 25569,         # UDP port for health check heartbeats
+    "watchdog-partner-pid": 0,             # PID of partner process (0 = auto-detect)
+    "watchdog-max-missed-heartbeats": 5,   # Missed heartbeats before restart
+
+    # Network optimization
+    "network-packet-batching": True,        # Enable packet batching for reduced TCP writes
+    "network-movement-rate-hz": 20.0,      # Max position updates per second per player
+
+    # Vanilla terrain generation
+    "vanilla-terrain": True,                # Use the 1:1 vanilla terrain generator
+
+    # Redstone
+    "redstone-enabled": True,               # Enable redstone simulation
+
+    # Fluids
+    "fluid-flow-enabled": True,             # Enable water/lava flow simulation
+
+    # Mod and plugin directories
+    "mods-directory": "mods",               # Directory to scan for Fabric/Forge mods
+    "plugins-directory": "plugins",          # Directory to scan for Paper/Bukkit plugins
 }
 
 # 类型映射 (用于自动转换配置值)
@@ -53,6 +80,25 @@ TYPE_MAP = {
     "chunk-generation-multithreading": lambda v: v.lower() in ("true", "1", "yes"),
     "chunk-generation-workers": int,
     "join-immediate-radius": int,
+    "min-protocol-version": int,
+    "max-protocol-version": int,
+
+    # Watchdog
+    "watchdog-enabled": lambda v: v.lower() in ("true", "1", "yes"),
+    "watchdog-health-port": int,
+    "watchdog-partner-pid": int,
+    "watchdog-max-missed-heartbeats": int,
+
+    # Network optimization
+    "network-packet-batching": lambda v: v.lower() in ("true", "1", "yes"),
+    "network-movement-rate-hz": float,
+
+    # Vanilla terrain / Redstone / Fluids
+    "vanilla-terrain": lambda v: v.lower() in ("true", "1", "yes"),
+    "redstone-enabled": lambda v: v.lower() in ("true", "1", "yes"),
+    "fluid-flow-enabled": lambda v: v.lower() in ("true", "1", "yes"),
+
+    # Mod and plugin directories (string, no conversion needed)
 }
 
 

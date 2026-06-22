@@ -6,7 +6,7 @@
 """
 PyMC: 使用纯 Python 实现的 Minecraft Java 版服务端。
 
-支持版本: 1.21.1 (协议版本 767)
+支持版本: 1.8 - 1.21+ (多版本协议兼容)
 功能:
   - 离线模式登录
   - 平坦世界生成
@@ -15,6 +15,7 @@ PyMC: 使用纯 Python 实现的 Minecraft Java 版服务端。
   - 基础命令 (/help, /list, /tp, /gamemode, /stop)
   - 数据包压缩
   - KeepAlive 心跳
+  - 多版本协议兼容 (1.8.9 - 1.21.4)
 """
 
 import asyncio
@@ -29,6 +30,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import load_config
 from network.server import MinecraftServer
 from handlers.play import execute_server_command
+from commands import CommandManager, register_all_vanilla_commands
+from watchdog import WatchdogManager, PlayerNetworkOptimizer
+from mods import ModManager
+from plugins import PluginManager
 
 
 def setup_logging():
@@ -70,8 +75,8 @@ def print_banner():
         |___/
     """
     print(banner)
-    print("  Python Minecraft 服务端 - 版本 1.21.1")
-    print("  协议版本: 767")
+    print("  Python Minecraft 服务端 - 多版本支持")
+    print("  协议版本: 47-770 (1.8.9 - 1.21.4)")
     print("=" * 50)
     print()
 
@@ -91,6 +96,33 @@ async def main():
 
     # 创建服务器实例
     server = MinecraftServer(config, config_path=config_path)
+
+    # 初始化命令框架
+    server.command_manager = CommandManager(server)
+    register_all_vanilla_commands(server.command_manager)
+    cmd_count = len(server.command_manager.commands)
+    logger.info(f"命令框架已初始化: {cmd_count} 个命令已注册")
+
+    # 初始化 Mod 管理器
+    mods_dir = config.get("mods-directory", "mods")
+    server.mod_manager = ModManager(server)
+    discovered_mods = server.mod_manager.scan_mods_directory(mods_dir)
+    logger.info(f"Mod 管理器已初始化: 发现 {len(discovered_mods)} 个 Mod")
+
+    # 初始化插件管理器
+    plugins_dir = config.get("plugins-directory", "plugins")
+    server.plugin_manager = PluginManager(server)
+    loaded_plugins = server.plugin_manager.load_plugins_from_dir(plugins_dir)
+    server.plugin_manager.enable_all()
+    logger.info(f"插件管理器已初始化: 已加载 {loaded_plugins} 个插件")
+
+    # 初始化 Watchdog (如果配置启用)
+    server.watchdog_manager = None
+    if config.get("watchdog-enabled", False):
+        server.watchdog_manager = WatchdogManager(server)
+        await server.watchdog_manager.start()
+        logger.info("Watchdog 双进程保护已启动")
+
     console_task = None
 
     # 注册信号处理 (优雅关闭)
