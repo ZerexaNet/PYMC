@@ -2,7 +2,7 @@
 
 PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，协议版本 767。
 
-项目目标不是基于 Bukkit/Paper/Forge 扩展现有服务端，而是直接实现 Minecraft Java 协议、登录流程、配置注册表、区块发送、玩家同步、基础命令和世界存储。
+项目目标不是基于 Bukkit/Fabric/Forge 扩展现有服务端，而是直接实现 Minecraft Java 协议、登录流程、配置注册表、区块发送、玩家同步、基础命令和世界存储。
 
 ## 开发清单
 
