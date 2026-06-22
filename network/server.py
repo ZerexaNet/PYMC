@@ -28,7 +28,7 @@ from world.entities import EntityManager
 from world.redstone import RedstoneEngine
 from world.vanilla_terrain import VanillaTerrainGenerator
 from world.inventory import PlayerInventory
-from world.block_behavior import BlockBehaviorManager, container_manager
+from world.block_behavior import ContainerManager, container_manager
 from world.fluids import FluidSystem
 from watchdog import WatchdogManager, PlayerNetworkOptimizer
 from .managers.gamerule import GameruleManager

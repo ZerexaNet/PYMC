@@ -41,17 +41,22 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-      - name: Set up MinGW
-        uses: egor-tensin/setup-mingw@v2
+        run: pip install -r requirements.txt
+      - name: Install MinGW via MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          platform: x64
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-make
       - name: Build native components
+        shell: msys2 {0}
         run: |
-          mkdir build && cd build
-          cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
-          mingw32-make -j$env:NUMBER_OF_PROCESSORS
+          mkdir -p build && cd build
+          cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
+          mingw32-make -j$(nproc)
       - name: Build with Nuitka
         run: |
           pip install nuitka
