@@ -199,7 +199,7 @@ PYMC_EXPORT void pymc_light_calculate_chunk(void* engine,
                                              uint8_t* block_light_out) {
     auto* e = static_cast<pymc::LightEngine*>(engine);
     if (e) {
-        e->calculate_chunk_lighting_flat(blocks, sky_light_out, block_light_out);
+        e->calculate_chunk_lighting(blocks, sky_light_out, block_light_out);
     }
 }
 
