@@ -234,7 +234,6 @@ target_link_libraries(pymc_mod_loader PUBLIC
     mod_fabric_api
     mod_forge_api
     mod_jvm_interface
-    plugin_loader
     ipc_shm
 )
 if(UNIX)

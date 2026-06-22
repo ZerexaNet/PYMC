@@ -23,7 +23,7 @@ jobs:
       - name: Build native components
         run: |
           mkdir -p build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
           make -j$(nproc)
       - name: Run tests
         run: python3 -m pytest tests/ -v
@@ -43,11 +43,15 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+      - name: Set up MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
       - name: Build native components
         run: |
           mkdir build && cd build
-          cmake .. -G "Visual Studio 17 2022"
-          cmake --build . --config Release
+          cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          mingw32-make -j$env:NUMBER_OF_PROCESSORS
       - name: Build with Nuitka
         run: |
           pip install nuitka
