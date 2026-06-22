@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import struct
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -90,9 +91,31 @@ def _state_id_to_properties(block_def: dict, state_id: int) -> dict[str, str]:
     return props
 
 
+def _find_blocks_json() -> str:
+    """Locate blocks.json from multiple possible paths (source, Nuitka bundle, CWD)."""
+    candidates = [
+        # 1. Same directory as this file (source checkout / normal install)
+        Path(__file__).resolve().parent / "blocks.json",
+        # 2. Nuitka standalone: data files may be alongside the executable
+        Path(__file__).resolve().parent.parent / "world" / "blocks.json",
+        # 3. Nuitka onefile: check relative to the executable
+        Path(sys.argv[0]).resolve().parent / "world" / "blocks.json",
+        # 4. Current working directory
+        Path("world") / "blocks.json",
+        Path("blocks.json"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+    raise FileNotFoundError(
+        f"Cannot find blocks.json. Searched: {[str(c) for c in candidates]}"
+    )
+
+
 def _build_block_registry():
-    blocks_path = Path(__file__).resolve().parent / "blocks.json"
-    blocks = json.loads(blocks_path.read_text(encoding="utf-8"))
+    blocks_path = _find_blocks_json()
+    with open(blocks_path, "r", encoding="utf-8") as f:
+        blocks = json.load(f)
 
     state_id_to_block: dict[int, tuple[str, dict[str, str]]] = {}
     block_key_to_state_id: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}

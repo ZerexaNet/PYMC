@@ -31,7 +31,9 @@ jobs:
       - name: Build with Nuitka
         run: |
           pip install nuitka
-          python3 -m nuitka --standalone --onefile --assume-yes-for-downloads main.py -o pymc-server-linux-x86_64
+          python3 -m nuitka --standalone --onefile --assume-yes-for-downloads \
+            --include-data-file=world/blocks.json=world/blocks.json \
+            main.py -o pymc-server-linux-x86_64
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +70,9 @@ jobs:
       - name: Build with Nuitka
         run: |
           pip install nuitka
-          python -m nuitka --standalone --onefile --mingw64 --assume-yes-for-downloads main.py -o pymc-server-windows-x86_64.exe
+          python -m nuitka --standalone --onefile --mingw64 --assume-yes-for-downloads `
+            --include-data-file=world/blocks.json=world/blocks.json `
+            main.py -o pymc-server-windows-x86_64.exe
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
