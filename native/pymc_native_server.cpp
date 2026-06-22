@@ -316,7 +316,7 @@ int main(int argc, char* argv[]) {
 
         case CMD_CALC_LIGHT: {
             // Payload: flat block array (98304 * 2 = 196608 bytes)
-            constexpr size_t expected_size = pymc::CHUNK_SECTIONS * 16 * 16 * 16 * 2;
+            constexpr size_t expected_size = pymc::LIGHT_CHUNK_SECTIONS * 16 * 16 * 16 * 2;
             if (payload_len < expected_size) {
                 write_u32_le(response.data(), STATUS_ERROR);
                 append_le<uint32_t>(response, static_cast<uint32_t>(payload_len));
@@ -325,15 +325,15 @@ int main(int argc, char* argv[]) {
             }
 
             // Convert to uint16 array
-            std::vector<uint16_t> blocks(pymc::CHUNK_SECTIONS * 16 * 16 * 16);
+            std::vector<uint16_t> blocks(pymc::LIGHT_CHUNK_SECTIONS * 16 * 16 * 16);
             for (size_t i = 0; i < blocks.size(); i++) {
                 blocks[i] = read_u16_le(payload + i * 2);
             }
 
-            std::vector<uint8_t> sky_light(pymc::LIGHT_SECTIONS * 4096);
-            std::vector<uint8_t> block_light(pymc::LIGHT_SECTIONS * 4096);
+            std::vector<uint8_t> sky_light(pymc::LIGHT_SECTION_COUNT * 4096);
+            std::vector<uint8_t> block_light(pymc::LIGHT_SECTION_COUNT * 4096);
 
-            lighting.calculate_chunk_lighting_flat(
+            lighting.calculate_chunk_lighting(
                 blocks.data(),
                 sky_light.data(),
                 block_light.data()
