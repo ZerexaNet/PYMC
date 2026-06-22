@@ -30,7 +30,7 @@ jobs:
       - name: Build with Nuitka
         run: |
           pip install nuitka
-          python3 -m nuitka --standalone --onefile main.py -o pymc-server
+          python3 -m nuitka --standalone --onefile --assume-yes-for-downloads main.py -o pymc-server
 
   build-windows:
     runs-on: windows-latest
@@ -60,4 +60,4 @@ jobs:
       - name: Build with Nuitka
         run: |
           pip install nuitka
-          python -m nuitka --standalone --onefile --mingw64 main.py -o pymc-server.exe
+          python -m nuitka --standalone --onefile --mingw64 --assume-yes-for-downloads main.py -o pymc-server.exe
