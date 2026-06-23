@@ -41,7 +41,9 @@ add_library(ipc_shm STATIC
 target_include_directories(ipc_shm PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/native/core
 )
-if(UNIX)
+if(APPLE)
+    target_link_libraries(ipc_shm PUBLIC Threads::Threads)
+elseif(UNIX)
     target_link_libraries(ipc_shm PUBLIC Threads::Threads rt)
 endif()
 
@@ -120,7 +122,9 @@ target_include_directories(pymc_native PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/native/physics
     ${CMAKE_CURRENT_SOURCE_DIR}/native/bindings
 )
-if(UNIX)
+if(APPLE)
+    target_link_libraries(pymc_native PUBLIC Threads::Threads)
+elseif(UNIX)
     target_link_libraries(pymc_native PUBLIC Threads::Threads rt)
 endif()
 
@@ -171,7 +175,9 @@ target_link_libraries(pymc_plugin_loader PUBLIC
     plugin_loader
     ipc_shm
 )
-if(UNIX)
+if(APPLE)
+    target_link_libraries(pymc_plugin_loader PUBLIC Threads::Threads)
+elseif(UNIX)
     target_link_libraries(pymc_plugin_loader PUBLIC Threads::Threads rt dl)
 endif()
 
@@ -236,7 +242,9 @@ target_link_libraries(pymc_mod_loader PUBLIC
     mod_jvm_interface
     ipc_shm
 )
-if(UNIX)
+if(APPLE)
+    target_link_libraries(pymc_mod_loader PUBLIC Threads::Threads)
+elseif(UNIX)
     target_link_libraries(pymc_mod_loader PUBLIC Threads::Threads rt dl)
 endif()
 
