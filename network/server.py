@@ -779,15 +779,29 @@ class MinecraftServer:
 
             # 使用 TimeManager 推进时间
             self._time_manager.do_daylight_cycle = self.gamerules.get("doDaylightCycle", True)
+            old_weather = self.weather
+            old_time = self.world_time
             self._time_manager.tick()
             self.world_time = self._time_manager.time
             self.weather = self._time_manager.weather
+
+            # Plugin hooks: weather/time change
+            if self.weather != old_weather:
+                from plugins.bridge import hook_weather_change
+                hook_weather_change(self, old_weather, self.weather)
+            if self.world_time != old_time and tick_count % 200 == 0:
+                from plugins.bridge import hook_time_change
+                hook_time_change(self, old_time, self.world_time)
 
             # 更新指标
             self.metrics.tick()
 
             # 执行调度任务
             await self.scheduler.tick()
+
+            # Plugin/mod tick hook
+            from plugins.bridge import hook_server_tick
+            hook_server_tick(self)
 
             # 发送 KeepAlive 心跳
             if tick_count % keepalive_interval == 0:

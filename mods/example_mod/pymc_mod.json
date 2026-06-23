@@ -1,0 +1,9 @@
+{
+    "id": "example_mod",
+    "name": "Example Mod",
+    "version": "1.0.0",
+    "description": "A simple example mod that demonstrates the PYMC Native Mod API",
+    "main_class": "ExampleMod",
+    "api_version": "1.0",
+    "dependencies": []
+}

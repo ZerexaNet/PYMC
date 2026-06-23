@@ -1,0 +1,9 @@
+{
+    "id": "example_plugin",
+    "name": "Example Plugin",
+    "version": "1.0.0",
+    "description": "A simple example plugin that demonstrates the PYMC Plugin API",
+    "main_class": "ExamplePlugin",
+    "api-version": "1.0",
+    "authors": ["PYMC Team"]
+}

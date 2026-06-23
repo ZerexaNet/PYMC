@@ -142,10 +142,17 @@ class PluginEvents:
     CHUNK_UNLOAD = "ChunkUnloadEvent"
     WORLD_LOAD = "WorldLoadEvent"
     WEATHER_CHANGE = "WeatherChangeEvent"
+    TIME_CHANGE = "TimeChangeEvent"
+    FLUID_PLACE = "FluidPlaceEvent"
+    FLUID_FLOW = "FluidFlowEvent"
+    GAMERULE_CHANGE = "GameRuleChangeEvent"
 
     # Inventory events
     INVENTORY_CLICK = "InventoryClickEvent"
     CRAFT_ITEM = "CraftItemEvent"
+
+    # Server tick
+    SERVER_TICK = "ServerTickEvent"
 
     # Plugin events
     PLUGIN_ENABLE = "PluginEnableEvent"

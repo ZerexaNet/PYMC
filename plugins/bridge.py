@@ -410,6 +410,391 @@ def hook_server_stop(server):
     pm.fire_event(event)
 
 
+def hook_player_kick(server, conn, reason: str = ""):
+    """Fire the PlayerKickEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.PLAYER_KICK,
+        {
+            "player_name": conn.username or "",
+            "reason": reason,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_player_move(server, conn, from_x: float, from_y: float, from_z: float,
+                     to_x: float, to_y: float, to_z: float):
+    """Fire the PlayerMoveEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.PLAYER_MOVE,
+        {
+            "player_name": conn.username or "",
+            "from_x": from_x, "from_y": from_y, "from_z": from_z,
+            "to_x": to_x, "to_y": to_y, "to_z": to_z,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_player_teleport(server, conn, from_x: float, from_y: float, from_z: float,
+                         to_x: float, to_y: float, to_z: float) -> bool:
+    """Fire the PlayerTeleportEvent. Returns True if teleport should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.PLAYER_TELEPORT,
+        {
+            "player_name": conn.username or "",
+            "from_x": from_x, "from_y": from_y, "from_z": from_z,
+            "to_x": to_x, "to_y": to_y, "to_z": to_z,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_player_interact(server, conn, x: int, y: int, z: int,
+                         action: str = "right_click", hand: str = "main") -> bool:
+    """Fire the PlayerInteractEvent. Returns True if interaction should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.PLAYER_INTERACT,
+        {
+            "player_name": conn.username or "",
+            "x": x, "y": y, "z": z,
+            "action": action,
+            "hand": hand,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_player_respawn(server, conn):
+    """Fire the PlayerRespawnEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.PLAYER_RESPAWN,
+        {
+            "player_name": conn.username or "",
+            "player": PlayerBridge(conn),
+        },
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_player_gamemode_change(server, conn, old_gamemode: int,
+                                new_gamemode: int) -> bool:
+    """Fire the PlayerGameModeChangeEvent. Returns True if change should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.PLAYER_GAME_MODE,
+        {
+            "player_name": conn.username or "",
+            "old_gamemode": old_gamemode,
+            "new_gamemode": new_gamemode,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_entity_spawn(server, entity_id: int, entity_type: str = "",
+                      x: float = 0, y: float = 0, z: float = 0) -> bool:
+    """Fire the EntitySpawnEvent. Returns True if spawn should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.ENTITY_SPAWN,
+        {
+            "entity_id": entity_id,
+            "entity_type": entity_type,
+            "x": x, "y": y, "z": z,
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_entity_death(server, entity_id: int, cause: str = ""):
+    """Fire the EntityDeathEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.ENTITY_DEATH,
+        {
+            "entity_id": entity_id,
+            "cause": cause,
+        },
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_projectile_hit(server, entity_id: int, x: int, y: int, z: int):
+    """Fire the ProjectileHitEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.PROJECTILE_HIT,
+        {
+            "entity_id": entity_id,
+            "x": x, "y": y, "z": z,
+        },
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_block_burn(server, x: int, y: int, z: int, block_state: int):
+    """Fire the BlockBurnEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.BLOCK_BURN,
+        {
+            "x": x, "y": y, "z": z,
+            "block_state": block_state,
+        },
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_block_redstone(server, x: int, y: int, z: int,
+                        old_power: int, new_power: int):
+    """Fire the BlockRedstoneEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.BLOCK_REDSTONE,
+        {
+            "x": x, "y": y, "z": z,
+            "old_power": old_power,
+            "new_power": new_power,
+        },
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_sign_change(server, conn, x: int, y: int, z: int,
+                     lines: list) -> bool:
+    """Fire the SignChangeEvent. Returns True if change should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.SIGN_CHANGE,
+        {
+            "player_name": conn.username or "",
+            "x": x, "y": y, "z": z,
+            "lines": lines,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_chunk_load(server, cx: int, cz: int):
+    """Fire the ChunkLoadEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.CHUNK_LOAD,
+        {"chunk_x": cx, "chunk_z": cz},
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_chunk_unload(server, cx: int, cz: int):
+    """Fire the ChunkUnloadEvent."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.CHUNK_UNLOAD,
+        {"chunk_x": cx, "chunk_z": cz},
+        cancellable=False,
+    )
+    pm.fire_event(event)
+
+
+def hook_weather_change(server, old_weather: str, new_weather: str) -> bool:
+    """Fire the WeatherChangeEvent. Returns True if change should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.WEATHER_CHANGE,
+        {"old_weather": old_weather, "new_weather": new_weather},
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_time_change(server, old_time: int, new_time: int) -> bool:
+    """Fire the TimeChangeEvent. Returns True if change should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.TIME_CHANGE,
+        {"old_time": old_time, "new_time": new_time},
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_inventory_click(server, conn, slot: int, item_id: str = "",
+                         click_type: str = "left") -> bool:
+    """Fire the InventoryClickEvent. Returns True if click should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.INVENTORY_CLICK,
+        {
+            "player_name": conn.username or "",
+            "slot": slot,
+            "item_id": item_id,
+            "click_type": click_type,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_craft_item(server, conn, result_item: str, recipe_id: str = "") -> bool:
+    """Fire the CraftItemEvent. Returns True if craft should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.CRAFT_ITEM,
+        {
+            "player_name": conn.username or "",
+            "result_item": result_item,
+            "recipe_id": recipe_id,
+            "player": PlayerBridge(conn),
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_fluid_place(server, x: int, y: int, z: int,
+                     fluid_type: str = "water") -> bool:
+    """Fire the FluidPlaceEvent. Returns True if placement should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.FLUID_PLACE,
+        {"x": x, "y": y, "z": z, "fluid_type": fluid_type},
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_fluid_flow(server, from_x: int, from_y: int, from_z: int,
+                    to_x: int, to_y: int, to_z: int,
+                    fluid_type: str = "water") -> bool:
+    """Fire the FluidFlowEvent. Returns True if flow should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.FLUID_FLOW,
+        {
+            "from_x": from_x, "from_y": from_y, "from_z": from_z,
+            "to_x": to_x, "to_y": to_y, "to_z": to_z,
+            "fluid_type": fluid_type,
+        },
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_gamerule_change(server, rule_name: str, old_value, new_value) -> bool:
+    """Fire the GameRuleChangeEvent. Returns True if change should proceed."""
+    pm = server.plugin_manager
+    if pm is None:
+        return True
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(
+        PluginEvents.GAMERULE_CHANGE,
+        {"rule_name": rule_name, "old_value": old_value, "new_value": new_value},
+        cancellable=True,
+    )
+    return pm.fire_event(event)
+
+
+def hook_server_tick(server):
+    """Fire the ServerTickEvent. Called every game tick."""
+    pm = server.plugin_manager
+    if pm is None:
+        return
+    from plugins import PluginEvents, PluginEvent
+    event = PluginEvent(PluginEvents.SERVER_TICK, {}, cancellable=False)
+    pm.fire_event(event)
+
+    # Also tick the scheduler
+    sched = getattr(server, '_plugin_scheduler', None)
+    if sched is not None:
+        sched.tick()
+
+
 # ===========================================================
 # Command Integration — Wire plugin commands into CommandManager
 # ===========================================================
@@ -497,6 +882,7 @@ def init_plugin_system(server, plugins_dir: str = "plugins") -> 'PluginManager':
     is initialized but before the game loop starts.
     """
     from plugins import PluginManager
+    from plugins.scheduler import PluginScheduler
 
     # Create PluginManager with a real ServerBridge
     bridge = ServerBridge(server)
@@ -505,6 +891,10 @@ def init_plugin_system(server, plugins_dir: str = "plugins") -> 'PluginManager':
     # Store on server
     server.plugin_manager = pm
 
+    # Create and store scheduler
+    scheduler = PluginScheduler(server)
+    server._plugin_scheduler = scheduler
+
     # Discover and load plugins
     discovered = pm.discover_plugins(plugins_dir)
     logger.info(f"Discovered {len(discovered)} plugins in {plugins_dir}")
@@ -512,7 +902,6 @@ def init_plugin_system(server, plugins_dir: str = "plugins") -> 'PluginManager':
     loaded = pm.load_all()
     logger.info(f"Loaded {loaded} plugins")
 
-    enabled = 0
     pm.enable_all()
     enabled = pm.plugin_count
     logger.info(f"Enabled {enabled} plugins")
