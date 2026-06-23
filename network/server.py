@@ -288,17 +288,16 @@ class MinecraftServer:
             from mods import ModManager
             self.mod_manager = ModManager(self)
             mods_dir = self.config.get("mods-directory", "mods")
-            discovered = self.mod_manager.scan_mods_directory(mods_dir)
+            discovered = self.mod_manager.discover_mods(mods_dir)
+            self.mod_manager.load_all()
             logger.info(f"Mod 管理器已初始化: 发现 {len(discovered)} 个 Mod")
 
         # 插件管理器集成 (如果 main.py 没有提前初始化)
         if self.plugin_manager is None:
-            from plugins import PluginManager
-            self.plugin_manager = PluginManager(self)
+            from plugins.bridge import init_plugin_system
             plugins_dir = self.config.get("plugins-directory", "plugins")
-            loaded = self.plugin_manager.load_plugins_from_dir(plugins_dir)
-            self.plugin_manager.enable_all()
-            logger.info(f"插件管理器已初始化: 已加载 {loaded} 个插件")
+            init_plugin_system(self, plugins_dir)
+            logger.info(f"插件管理器已初始化: {self.plugin_manager.plugin_count} 个插件已启用")
 
         # 启动游戏循环 (20 TPS)
         self._tick_task = asyncio.create_task(self._game_loop())
@@ -640,7 +639,8 @@ class MinecraftServer:
 
         # 禁用所有插件
         if self.plugin_manager is not None:
-            self.plugin_manager.disable_all()
+            from plugins.bridge import shutdown_plugin_system
+            shutdown_plugin_system(self)
             self.plugin_manager = None
 
         # 卸载所有 Mod
@@ -730,6 +730,9 @@ class MinecraftServer:
             # 如果玩家已登录，通知其他玩家
             if conn.username and conn.state == ConnectionState.PLAY:
                 self.save_player_state(conn)
+                # Plugin hook: fire PlayerQuitEvent
+                from plugins.bridge import hook_player_quit
+                hook_player_quit(self, conn)
                 logger.info(f"玩家 {conn.username} 离开了游戏")
                 await self._handle_player_leave(conn)
 

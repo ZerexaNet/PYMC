@@ -32,8 +32,7 @@ from network.server import MinecraftServer
 from handlers.play import execute_server_command
 from commands import CommandManager, register_all_vanilla_commands
 from watchdog import WatchdogManager, PlayerNetworkOptimizer
-from mods import ModManager
-from plugins import PluginManager
+from plugins.bridge import init_plugin_system, shutdown_plugin_system
 
 
 def setup_logging():
@@ -103,18 +102,10 @@ async def main():
     cmd_count = len(server.command_manager.commands)
     logger.info(f"命令框架已初始化: {cmd_count} 个命令已注册")
 
-    # 初始化 Mod 管理器
-    mods_dir = config.get("mods-directory", "mods")
-    server.mod_manager = ModManager(server)
-    discovered_mods = server.mod_manager.scan_mods_directory(mods_dir)
-    logger.info(f"Mod 管理器已初始化: 发现 {len(discovered_mods)} 个 Mod")
-
-    # 初始化插件管理器
+    # 初始化插件系统 (自动发现、加载、启用并注册命令)
     plugins_dir = config.get("plugins-directory", "plugins")
-    server.plugin_manager = PluginManager(server)
-    loaded_plugins = server.plugin_manager.load_plugins_from_dir(plugins_dir)
-    server.plugin_manager.enable_all()
-    logger.info(f"插件管理器已初始化: 已加载 {loaded_plugins} 个插件")
+    init_plugin_system(server, plugins_dir)
+    logger.info(f"插件系统已初始化: {server.plugin_manager.plugin_count} 个插件已启用")
 
     # 初始化 Watchdog (如果配置启用)
     server.watchdog_manager = None

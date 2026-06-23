@@ -272,6 +272,11 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
     if current is None or current == AIR:
         return
 
+    # Plugin hook: allow plugins to cancel block break
+    from plugins.bridge import hook_block_break
+    if not hook_block_break(server, conn, x, y, z, current):
+        return  # Cancelled by a plugin
+
     # Check block hardness - unbreakable blocks can't be mined
     block_name, _ = STATE_ID_TO_BLOCK.get(current, ("minecraft:air", {}))
     hardness = get_block_hardness(block_name)
@@ -511,6 +516,11 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
             logger.warning(f"Block place behavior error for {placed_name}: {e}")
 
     # Place the block
+    # Plugin hook: allow plugins to cancel block placement
+    from plugins.bridge import hook_block_place
+    if not hook_block_place(server, conn, place_x, place_y, place_z, block_state):
+        return  # Cancelled by a plugin
+
     changed_chunks = set_world_block(server, place_x, place_y, place_z, block_state)
     if not changed_chunks:
         return

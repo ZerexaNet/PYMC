@@ -187,7 +187,10 @@ class PluginInfo:
 class PyMCServer:
     """
     Server interface that plugins can access via self.get_server().
-    Provides safe, read-only or controlled-mutation access to server state.
+
+    In production, this is replaced by a plugins.bridge.ServerBridge
+    which delegates to the real MinecraftServer. The stub methods
+    below exist only as a fallback for testing / headless mode.
     """
 
     def __init__(self):
@@ -210,6 +213,14 @@ class PyMCServer:
         """Get list of online player names."""
         return list(self._online_players.keys())
 
+    def get_online_player_count(self) -> int:
+        """Get the number of online players."""
+        return len(self._online_players)
+
+    def get_player(self, username: str):
+        """Get a player by name. Returns None in stub mode."""
+        return None
+
     def get_tps(self) -> float:
         """Get current server TPS (ticks per second). 20.0 = ideal."""
         return self._tps
@@ -218,9 +229,20 @@ class PyMCServer:
         """Get world info by name."""
         return self._worlds.get(name)
 
+    def get_world_names(self) -> List[str]:
+        """Get names of loaded worlds."""
+        return list(self._worlds.keys())
+
+    def get_block_at(self, x: int, y: int, z: int) -> Optional[int]:
+        """Get block state ID at world coordinates."""
+        return None
+
+    def set_block_at(self, x: int, y: int, z: int, block_state: int):
+        """Set a block at world coordinates."""
+        pass
+
     def get_plugin(self, plugin_id: str):
         """Get another plugin's main instance (for inter-plugin comms)."""
-        # Resolved at PluginManager level
         return None
 
     def get_version(self) -> str:
@@ -229,6 +251,12 @@ class PyMCServer:
 
     def is_running(self) -> bool:
         return self._running
+
+    def get_max_players(self) -> int:
+        return 20
+
+    def get_motd(self) -> str:
+        return "PyMC Server"
 
 
 # ===========================================================
@@ -430,6 +458,12 @@ class PluginManager:
         return discovered
 
     # --- Loading ---
+
+    def load_plugins_from_dir(self, plugins_dir: str) -> int:
+        """Compatibility method: discover + load all from a directory.
+        Returns count of plugins loaded."""
+        self.discover_plugins(plugins_dir)
+        return self.load_all()
 
     def load_all(self) -> int:
         """Load all discovered plugins in dependency order. Returns count loaded."""

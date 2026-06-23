@@ -282,6 +282,10 @@ class ModManager:
 
     # --- Discovery ---
 
+    def scan_mods_directory(self, mods_dir: str) -> List[ModInfo]:
+        """Compatibility method: discover mods from a directory."""
+        return self.discover_mods(mods_dir)
+
     def discover_mods(self, mods_dir: Optional[str] = None) -> List[ModInfo]:
         """
         Scan a directory for PYMC native mod packages.
