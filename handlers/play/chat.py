@@ -96,6 +96,11 @@ async def _handle_chat_message(conn: Connection, payload: bytes, server):
     offset = 0
     message, offset = read_string(payload, offset)
 
+    # Plugin hook: allow plugins to cancel or modify chat
+    from plugins.bridge import hook_player_chat
+    if not hook_player_chat(server, conn, message):
+        return  # Cancelled by a plugin
+
     logger.info(f"<{conn.username}> {message}")
 
     chat_component = {
@@ -114,6 +119,11 @@ async def _handle_chat_command(conn: Connection, payload: bytes, server):
     from protocol.data_types import read_string
     offset = 0
     command, offset = read_string(payload, offset)
+
+    # Plugin hook: allow plugins to intercept commands
+    from plugins.bridge import hook_player_command
+    if not hook_player_command(server, conn, command):
+        return  # Cancelled by a plugin
 
     logger.info(f"{conn.username} 执行命令: /{command}")
     await execute_server_command(server, command, source_conn=conn)

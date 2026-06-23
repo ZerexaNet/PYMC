@@ -197,6 +197,10 @@ async def send_join_game(conn: Connection, server):
     await _broadcast_player_join(conn, server)
     await _send_visible_entities_to_player(conn, server)
 
+    # Plugin hook: fire PlayerJoinEvent
+    from plugins.bridge import hook_player_join
+    hook_player_join(server, conn)
+
     load_elapsed = time.time() - load_start
     logger.info(f"加载完成，用时 {load_elapsed:.1f}s")
     logger.info(
