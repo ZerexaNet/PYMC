@@ -1,21 +1,23 @@
 // ============================================================
-// PyMC - Paper Plugin Compatibility Layer: Bukkit API Mappings
+// PyMC - Plugin API: Server/World/Player Types
 //
-// Maps Bukkit API classes to PYMC internal operations.
-// This provides the translation layer between Java Bukkit API
-// calls and PYMC's C++/Python server operations.
+// PYMC Plugin API provides a Bukkit-inspired event system for
+// Python plugins. It does NOT run Java Bukkit/Paper plugins.
+//
+// Java Bukkit/Paper plugins require a JVM and the full Bukkit
+// class hierarchy, which cannot be provided by a Python/C++
+// server. This API provides equivalent data types and operations
+// for PYMC's own Python plugin system.
 //
 // Architecture:
-//   BukkitServer   → PYMC MinecraftServer calls
-//   BukkitPlayer   → PYMC Connection operations
-//   BukkitWorld    → PYMC WorldStorage + terrain operations
-//   BukkitBlock    → PYMC block state operations
-//   BukkitItem     → PYMC inventory operations
-//   BukkitEntity   → PYMC entity operations
+//   PyMCServer   → PYMC server operations
+//   PyMCPlayer   → PYMC Connection operations
+//   PyMCWorld    → PYMC WorldStorage + terrain operations
+//   PyMCBlock    → PYMC block state operations
 // ============================================================
 
-#ifndef PYMC_BUKKIT_API_H
-#define PYMC_BUKKIT_API_H
+#ifndef PYMC_PLUGIN_API_H
+#define PYMC_PLUGIN_API_H
 
 #include <string>
 #include <vector>
@@ -122,12 +124,12 @@ struct BlockData {
 };
 
 // ===========================================================
-// BukkitBlock
+// PyMCBlock
 // ===========================================================
 
-class BukkitBlock {
+class PyMCBlock {
 public:
-    BukkitBlock(const Location& loc, const BlockData& data)
+    PyMCBlock(const Location& loc, const BlockData& data)
         : location_(loc), data_(data) {}
 
     // Block position
@@ -150,12 +152,12 @@ private:
 };
 
 // ===========================================================
-// BukkitPlayer
+// PyMCPlayer
 // ===========================================================
 
-class BukkitPlayer {
+class PyMCPlayer {
 public:
-    explicit BukkitPlayer(const std::string& uuid, const std::string& name)
+    explicit PyMCPlayer(const std::string& uuid, const std::string& name)
         : uuid_(uuid), name_(name), location_("world", 0, 64, 0)
         , health_(20.0), max_health_(20.0), food_level_(20)
         , game_mode_(GameMode::SURVIVAL), online_(true)
@@ -234,12 +236,12 @@ private:
 };
 
 // ===========================================================
-// BukkitWorld
+// PyMCWorld
 // ===========================================================
 
-class BukkitWorld {
+class PyMCWorld {
 public:
-    explicit BukkitWorld(const std::string& name)
+    explicit PyMCWorld(const std::string& name)
         : name_(name), difficulty_(Difficulty::NORMAL)
         , time_(0), full_time_(0), weather_(WeatherType::CLEAR)
         , thundering_(false), weather_duration_(0)
@@ -277,7 +279,7 @@ public:
     void set_spawn_location(const Location& loc) { spawn_location_ = loc; }
 
     // Block operations → PYMC WorldStorage + terrain operations
-    BukkitBlock get_block_at(int x, int y, int z);
+    PyMCBlock get_block_at(int x, int y, int z);
     void set_block_at(int x, int y, int z, const BlockData& data);
 
     // Chunk operations → PYMC chunk system
@@ -290,7 +292,7 @@ public:
     std::vector<std::string> get_entities_in_chunk(int cx, int cz) const;
 
     // Player operations
-    std::vector<std::shared_ptr<BukkitPlayer>> get_players() const;
+    std::vector<std::shared_ptr<PyMCPlayer>> get_players() const;
 
     // Height
     int get_highest_block_y_at(int x, int z);
@@ -314,12 +316,12 @@ private:
 };
 
 // ===========================================================
-// BukkitServer
+// PyMCServer
 // ===========================================================
 
-class BukkitServer {
+class PyMCServer {
 public:
-    BukkitServer()
+    PyMCServer()
         : server_name_("PYMC"), server_version_("1.21.1")
         , api_version_("1.21"), max_players_(20)
         , motd_("A PYMC Server"), tps_(20.0)
@@ -334,8 +336,8 @@ public:
 
     // Players → PYMC Connection operations
     std::vector<std::string> get_online_players() const;
-    std::shared_ptr<BukkitPlayer> get_player(const std::string& name) const;
-    std::shared_ptr<BukkitPlayer> get_player_by_uuid(const std::string& uuid) const;
+    std::shared_ptr<PyMCPlayer> get_player(const std::string& name) const;
+    std::shared_ptr<PyMCPlayer> get_player_by_uuid(const std::string& uuid) const;
     int online_player_count() const;
     int max_players() const { return max_players_; }
     void set_max_players(int m) { max_players_ = m; }
@@ -350,8 +352,8 @@ public:
 
     // Worlds → PYMC WorldStorage
     std::vector<std::string> get_world_names() const;
-    std::shared_ptr<BukkitWorld> get_world(const std::string& name) const;
-    std::shared_ptr<BukkitWorld> create_world(const std::string& name);
+    std::shared_ptr<PyMCWorld> get_world(const std::string& name) const;
+    std::shared_ptr<PyMCWorld> create_world(const std::string& name);
 
     // Server properties
     double tps() const { return tps_; }
@@ -362,7 +364,7 @@ public:
     // Plugin management
     bool is_plugin_enabled(const std::string& name) const;
 
-    // Scheduler (simplified - maps to PYMC's tick loop)
+    // Scheduler (maps to PYMC's tick loop)
     using TaskCallback = std::function<void()>;
     int schedule_sync_delayed_task(TaskCallback task, long delay_ticks = 0);
     int schedule_sync_repeating_task(TaskCallback task, long delay_ticks, long period_ticks);
@@ -379,10 +381,10 @@ private:
     bool running_ = true;
 
     // Player registry (uuid -> player)
-    mutable std::unordered_map<std::string, std::shared_ptr<BukkitPlayer>> players_;
+    mutable std::unordered_map<std::string, std::shared_ptr<PyMCPlayer>> players_;
 
     // World registry (name -> world)
-    mutable std::unordered_map<std::string, std::shared_ptr<BukkitWorld>> worlds_;
+    mutable std::unordered_map<std::string, std::shared_ptr<PyMCWorld>> worlds_;
 
     // Scheduler
     int next_task_id_ = 0;
@@ -399,4 +401,4 @@ private:
 }  // namespace plugins
 }  // namespace pymc
 
-#endif  // PYMC_BUKKIT_API_H
+#endif  // PYMC_PLUGIN_API_H
