@@ -1,33 +1,34 @@
 // ============================================================
-// PyMC - Mod Compatibility Layer: Mod Loader
+// PyMC - Native Mod API: Mod Loader
 //
-// Provides a unified mod loader that can load Fabric, Forge,
-// NeoForge, and Quilt mods and translate their API calls to
-// PYMC internal operations.
+// PYMC provides a Python-native mod API. It does NOT support
+// Java Fabric/Forge/NeoForge/Quilt mods, as those require
+// JVM + Mixin bytecode injection which cannot be replicated
+// in a Python/C++ server.
+//
+// This mod loader discovers and loads PYMC native Python mods,
+// manages their lifecycle, and dispatches events.
 //
 // Architecture:
 //   ModLoader
-//     ├── Fabric API Bridge   - Fabric mod API translation
-//     ├── Forge API Bridge    - Forge/NeoForge mod API translation
-//     ├── Quilt API Bridge    - Quilt mod API translation (extends Fabric)
-//     ├── JVM Interface       - JNI-based .jar loading & execution
-//     └── Event Dispatcher    - Mod event -> PYMC event translation
+//     ├── Mod Discovery     - Scan mods/ directory for Python packages
+//     ├── Metadata Parsing   - Read pymc_mod.json descriptors
+//     ├── Dependency Graph   - Topological sort for load ordering
+//     ├── Lifecycle Manager  - load/enable/disable/unload
+//     └── Event Dispatcher   - Fire events to mod callbacks
 //
 // Mod identification:
-//   - fabric.mod.json   -> Fabric mod
-//   - quilt.mod.json    -> Quilt mod
-//   - META-INF/mods.toml -> Forge/NeoForge mod
-//     (NeoForge uses same location but different schema version)
+//   - pymc_mod.json        -> PYMC native mod descriptor
+//   - __pymc_mod__.py      -> PYMC native mod entry point
 //
 // Loading pipeline:
-//   1. Scan mods directory for .jar files
-//   2. Identify mod type by inspecting jar contents
-//   3. Parse mod metadata (ID, version, dependencies)
-//   4. Resolve dependency graph (topological sort)
-//   5. Initialize JVM if any mod requires it
-//   6. Load and initialize each mod via appropriate bridge
-//   7. Register API handlers for mod callbacks
-//   8. Fire initialization events
+//   1. Scan mods directory for Python packages
+//   2. Parse mod metadata from pymc_mod.json (id, version, deps)
+//   3. Resolve dependency graph (topological sort)
+//   4. Load each mod package via Python importlib
+//   5. Call mod lifecycle methods (on_load, on_enable, etc.)
+//   6. Register event listeners from mod callbacks
+//   7. Fire initialization events
 // ============================================================
 
 #ifndef PYMC_MOD_LOADER_H
@@ -46,19 +47,13 @@
 // ===========================================================
 
 enum class ModLoaderType {
-    FABRIC,
-    FORGE,
-    NEOFORGE,
-    QUILT
+    PYMC_NATIVE    // PYMC native Python mod
 };
 
 // Convert ModLoaderType to string (for debugging/logging)
 inline const char* mod_loader_type_name(ModLoaderType type) {
     switch (type) {
-        case ModLoaderType::FABRIC:   return "Fabric";
-        case ModLoaderType::FORGE:    return "Forge";
-        case ModLoaderType::NEOFORGE: return "NeoForge";
-        case ModLoaderType::QUILT:    return "Quilt";
+        case ModLoaderType::PYMC_NATIVE: return "PYMC Native";
         default: return "Unknown";
     }
 }
@@ -68,22 +63,22 @@ inline const char* mod_loader_type_name(ModLoaderType type) {
 // ===========================================================
 
 struct ModInfo {
-    std::string mod_id;           // Unique mod identifier (e.g. "sodium")
+    std::string mod_id;           // Unique mod identifier (e.g. "my_cool_mod")
     std::string name;             // Human-readable mod name
     std::string version;          // Mod version string
     std::string description;      // Mod description
-    ModLoaderType loader_type;    // Which loader this mod targets
-    std::string entry_point;      // Main class for Forge, mod.json entry for Fabric
-    std::vector<std::string> dependencies;    // Required mod IDs
-    std::vector<std::string> soft_dependencies; // Optional mod IDs
-    std::string jar_path;         // Path to the .jar file
+    ModLoaderType loader_type;    // Always PYMC_NATIVE for PYMC mods
+    std::string entry_point;      // Python module/class entry point
+    std::vector<std::string> dependencies;      // Required mod IDs
+    std::vector<std::string> soft_dependencies;  // Optional mod IDs
+    std::string package_path;     // Path to the Python package directory
+    std::string api_version;      // Target PYMC mod API version
     std::string mc_version;       // Target Minecraft version (e.g. "1.21.1")
-    std::string loader_version;   // Minimum loader version required
 
-    // Additional metadata from mod descriptor files
+    // Additional metadata from pymc_mod.json
     std::map<std::string, std::string> extra_metadata;
 
-    ModInfo() : loader_type(ModLoaderType::FABRIC) {}
+    ModInfo() : loader_type(ModLoaderType::PYMC_NATIVE) {}
 
     // Check if this mod depends on another mod
     bool depends_on(const std::string& other_mod_id) const {
@@ -108,8 +103,8 @@ struct ModInfo {
 
 enum class ModState {
     DISCOVERED,    // Found on disk, metadata parsed
-    LOADED,        // Jar loaded into JVM/classloader
-    INITIALIZED,   // Mod initializer called
+    LOADED,        // Python package imported successfully
+    INITIALIZED,   // Mod on_load() called
     ENABLED,       // Mod is active and running
     DISABLED,      // Mod was enabled but now disabled
     ERRORED,       // Mod encountered an error
@@ -175,15 +170,16 @@ public:
 
     // --- Mod Discovery ---
 
-    // Scan a directory for mod jars
+    // Scan a directory for PYMC native mod packages
+    // Looks for directories containing pymc_mod.json or __pymc_mod__.py
     // Returns: list of ModInfo for all discovered mods
     std::vector<ModInfo> scan_mods_directory(const std::string& dir_path);
 
     // --- Mod Loading ---
 
-    // Load a mod jar file
+    // Load a PYMC native mod from its package directory
     // Returns: true if the mod was loaded successfully
-    bool load_mod(const std::string& jar_path, ModLoaderType loader_type);
+    bool load_mod(const std::string& package_path);
 
     // Load all discovered mods (in dependency order)
     // Returns: number of mods loaded successfully
@@ -191,7 +187,7 @@ public:
 
     // --- Lifecycle ---
 
-    // Initialize all loaded mods (call entry points)
+    // Initialize all loaded mods (call on_load callbacks)
     // Returns: true if all mods initialized successfully
     bool initialize_all();
 
@@ -254,33 +250,10 @@ public:
 private:
     // --- Mod Metadata Parsing ---
 
-    // Parse Fabric mod metadata from jar (fabric.mod.json)
-    bool parse_fabric_mod_json(const std::string& jar_path, ModInfo& info);
-
-    // Parse Forge mod metadata from jar (META-INF/mods.toml)
-    bool parse_forge_mods_toml(const std::string& jar_path, ModInfo& info);
-
-    // Parse NeoForge mod metadata from jar (META-INF/mods.toml with neo schema)
-    bool parse_neoforge_mods_toml(const std::string& jar_path, ModInfo& info);
-
-    // Parse Quilt mod metadata from jar (quilt.mod.json)
-    bool parse_quilt_mod_json(const std::string& jar_path, ModInfo& info);
+    // Parse PYMC mod metadata from pymc_mod.json
+    bool parse_pymc_mod_json(const std::string& package_path, ModInfo& info);
 
     // --- Internal Helpers ---
-
-    // Identify mod type from jar contents
-    // Returns: ModLoaderType or throws if unidentifiable
-    ModLoaderType identify_mod_type(const std::string& jar_path);
-
-    // Read a file from within a .jar (ZIP archive)
-    // Returns: file contents as string, or empty if not found
-    std::string read_jar_file(const std::string& jar_path, const std::string& inner_path);
-
-    // Parse JSON string into key-value map (minimal parser)
-    std::map<std::string, std::string> parse_simple_json(const std::string& json_str);
-
-    // Parse TOML string into key-value map (minimal parser)
-    std::map<std::string, std::string> parse_simple_toml(const std::string& toml_str);
 
     // Topological sort for dependency resolution
     bool topological_sort(const std::vector<std::string>& mod_ids,

@@ -1,16 +1,17 @@
 // ============================================================
-// PyMC - Paper Plugin Compatibility Layer: Plugin Loader
+// PyMC - Plugin API: Plugin Loader
 //
-// Provides the core plugin loading infrastructure that can load
-// Paper/Bukkit .jar plugins and translate their API calls to
-// PYMC internal operations.
+// Provides the core plugin loading infrastructure for PYMC
+// native Python plugins.
+//
+// PYMC Plugin API provides a Bukkit-inspired event system for
+// Python plugins. It does NOT run Java Bukkit/Paper plugins.
 //
 // Architecture:
 //   PluginLoader
-//     ├── JVMBridge        - Minimal JVM for .jar execution
-//     ├── EventBus         - Event dispatch system
-//     ├── BukkitAPI        - API translation layer
-//     └── PluginManager    - Lifecycle management
+//     ├── EventBus       - Event dispatch system
+//     ├── PyMCAPI        - Server API types (PyMCServer, PyMCPlayer, etc.)
+//     └── PluginManager  - Lifecycle management
 // ============================================================
 
 #ifndef PYMC_PLUGIN_LOADER_H
@@ -25,7 +26,6 @@
 
 #include "event_system.h"
 #include "bukkit_api.h"
-#include "jvm_bridge.h"
 
 namespace pymc {
 namespace plugins {
@@ -35,10 +35,10 @@ namespace plugins {
 // ===========================================================
 
 struct PluginMetadata {
-    std::string name;           // Plugin name from plugin.yml
+    std::string name;           // Plugin name
     std::string version;        // Plugin version
-    std::string main_class;     // Main class (extends JavaPlugin)
-    std::string api_version;    // Target API version (e.g. "1.21")
+    std::string main_class;     // Python module/class entry point
+    std::string api_version;    // Target PYMC API version (e.g. "1.21")
     std::string description;    // Human-readable description
     std::vector<std::string> authors;
     std::vector<std::string> depend;      // Hard dependencies
@@ -67,14 +67,14 @@ enum class PluginState {
 
 class PluginInstance {
 public:
-    PluginInstance(const std::string& jar_path, const PluginMetadata& meta)
-        : jar_path_(jar_path)
+    PluginInstance(const std::string& package_path, const PluginMetadata& meta)
+        : package_path_(package_path)
         , metadata_(meta)
         , state_(PluginState::UNLOADED)
         , event_bus_(std::make_shared<EventBus>())
     {}
 
-    const std::string& jar_path() const { return jar_path_; }
+    const std::string& package_path() const { return package_path_; }
     const PluginMetadata& metadata() const { return metadata_; }
     PluginState state() const { return state_; }
     void set_state(PluginState s) { state_ = s; }
@@ -100,7 +100,7 @@ public:
     }
 
 private:
-    std::string jar_path_;
+    std::string package_path_;
     PluginMetadata metadata_;
     PluginState state_;
     std::shared_ptr<EventBus> event_bus_;
@@ -118,28 +118,29 @@ public:
 
     // --- Initialization ---
 
-    // Initialize the plugin system (sets up JVM bridge, API mappings)
+    // Initialize the plugin system
     bool initialize();
 
-    // Shut down the plugin system (disables all plugins, tears down JVM)
+    // Shut down the plugin system (disables all plugins)
     void shutdown();
 
     // --- Plugin Loading ---
 
-    // Load a .jar plugin file
+    // Load a PYMC Python plugin from its package directory
     // Returns: true if the plugin was loaded successfully
-    bool load_plugin(const std::string& jar_path);
+    bool load_plugin(const std::string& package_path);
 
-    // Load all .jar files from a directory
+    // Load all plugins from a directory
+    // Scans for Python packages with pymc_plugin.json or plugin.yml
     // Returns: number of plugins loaded successfully
     int load_plugins_from_dir(const std::string& plugins_dir);
 
     // --- Lifecycle ---
 
-    // Call onEnable() for all loaded plugins
+    // Call on_enable() for all loaded plugins
     void enable_all();
 
-    // Call onDisable() for all loaded plugins
+    // Call on_disable() for all loaded plugins
     void disable_all();
 
     // Enable a specific plugin by name
@@ -167,24 +168,21 @@ public:
     // Get plugin state
     PluginState get_plugin_state(const std::string& name) const;
 
-    // Get the BukkitServer API interface
-    BukkitServer& server_api() { return server_api_; }
+    // Get the PyMCServer API interface
+    PyMCServer& server_api() { return server_api_; }
 
     // Get total number of loaded plugins
     size_t plugin_count() const { return plugins_.size(); }
 
 private:
-    // Parse plugin.yml from a .jar file
-    bool parse_plugin_yaml(const std::string& jar_path, PluginMetadata& out);
+    // Parse pymc_plugin.json from a plugin package
+    bool parse_plugin_json(const std::string& package_path, PluginMetadata& out);
 
     // Resolve plugin dependencies (topological sort)
     bool resolve_dependencies(std::vector<std::string>& load_order);
 
     // Check if all dependencies for a plugin are satisfied
     bool check_dependencies(const PluginMetadata& meta) const;
-
-    // Extract .jar file (needed for class loading)
-    bool extract_jar(const std::string& jar_path, const std::string& target_dir);
 
     // Internal enable logic
     bool enable_plugin_internal(const std::shared_ptr<PluginInstance>& plugin);
@@ -194,14 +192,10 @@ private:
 
 private:
     bool initialized_;
-    std::shared_ptr<JVMBridge> jvm_;
-    BukkitServer server_api_;
+    PyMCServer server_api_;
     std::unordered_map<std::string, std::shared_ptr<PluginInstance>> plugins_;
     std::vector<std::string> load_order_;  // Dependency-sorted load order
     mutable std::mutex mutex_;
-
-    // Temporary directory for extracted jars
-    std::string temp_dir_;
 };
 
 }  // namespace plugins

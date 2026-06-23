@@ -1,9 +1,12 @@
 // ============================================================
-// PyMC - Paper Plugin Compatibility Layer: Event System
+// PyMC - Event System
 //
-// Provides a Bukkit-compatible event bus that allows plugins
+// Provides an event bus that allows PYMC Python plugins and mods
 // to register listeners for game events and receive callbacks
 // when those events fire.
+//
+// The event system is inspired by Bukkit's event model but is
+// PYMC-native — it does NOT run Java Bukkit/Paper plugins.
 //
 // Architecture:
 //   EventBus        - Central event dispatch hub

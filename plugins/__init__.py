@@ -1,53 +1,65 @@
 # ============================================================
-# PyMC - Paper Plugin Compatibility Layer: Python Interface
+# PYMC Plugin System - Python-based plugin API for PYMC server
 #
-# Provides a Python interface to the C++ plugin compatibility
-# layer. Supports both Paper/Bukkit .jar plugins (via C++ JVM
-# bridge) and native PYMC Python plugins.
+# PYMC Plugin System provides a Bukkit-inspired event system for
+# Python plugins. It does NOT run Java Bukkit/Paper plugins,
+# as those require a JVM which cannot be meaningfully embedded
+# in a Python/C++ server.
 #
 # Architecture:
 #   PluginManager
-#     ├── Native Plugin Loader (C++ via ctypes)
-#     │   ├── JVMBridge        - Minimal JVM for .jar execution
-#     │   ├── EventBus         - Event dispatch system
-#     │   ├── BukkitAPI        - API translation layer
-#     │   └── PluginLoader     - .jar lifecycle management
-#     └── Python Plugin Loader (always available)
-#         ├── PyMCPlugin base  - Native Python plugin interface
-#         └── Python EventBus  - Lightweight event system
+#     ├── Plugin Discovery  - Scan plugins/ for Python packages
+#     ├── Metadata Parsing   - Read pymc_plugin.json descriptors
+#     ├── Dependency Graph   - Topological sort for load ordering
+#     ├── Lifecycle Manager  - load/enable/disable/unload
+#     ├── Event Dispatcher   - Fire events with priority ordering
+#     └── Command Registry   - Register and dispatch commands
+#
+# Plugin descriptor format (pymc_plugin.json):
+#   {
+#     "id": "my_plugin",
+#     "name": "My Plugin",
+#     "version": "1.0.0",
+#     "description": "Does plugin things",
+#     "main_class": "my_plugin.MainPlugin",
+#     "api-version": "1.0",
+#     "depend": ["other_plugin"],
+#     "softdepend": ["optional_plugin"],
+#     "authors": ["AuthorName"]
+#   }
 # ============================================================
 
-import ctypes
-import ctypes.util
+import json
 import logging
 import os
 import sys
-import glob
 import importlib
 import importlib.util
+import configparser
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Any
+from typing import Optional, Callable, Dict, List, Any, Set
 from dataclasses import dataclass, field
 from enum import IntEnum
 
 logger = logging.getLogger("pymc.plugins")
 
+
 # ===========================================================
 # Constants
 # ===========================================================
 
-# Event priority levels (matching C++ EventPriority)
 class EventPriority(IntEnum):
-    LOWEST = 0
+    """Event handler priority. Lower values execute first."""
+    LOWEST = 0     # First to execute; other plugins can override
     LOW = 1
-    NORMAL = 2
+    NORMAL = 2     # Default priority
     HIGH = 3
-    HIGHEST = 4
-    MONITOR = 5
+    HIGHEST = 4    # Last to modify the event
+    MONITOR = 5    # Read-only; should not modify the event
 
 
-# Plugin state
 class PluginState(IntEnum):
+    """Lifecycle states for a PYMC plugin."""
     UNLOADED = 0
     LOADED = 1
     ENABLING = 2
@@ -57,45 +69,47 @@ class PluginState(IntEnum):
     ERRORED = 6
 
 
-# Game mode
-class GameMode(IntEnum):
-    SURVIVAL = 0
-    CREATIVE = 1
-    ADVENTURE = 2
-    SPECTATOR = 3
-
-
 # ===========================================================
-# Event Data
+# Event Types
 # ===========================================================
 
-@dataclass
-class Event:
-    """Represents a game event that can be listened to by plugins."""
-    name: str
-    data: Dict[str, str] = field(default_factory=dict)
-    cancelled: bool = False
-    cancellable: bool = True
-    source_plugin: str = ""
-    tick: int = 0
+class PluginEvent:
+    """
+    Event object passed to plugin event handlers.
+    Inspired by Bukkit's event system but PYMC-native.
+    """
 
-    def set_data(self, key: str, value: str) -> None:
-        self.data[key] = value
+    def __init__(self, name: str, data: Optional[Dict[str, Any]] = None,
+                 cancellable: bool = True):
+        self.name = name
+        self.data = data or {}
+        self.cancellable = cancellable
+        self._cancelled = False
 
-    def get_data(self, key: str, default: str = "") -> str:
+    def cancel(self):
+        """Cancel this event (if cancellable)."""
+        if self.cancellable:
+            self._cancelled = True
+
+    def uncancel(self):
+        self._cancelled = False
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def get(self, key: str, default: Any = None) -> Any:
         return self.data.get(key, default)
 
-    def cancel(self) -> None:
-        if self.cancellable:
-            self.cancelled = True
+    def __repr__(self):
+        return f"PluginEvent({self.name!r}, cancelled={self._cancelled})"
 
 
-# ===========================================================
-# Common Event Names (Bukkit-compatible)
-# ===========================================================
-
-class EventNames:
-    """Bukkit-compatible event name constants."""
+# Standard event names
+class PluginEvents:
+    # Server events
+    SERVER_START = "ServerStartEvent"
+    SERVER_STOP = "ServerStopEvent"
 
     # Player events
     PLAYER_JOIN = "PlayerJoinEvent"
@@ -113,31 +127,108 @@ class EventNames:
     # Block events
     BLOCK_BREAK = "BlockBreakEvent"
     BLOCK_PLACE = "BlockPlaceEvent"
-    BLOCK_DAMAGE = "BlockDamageEvent"
     BLOCK_BURN = "BlockBurnEvent"
     BLOCK_REDSTONE = "BlockRedstoneEvent"
-    BLOCK_EXPLODE = "BlockExplodeEvent"
+    SIGN_CHANGE = "SignChangeEvent"
 
     # Entity events
     ENTITY_DAMAGE = "EntityDamageEvent"
     ENTITY_DEATH = "EntityDeathEvent"
     ENTITY_SPAWN = "EntitySpawnEvent"
-    ENTITY_EXPLODE = "EntityExplodeEvent"
+    PROJECTILE_HIT = "ProjectileHitEvent"
 
     # World events
     CHUNK_LOAD = "ChunkLoadEvent"
     CHUNK_UNLOAD = "ChunkUnloadEvent"
+    WORLD_LOAD = "WorldLoadEvent"
     WEATHER_CHANGE = "WeatherChangeEvent"
-
-    # Server events
-    SERVER_COMMAND = "ServerCommandEvent"
-    PLUGIN_ENABLE = "PluginEnableEvent"
-    PLUGIN_DISABLE = "PluginDisableEvent"
 
     # Inventory events
     INVENTORY_CLICK = "InventoryClickEvent"
-    INVENTORY_OPEN = "InventoryOpenEvent"
-    INVENTORY_CLOSE = "InventoryCloseEvent"
+    CRAFT_ITEM = "CraftItemEvent"
+
+    # Plugin events
+    PLUGIN_ENABLE = "PluginEnableEvent"
+    PLUGIN_DISABLE = "PluginDisableEvent"
+
+
+# ===========================================================
+# Plugin Info
+# ===========================================================
+
+@dataclass
+class PluginInfo:
+    """Metadata for a PYMC plugin."""
+    plugin_id: str = ""
+    name: str = ""
+    version: str = "0.0.0"
+    description: str = ""
+    main_class: str = ""       # Python class path
+    api_version: str = "1.0"
+    depend: List[str] = field(default_factory=list)         # Hard dependencies
+    softdepend: List[str] = field(default_factory=list)     # Soft dependencies
+    loadbefore: List[str] = field(default_factory=list)     # Load before these
+    authors: List[str] = field(default_factory=list)
+    prefix: str = ""
+    package_path: str = ""
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    def has_hard_dep(self, plugin_id: str) -> bool:
+        return plugin_id in self.depend
+
+    def has_soft_dep(self, plugin_id: str) -> bool:
+        return plugin_id in self.softdepend
+
+
+# ===========================================================
+# PyMCServer - Server interface available to plugins
+# ===========================================================
+
+class PyMCServer:
+    """
+    Server interface that plugins can access via self.get_server().
+    Provides safe, read-only or controlled-mutation access to server state.
+    """
+
+    def __init__(self):
+        self._online_players: Dict[str, Dict] = {}  # name -> info dict
+        self._tps: float = 20.0
+        self._version: str = "1.21.1"
+        self._running: bool = True
+        self._worlds: Dict[str, Dict] = {}
+
+    def broadcast(self, message: str):
+        """Broadcast a chat message to all online players."""
+        logger.info(f"[Broadcast] {message}")
+
+    def dispatch_command(self, command: str) -> bool:
+        """Execute a server command. Returns True on success."""
+        logger.info(f"[Command] /{command}")
+        return True
+
+    def get_online_players(self) -> List[str]:
+        """Get list of online player names."""
+        return list(self._online_players.keys())
+
+    def get_tps(self) -> float:
+        """Get current server TPS (ticks per second). 20.0 = ideal."""
+        return self._tps
+
+    def get_world(self, name: str) -> Optional[Dict]:
+        """Get world info by name."""
+        return self._worlds.get(name)
+
+    def get_plugin(self, plugin_id: str):
+        """Get another plugin's main instance (for inter-plugin comms)."""
+        # Resolved at PluginManager level
+        return None
+
+    def get_version(self) -> str:
+        """Get PYMC server version."""
+        return self._version
+
+    def is_running(self) -> bool:
+        return self._running
 
 
 # ===========================================================
@@ -146,671 +237,646 @@ class EventNames:
 
 class PyMCPlugin:
     """
-    Base class for native PYMC plugins (Python-only).
+    Base class for PYMC native plugins. Plugin authors extend this
+    class and implement lifecycle methods.
 
-    Subclass this to create a PYMC-native plugin that doesn't
-    require the JVM bridge. Python plugins are always available
-    and have first-class access to PYMC's internal APIs.
+    Example plugin (in my_plugin/__init__.py):
 
-    Example:
-        class MyPlugin(PyMCPlugin):
-            name = "MyPlugin"
-            version = "1.0.0"
+        from pymc.plugins import PyMCPlugin, PluginEvents, EventPriority
+
+        class MainPlugin(PyMCPlugin):
+            def on_load(self):
+                self.get_logger().info("My plugin is loading!")
 
             def on_enable(self):
-                self.register_listener(EventNames.PLAYER_JOIN, self.on_player_join)
+                self.register_command("hello", self.cmd_hello)
+                self.register_event_handler(
+                    PluginEvents.PLAYER_JOIN,
+                    self.on_player_join,
+                    priority=EventPriority.NORMAL
+                )
+
+            def cmd_hello(self, args):
+                self.get_server().broadcast("Hello from my plugin!")
 
             def on_player_join(self, event):
-                player = event.get_data("player_name")
-                self.server.broadcast_message(f"Welcome {player}!")
+                player = event.get("player_name", "unknown")
+                self.get_logger().info(f"Player joined: {player}")
+
+            def on_disable(self):
+                self.get_logger().info("My plugin is shutting down!")
     """
 
-    # Plugin metadata (override in subclass)
-    name: str = "UnnamedPlugin"
-    version: str = "0.0.1"
-    description: str = ""
-    author: str = ""
-    api_version: str = "1.21"
-
     def __init__(self):
-        self._enabled = False
-        self._server = None
-        self._manager = None
-        self._registered_handlers: List[tuple] = []
+        self._plugin_info: Optional[PluginInfo] = None
+        self._manager: Optional['PluginManager'] = None
+        self._server: Optional[PyMCServer] = None
+        self._config: Dict[str, Any] = {}
+        self._event_handlers: List[tuple] = []  # (event_name, handler, priority)
+        self._commands: Dict[str, Callable] = {}
 
     @property
-    def server(self):
-        """Get the PYMC server instance."""
-        return self._server
+    def plugin_info(self) -> PluginInfo:
+        return self._plugin_info
 
-    @property
-    def plugin_manager(self):
-        """Get the plugin manager."""
-        return self._manager
+    # --- Lifecycle methods (override in subclass) ---
 
-    @property
-    def is_enabled(self) -> bool:
-        return self._enabled
-
-    # --- Lifecycle ---
-
-    def on_load(self) -> None:
-        """Called when the plugin is loaded (before enable)."""
+    def on_load(self):
+        """Called when the plugin is first loaded. Read config, init resources."""
         pass
 
-    def on_enable(self) -> None:
-        """Called when the plugin is enabled."""
+    def on_enable(self):
+        """Called when the plugin is enabled. Register commands/events here."""
         pass
 
-    def on_disable(self) -> None:
-        """Called when the plugin is disabled."""
+    def on_disable(self):
+        """Called when the plugin is disabled. Clean up resources here."""
         pass
 
-    def on_event(self, event_name: str, data: dict) -> None:
-        """Called for any event this plugin listens to (generic handler)."""
-        pass
+    # --- Accessors ---
 
-    # --- Convenience Methods ---
+    def get_server(self) -> PyMCServer:
+        """Get the server interface."""
+        return self._server or PyMCServer()
+
+    def get_logger(self) -> logging.Logger:
+        """Get a logger namespaced to this plugin."""
+        if self._plugin_info:
+            return logging.getLogger(f"pymc.plugins.{self._plugin_info.plugin_id}")
+        return logger
+
+    def get_config(self) -> Dict[str, Any]:
+        """Get this plugin's configuration."""
+        return self._config
+
+    # --- Registration API ---
+
+    def register_command(self, name: str, handler: Callable[[str], None]):
+        """Register a command handler. handler receives the argument string."""
+        self._commands[name] = handler
+        if self._manager:
+            self._manager._register_command(name, handler, self._plugin_info.plugin_id)
+        self.get_logger().debug(f"Registered command: /{name}")
+
+    def register_event_handler(self, event_name: str,
+                               handler: Callable[[PluginEvent], None],
+                               priority: EventPriority = EventPriority.NORMAL):
+        """Register an event handler with a priority."""
+        self._event_handlers.append((event_name, handler, priority))
+        if self._manager:
+            self._manager._register_event_handler(
+                event_name, handler, priority, self._plugin_info.plugin_id
+            )
 
     def register_listener(self, event_name: str,
-                          handler: Callable[[Event], None],
-                          priority: EventPriority = EventPriority.NORMAL) -> int:
-        """Register an event listener for this plugin."""
-        if self._manager is not None:
-            handler_id = self._manager.register_listener(
-                event_name, handler, priority, self.name
-            )
-            self._registered_handlers.append((handler_id, event_name))
-            return handler_id
-        return -1
-
-    def unregister_listener(self, handler_id: int) -> bool:
-        """Unregister a specific event listener."""
-        if self._manager is not None:
-            return self._manager.unregister_handler(handler_id)
-        return False
-
-    def register_command(self, command: str,
-                         handler: Callable[[str, dict], bool]) -> None:
-        """Register a command handler for this plugin."""
-        if self._manager is not None:
-            self._manager.register_command(command, handler, self.name)
-
-    def log_info(self, msg: str) -> None:
-        """Log an info message with plugin prefix."""
-        logger.info(f"[{self.name}] {msg}")
-
-    def log_warning(self, msg: str) -> None:
-        """Log a warning message with plugin prefix."""
-        logger.warning(f"[{self.name}] {msg}")
-
-    def log_error(self, msg: str) -> None:
-        """Log an error message with plugin prefix."""
-        logger.error(f"[{self.name}] {msg}")
+                          handler: Callable[[PluginEvent], None]):
+        """Convenience: register at NORMAL priority."""
+        self.register_event_handler(event_name, handler, EventPriority.NORMAL)
 
 
 # ===========================================================
-# PythonEventBus
+# Plugin Instance (internal)
 # ===========================================================
 
-class PythonEventBus:
-    """
-    Lightweight Python event bus for PYMC-native plugins.
-    Used when the C++ plugin layer is not available.
-    """
+class _PluginInstance:
+    """Internal tracking of a loaded plugin instance."""
 
-    def __init__(self):
-        self._handlers: Dict[str, List[tuple]] = {}  # event_name -> [(id, priority, callback, plugin)]
-        self._next_id = 0
-        self._mutex = None  # threading.Lock if needed
-
-    def register(self, event_name: str, handler: Callable[[Event], None],
-                 priority: EventPriority = EventPriority.NORMAL,
-                 plugin_name: str = "") -> int:
-        """Register an event handler. Returns handler ID."""
-        handler_id = self._next_id
-        self._next_id += 1
-        if event_name not in self._handlers:
-            self._handlers[event_name] = []
-        self._handlers[event_name].append((handler_id, priority, handler, plugin_name))
-        # Sort by priority
-        self._handlers[event_name].sort(key=lambda x: x[1])
-        return handler_id
-
-    def unregister(self, handler_id: int) -> bool:
-        """Unregister a handler by ID."""
-        for event_name, handlers in self._handlers.items():
-            for i, (hid, _, _, _) in enumerate(handlers):
-                if hid == handler_id:
-                    handlers.pop(i)
-                    return True
-        return False
-
-    def unregister_all(self, plugin_name: str) -> None:
-        """Unregister all handlers for a plugin."""
-        for event_name in list(self._handlers.keys()):
-            self._handlers[event_name] = [
-                h for h in self._handlers[event_name]
-                if h[3] != plugin_name
-            ]
-
-    def fire(self, event: Event) -> Event:
-        """Fire an event to all registered handlers."""
-        handlers = self._handlers.get(event.name, [])
-        for handler_id, priority, callback, plugin_name in handlers:
-            try:
-                callback(event)
-            except Exception as e:
-                logger.error(f"Error in event handler for {event.name} "
-                             f"(plugin={plugin_name}): {e}")
-        return event
-
-    def has_listeners(self, event_name: str) -> bool:
-        return bool(self._handlers.get(event_name, []))
-
-    def listener_count(self, event_name: str = None) -> int:
-        if event_name:
-            return len(self._handlers.get(event_name, []))
-        return sum(len(h) for h in self._handlers.values())
-
-
-# ===========================================================
-# NativePluginLoader (C++ bridge via ctypes)
-# ===========================================================
-
-class NativePluginLoader:
-    """
-    Interface to the C++ plugin compatibility layer.
-
-    Attempts to load the pymc_plugin_loader shared library and
-    use it for Paper/Bukkit .jar plugin compatibility. Falls
-    back gracefully if the C++ layer is not available.
-    """
-
-    def __init__(self):
-        self._lib = None
-        self._available = False
-        self._load_native_library()
-
-    def _load_native_library(self) -> None:
-        """Try to load the native plugin loader shared library."""
-        try:
-            lib_paths = [
-                # Relative to the PYMC project root
-                os.path.join(os.path.dirname(__file__), '..', 'native',
-                             'libpymc_plugin_loader.so'),
-                os.path.join(os.path.dirname(__file__), '..', 'native',
-                             'libpymc_plugin_loader.dll'),
-                # System paths
-                'libpymc_plugin_loader.so',
-                'pymc_plugin_loader',
-            ]
-
-            for path in lib_paths:
-                try:
-                    self._lib = ctypes.CDLL(path)
-                    self._available = True
-                    logger.info(f"Loaded native plugin loader from: {path}")
-                    self._setup_functions()
-                    return
-                except OSError:
-                    continue
-
-            logger.info("Native plugin loader not available; "
-                        "Paper/Bukkit .jar plugins will not be supported. "
-                        "Python plugins are still available.")
-        except Exception as e:
-            logger.warning(f"Error loading native plugin loader: {e}")
-
-    def _setup_functions(self) -> None:
-        """Set up ctypes function signatures for the native library."""
-        if not self._lib:
-            return
-
-        # pymc_plugin_loader_initialize() -> bool
-        self._lib.pymc_plugin_loader_initialize.restype = ctypes.c_bool
-        self._lib.pymc_plugin_loader_initialize.argtypes = []
-
-        # pymc_plugin_loader_shutdown()
-        self._lib.pymc_plugin_loader_shutdown.restype = None
-        self._lib.pymc_plugin_loader_shutdown.argtypes = []
-
-        # pymc_plugin_loader_load_plugin(jar_path: str) -> bool
-        self._lib.pymc_plugin_loader_load_plugin.restype = ctypes.c_bool
-        self._lib.pymc_plugin_loader_load_plugin.argtypes = [ctypes.c_char_p]
-
-        # pymc_plugin_loader_enable_all() -> bool
-        self._lib.pymc_plugin_loader_enable_all.restype = ctypes.c_bool
-        self._lib.pymc_plugin_loader_enable_all.argtypes = []
-
-        # pymc_plugin_loader_disable_all()
-        self._lib.pymc_plugin_loader_disable_all.restype = None
-        self._lib.pymc_plugin_loader_disable_all.argtypes = []
-
-        # pymc_plugin_loader_fire_event(name: str, data_json: str) -> bool
-        self._lib.pymc_plugin_loader_fire_event.restype = ctypes.c_bool
-        self._lib.pymc_plugin_loader_fire_event.argtypes = [
-            ctypes.c_char_p, ctypes.c_char_p
-        ]
+    def __init__(self, info: PluginInfo, plugin_obj: PyMCPlugin):
+        self.info = info
+        self.plugin_obj = plugin_obj
+        self.state = PluginState.UNLOADED
+        self.error_message = ""
 
     @property
-    def available(self) -> bool:
-        """Whether the native C++ plugin layer is available."""
-        return self._available
+    def is_active(self) -> bool:
+        return self.state in (PluginState.LOADED, PluginState.ENABLING, PluginState.ENABLED)
 
-    def initialize(self) -> bool:
-        """Initialize the native plugin loader."""
-        if not self._available:
-            return False
-        try:
-            return self._lib.pymc_plugin_loader_initialize()
-        except Exception as e:
-            logger.error(f"Failed to initialize native plugin loader: {e}")
-            self._available = False
-            return False
-
-    def shutdown(self) -> None:
-        """Shut down the native plugin loader."""
-        if not self._available:
-            return
-        try:
-            self._lib.pymc_plugin_loader_shutdown()
-        except Exception as e:
-            logger.error(f"Error shutting down native plugin loader: {e}")
-
-    def load_plugin(self, jar_path: str) -> bool:
-        """Load a .jar plugin via the native loader."""
-        if not self._available:
-            return False
-        try:
-            return self._lib.pymc_plugin_loader_load_plugin(
-                jar_path.encode('utf-8')
-            )
-        except Exception as e:
-            logger.error(f"Error loading .jar plugin {jar_path}: {e}")
-            return False
-
-    def enable_all(self) -> bool:
-        """Enable all native plugins."""
-        if not self._available:
-            return False
-        try:
-            return self._lib.pymc_plugin_loader_enable_all()
-        except Exception as e:
-            logger.error(f"Error enabling native plugins: {e}")
-            return False
-
-    def disable_all(self) -> None:
-        """Disable all native plugins."""
-        if not self._available:
-            return
-        try:
-            self._lib.pymc_plugin_loader_disable_all()
-        except Exception as e:
-            logger.error(f"Error disabling native plugins: {e}")
-
-    def fire_event(self, event_name: str, data: dict) -> bool:
-        """Fire an event to native plugin listeners."""
-        if not self._available:
-            return False
-        try:
-            import json
-            data_json = json.dumps(data)
-            return self._lib.pymc_plugin_loader_fire_event(
-                event_name.encode('utf-8'),
-                data_json.encode('utf-8'),
-            )
-        except Exception as e:
-            logger.error(f"Error firing native event {event_name}: {e}")
-            return False
+    @property
+    def is_errored(self) -> bool:
+        return self.state == PluginState.ERRORED
 
 
 # ===========================================================
-# PluginManager
+# Event Handler Entry (internal)
+# ===========================================================
+
+@dataclass
+class _EventHandlerEntry:
+    handler: Callable[[PluginEvent], None]
+    priority: EventPriority
+    plugin_id: str
+
+
+# ===========================================================
+# Plugin Manager
 # ===========================================================
 
 class PluginManager:
     """
-    Python interface to the C++ plugin compatibility layer.
-
-    Manages both Paper/Bukkit .jar plugins (via the C++ native
-    layer) and native PYMC Python plugins.
+    Manages PYMC native Python plugins: discovery, loading,
+    lifecycle, event dispatch, and command routing.
 
     Usage:
-        pm = PluginManager(server)
-
-        # Load a Bukkit .jar plugin (requires C++ native layer)
-        pm.load_plugin("plugins/Essentials.jar")
-
-        # Register a native Python plugin
-        pm.register_pymc_plugin(MyPlugin())
-
-        # Fire an event
-        event = Event("PlayerJoinEvent", {"player_name": "Steve"})
-        pm.fire_event(event)
+        manager = PluginManager()
+        manager.discover_plugins("/path/to/plugins")
+        manager.load_all()
+        manager.enable_all()
+        # ... server runs, events are fired ...
+        manager.shutdown_all()
     """
 
-    def __init__(self, server=None):
-        self.server = server
-        self._native = NativePluginLoader()
-        self._event_bus = PythonEventBus()
-        self._pymc_plugins: Dict[str, PyMCPlugin] = {}
-        self._command_handlers: Dict[str, tuple] = {}  # command -> (handler, plugin_name)
-        self._jar_plugins: List[str] = []
+    # Descriptor filenames to look for (in order of preference)
+    PLUGIN_DESCRIPTORS = ["pymc_plugin.json", "plugin.yml"]
 
-        # Initialize the native loader
-        if self._native.available:
-            self._native.initialize()
+    def __init__(self, plugins_dir: Optional[str] = None, server: Optional[PyMCServer] = None):
+        self._plugins: Dict[str, _PluginInstance] = {}
+        self._load_order: List[str] = []
+        self._discovered: List[PluginInfo] = []
+        self._event_listeners: Dict[str, List[_EventHandlerEntry]] = {}
+        self._commands: Dict[str, tuple] = {}  # command -> (handler, plugin_id)
+        self._server = server or PyMCServer()
+        self._plugins_dir = plugins_dir
 
-    # --- .jar Plugin Support (requires C++ native layer) ---
+    # --- Discovery ---
 
-    def load_plugin(self, jar_path: str) -> bool:
+    def discover_plugins(self, plugins_dir: Optional[str] = None) -> List[PluginInfo]:
         """
-        Load a .jar plugin file.
-
-        Requires the C++ native plugin layer. If not available,
-        logs a warning and returns False.
-
-        Args:
-            jar_path: Path to the .jar plugin file.
-
-        Returns:
-            True if the plugin was loaded successfully.
+        Scan a directory for PYMC native plugin packages.
+        Looks for directories containing pymc_plugin.json or plugin.yml.
         """
-        if not os.path.exists(jar_path):
-            logger.error(f"Plugin .jar not found: {jar_path}")
+        search_dir = plugins_dir or self._plugins_dir
+        if not search_dir:
+            logger.warning("No plugins directory specified")
+            return []
+
+        search_path = Path(search_dir)
+        if not search_path.is_dir():
+            logger.warning(f"Plugins directory does not exist: {search_dir}")
+            return []
+
+        discovered = []
+        for entry in sorted(search_path.iterdir()):
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith('_') or entry.name.startswith('.'):
+                continue
+
+            info = self._parse_plugin_descriptor(entry)
+            if info:
+                discovered.append(info)
+                logger.info(f"Discovered plugin: {info.plugin_id} v{info.version} ({info.name})")
+
+        self._discovered = discovered
+        return discovered
+
+    # --- Loading ---
+
+    def load_all(self) -> int:
+        """Load all discovered plugins in dependency order. Returns count loaded."""
+        order = self._resolve_dependency_order()
+        loaded = 0
+        for plugin_id in order:
+            if self.load_plugin(plugin_id):
+                loaded += 1
+        return loaded
+
+    def load_plugin(self, plugin_id: str) -> bool:
+        """Load a specific plugin by its ID. Returns True on success."""
+        info = self._find_discovered(plugin_id)
+        if not info:
+            logger.error(f"Plugin not found: {plugin_id}")
             return False
 
-        if not self._native.available:
-            logger.warning(
-                f"Cannot load .jar plugin '{jar_path}': "
-                "native plugin layer not available. "
-                "Only Python plugins are supported."
-            )
-            return False
+        if plugin_id in self._plugins:
+            logger.warning(f"Plugin already loaded: {plugin_id}")
+            return True
 
-        success = self._native.load_plugin(jar_path)
-        if success:
-            self._jar_plugins.append(jar_path)
-            logger.info(f"Loaded .jar plugin: {jar_path}")
-        else:
-            logger.error(f"Failed to load .jar plugin: {jar_path}")
-        return success
-
-    def load_plugins_from_dir(self, plugins_dir: str) -> int:
-        """
-        Load all .jar files from a directory.
-
-        Args:
-            plugins_dir: Directory containing .jar plugin files.
-
-        Returns:
-            Number of plugins loaded successfully.
-        """
-        if not os.path.isdir(plugins_dir):
-            logger.warning(f"Plugins directory not found: {plugins_dir}")
-            return 0
-
-        count = 0
-        for jar_path in sorted(glob.glob(os.path.join(plugins_dir, "*.jar"))):
-            if self.load_plugin(jar_path):
-                count += 1
-
-        # Also load Python plugins from the directory
-        for py_path in sorted(glob.glob(os.path.join(plugins_dir, "*.py"))):
-            try:
-                self._load_python_plugin_file(py_path)
-                count += 1
-            except Exception as e:
-                logger.error(f"Failed to load Python plugin {py_path}: {e}")
-
-        return count
-
-    def enable_all(self) -> None:
-        """Enable all loaded plugins (both .jar and Python)."""
-        # Enable native .jar plugins
-        if self._native.available:
-            self._native.enable_all()
-
-        # Enable Python plugins
-        for name, plugin in self._pymc_plugins.items():
-            if not plugin.is_enabled:
-                try:
-                    plugin._enabled = True
-                    plugin.on_enable()
-                    logger.info(f"Enabled Python plugin: {name}")
-                    # Fire plugin enable event
-                    self.fire_event(Event(EventNames.PLUGIN_ENABLE,
-                                          {"plugin_name": name}))
-                except Exception as e:
-                    plugin._enabled = False
-                    logger.error(f"Error enabling plugin {name}: {e}")
-
-    def disable_all(self) -> None:
-        """Disable all loaded plugins (both .jar and Python)."""
-        # Disable Python plugins (reverse order)
-        for name in reversed(list(self._pymc_plugins.keys())):
-            plugin = self._pymc_plugins[name]
-            if plugin.is_enabled:
-                try:
-                    plugin.on_disable()
-                    plugin._enabled = False
-                    logger.info(f"Disabled Python plugin: {name}")
-                    # Fire plugin disable event
-                    self.fire_event(Event(EventNames.PLUGIN_DISABLE,
-                                          {"plugin_name": name}))
-                except Exception as e:
-                    logger.error(f"Error disabling plugin {name}: {e}")
-
-        # Unregister all Python plugin listeners
-        for name, plugin in self._pymc_plugins.items():
-            self._event_bus.unregister_all(name)
-
-        # Disable native .jar plugins
-        if self._native.available:
-            self._native.disable_all()
-
-    def fire_event(self, event: Event) -> bool:
-        """
-        Fire an event to all registered listeners.
-
-        The event is dispatched to both Python and native .jar
-        plugin listeners.
-
-        Args:
-            event: The event to fire.
-
-        Returns:
-            True if the event was NOT cancelled after processing.
-        """
-        # Fire to Python listeners
-        self._event_bus.fire(event)
-
-        # Fire to native .jar listeners
-        if self._native.available:
-            self._native.fire_event(event.name, event.data)
-
-        return not event.cancelled
-
-    # --- PYMC Python Plugin API (always available) ---
-
-    def register_pymc_plugin(self, plugin: PyMCPlugin) -> None:
-        """
-        Register a native PYMC Python plugin.
-
-        Args:
-            plugin: An instance of PyMCPlugin (or subclass).
-        """
-        if not isinstance(plugin, PyMCPlugin):
-            raise TypeError(f"Expected PyMCPlugin subclass, got {type(plugin)}")
-
-        if plugin.name in self._pymc_plugins:
-            logger.warning(f"Plugin '{plugin.name}' is already registered")
-            return
-
-        plugin._server = self.server
-        plugin._manager = self
-        plugin.on_load()
-        self._pymc_plugins[plugin.name] = plugin
-        logger.info(f"Registered Python plugin: {plugin.name} v{plugin.version}")
-
-    def unregister_pymc_plugin(self, name: str) -> bool:
-        """
-        Unregister a Python plugin by name.
-
-        Args:
-            name: The plugin name.
-
-        Returns:
-            True if the plugin was found and unregistered.
-        """
-        if name not in self._pymc_plugins:
-            return False
-
-        plugin = self._pymc_plugins[name]
-        if plugin.is_enabled:
-            plugin.on_disable()
-            plugin._enabled = False
-
-        self._event_bus.unregister_all(name)
-        del self._pymc_plugins[name]
-        logger.info(f"Unregistered Python plugin: {name}")
-        return True
-
-    # --- Event Listener Registration ---
-
-    def register_listener(self, event_name: str,
-                          handler: Callable[[Event], None],
-                          priority: EventPriority = EventPriority.NORMAL,
-                          plugin_name: str = "") -> int:
-        """
-        Register an event listener.
-
-        Args:
-            event_name: Name of the event to listen for.
-            handler: Callback function that receives an Event.
-            priority: Listener priority (lower = called first).
-            plugin_name: Name of the registering plugin.
-
-        Returns:
-            Handler ID (for later unregistration).
-        """
-        return self._event_bus.register(event_name, handler, priority, plugin_name)
-
-    def unregister_handler(self, handler_id: int) -> bool:
-        """Unregister a specific event handler by ID."""
-        return self._event_bus.unregister(handler_id)
-
-    # --- Command Registration ---
-
-    def register_command(self, command: str,
-                         handler: Callable[[str, dict], bool],
-                         plugin_name: str = "") -> None:
-        """
-        Register a command handler.
-
-        Args:
-            command: The command name (without /).
-            handler: Callback that receives (args_string, sender_info).
-                     Returns True if the command was handled.
-            plugin_name: Name of the registering plugin.
-        """
-        if command in self._command_handlers:
-            logger.warning(f"Command '/{command}' is already registered, "
-                           f"overwriting (was: {self._command_handlers[command][1]})")
-        self._command_handlers[command] = (handler, plugin_name)
-
-    def dispatch_command(self, command: str, sender_info: dict = None) -> bool:
-        """
-        Dispatch a command to registered handlers.
-
-        Args:
-            command: Full command string (with /).
-            sender_info: Information about the command sender.
-
-        Returns:
-            True if the command was handled.
-        """
-        if sender_info is None:
-            sender_info = {}
-
-        # Strip leading /
-        cmd = command.lstrip('/')
-        parts = cmd.split(' ', 1)
-        cmd_name = parts[0].lower()
-        args = parts[1] if len(parts) > 1 else ""
-
-        # Fire PlayerCommandPreprocessEvent
-        event = Event(EventNames.PLAYER_COMMAND, {
-            "command": cmd,
-            "player": sender_info.get("name", ""),
-        })
-        self.fire_event(event)
-        if event.cancelled:
-            return False
-
-        if cmd_name in self._command_handlers:
-            handler, plugin_name = self._command_handlers[cmd_name]
-            try:
-                return handler(args, sender_info)
-            except Exception as e:
-                logger.error(f"Error executing command '/{cmd_name}' "
-                             f"(plugin={plugin_name}): {e}")
+        # Check hard dependencies
+        for dep_id in info.depend:
+            if dep_id not in self._plugins:
+                logger.error(f"Plugin {plugin_id} missing dependency: {dep_id}")
+                instance = _PluginInstance(info, PyMCPlugin())
+                instance.state = PluginState.ERRORED
+                instance.error_message = f"Missing dependency: {dep_id}"
+                self._plugins[plugin_id] = instance
                 return False
 
-        return False
+        # Import the plugin package
+        try:
+            plugin_obj = self._import_plugin(info)
+            if plugin_obj is None:
+                return False
+
+            instance = _PluginInstance(info, plugin_obj)
+            plugin_obj._plugin_info = info
+            plugin_obj._manager = self
+            plugin_obj._server = self._server
+            instance.state = PluginState.LOADED
+
+            # Call on_load
+            plugin_obj.on_load()
+            instance.state = PluginState.LOADED
+
+            self._plugins[plugin_id] = instance
+            self._load_order.append(plugin_id)
+            logger.info(f"Loaded plugin: {plugin_id} v{info.version}")
+            return True
+
+        except Exception as e:
+            logger.exception(f"Failed to load plugin {plugin_id}: {e}")
+            instance = _PluginInstance(info, PyMCPlugin())
+            instance.state = PluginState.ERRORED
+            instance.error_message = str(e)
+            self._plugins[plugin_id] = instance
+            return False
+
+    # --- Lifecycle ---
+
+    def enable_all(self):
+        """Enable all loaded plugins."""
+        for plugin_id in list(self._load_order):
+            self.enable_plugin(plugin_id)
+
+    def enable_plugin(self, plugin_id: str) -> bool:
+        """Enable a specific plugin. Returns True on success."""
+        instance = self._plugins.get(plugin_id)
+        if not instance:
+            logger.error(f"Cannot enable unknown plugin: {plugin_id}")
+            return False
+
+        if instance.state == PluginState.ENABLED:
+            return True
+
+        if instance.state not in (PluginState.LOADED, PluginState.DISABLED):
+            logger.error(f"Cannot enable plugin {plugin_id} in state {instance.state}")
+            return False
+
+        try:
+            instance.state = PluginState.ENABLING
+            instance.plugin_obj.on_enable()
+            instance.state = PluginState.ENABLED
+            # Fire plugin enable event
+            self.fire_event_simple(PluginEvents.PLUGIN_ENABLE,
+                                   {"plugin_id": plugin_id},
+                                   cancellable=False)
+            logger.info(f"Enabled plugin: {plugin_id}")
+            return True
+        except Exception as e:
+            logger.exception(f"Failed to enable plugin {plugin_id}: {e}")
+            instance.state = PluginState.ERRORED
+            instance.error_message = str(e)
+            return False
+
+    def disable_plugin(self, plugin_id: str) -> bool:
+        """Disable a specific plugin. Returns True on success."""
+        instance = self._plugins.get(plugin_id)
+        if not instance:
+            return False
+
+        if instance.state != PluginState.ENABLED:
+            return True
+
+        try:
+            instance.state = PluginState.DISABLING
+            instance.plugin_obj.on_disable()
+            # Unregister all event handlers for this plugin
+            self._unregister_plugin_events(plugin_id)
+            # Unregister commands
+            self._unregister_plugin_commands(plugin_id)
+            instance.state = PluginState.DISABLED
+            # Fire plugin disable event
+            self.fire_event_simple(PluginEvents.PLUGIN_DISABLE,
+                                   {"plugin_id": plugin_id},
+                                   cancellable=False)
+            logger.info(f"Disabled plugin: {plugin_id}")
+            return True
+        except Exception as e:
+            logger.exception(f"Error disabling plugin {plugin_id}: {e}")
+            instance.state = PluginState.ERRORED
+            instance.error_message = str(e)
+            return False
+
+    def shutdown_all(self):
+        """Disable all plugins in reverse load order."""
+        for plugin_id in reversed(self._load_order):
+            self.disable_plugin(plugin_id)
+        logger.info("All plugins shut down")
+
+    # --- Event System ---
+
+    def fire_event(self, event: PluginEvent) -> bool:
+        """
+        Fire an event to all registered listeners in priority order.
+        Returns True if the event was NOT cancelled.
+        """
+        listeners = self._event_listeners.get(event.name, [])
+        # Sort by priority (lower = first)
+        sorted_listeners = sorted(listeners, key=lambda e: e.priority)
+
+        for entry in sorted_listeners:
+            instance = self._plugins.get(entry.plugin_id)
+            if not instance or not instance.is_active:
+                continue
+            try:
+                entry.handler(event)
+            except Exception as e:
+                logger.exception(
+                    f"Error in event handler for {event.name} "
+                    f"from plugin {entry.plugin_id}: {e}"
+                )
+        return not event.cancelled
+
+    def fire_event_simple(self, event_name: str,
+                          data: Optional[Dict[str, Any]] = None,
+                          cancellable: bool = True) -> bool:
+        """Convenience: fire an event by name with data."""
+        event = PluginEvent(event_name, data, cancellable)
+        return self.fire_event(event)
+
+    # --- Command System ---
+
+    def dispatch_command(self, command: str, args: str = "") -> bool:
+        """
+        Dispatch a command to the registered handler.
+        Returns True if a handler was found and executed.
+        """
+        entry = self._commands.get(command)
+        if entry is None:
+            logger.debug(f"No handler for command: /{command}")
+            return False
+
+        handler, plugin_id = entry
+        instance = self._plugins.get(plugin_id)
+        if not instance or not instance.is_active:
+            logger.warning(f"Plugin {plugin_id} for command /{command} is not active")
+            return False
+
+        try:
+            handler(args)
+            return True
+        except Exception as e:
+            logger.exception(f"Error executing command /{command} from plugin {plugin_id}: {e}")
+            return False
 
     # --- Query ---
 
-    def get_plugin(self, name: str) -> Optional[PyMCPlugin]:
-        """Get a Python plugin by name."""
-        return self._pymc_plugins.get(name)
+    def is_plugin_loaded(self, plugin_id: str) -> bool:
+        return plugin_id in self._plugins and self._plugins[plugin_id].is_active
 
-    def get_plugin_names(self) -> List[str]:
-        """Get names of all loaded plugins."""
-        names = list(self._pymc_plugins.keys())
-        names.extend(self._jar_plugins)
-        return names
+    def get_plugin(self, plugin_id: str) -> Optional[PyMCPlugin]:
+        instance = self._plugins.get(plugin_id)
+        return instance.plugin_obj if instance else None
 
-    def is_plugin_enabled(self, name: str) -> bool:
-        """Check if a plugin is enabled."""
-        if name in self._pymc_plugins:
-            return self._pymc_plugins[name].is_enabled
-        return False
+    def get_plugin_state(self, plugin_id: str) -> Optional[PluginState]:
+        instance = self._plugins.get(plugin_id)
+        return instance.state if instance else None
+
+    def get_loaded_plugins(self) -> List[str]:
+        return [pid for pid, inst in self._plugins.items() if inst.is_active]
+
+    @property
+    def plugin_count(self) -> int:
+        return len([i for i in self._plugins.values() if i.is_active])
 
     def get_registered_commands(self) -> List[str]:
-        """Get list of registered command names."""
-        return list(self._command_handlers.keys())
+        return list(self._commands.keys())
 
-    # --- Internal ---
+    # --- Inter-plugin communication ---
 
-    def _load_python_plugin_file(self, py_path: str) -> None:
-        """Load a Python plugin from a .py file."""
-        module_name = f"pymc_plugin_{os.path.basename(py_path).replace('.py', '')}"
+    def get_plugin_instance(self, plugin_id: str) -> Optional[PyMCPlugin]:
+        """Get another plugin's main instance for inter-plugin communication."""
+        return self.get_plugin(plugin_id)
 
-        spec = importlib.util.spec_from_file_location(module_name, py_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load plugin from {py_path}")
+    # --- Internal: Registration callbacks ---
 
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+    def _register_command(self, name: str, handler: Callable, plugin_id: str):
+        if name in self._commands:
+            existing_plugin = self._commands[name][1]
+            logger.warning(f"Command /{name} already registered by {existing_plugin}, "
+                           f"overwriting with {plugin_id}")
+        self._commands[name] = (handler, plugin_id)
 
-        # Find PyMCPlugin subclasses in the module
-        for attr_name in dir(module):
-            attr = getattr(module, attr_name)
-            if (isinstance(attr, type) and
-                    issubclass(attr, PyMCPlugin) and
-                    attr is not PyMCPlugin):
-                plugin = attr()
-                self.register_pymc_plugin(plugin)
-                return
+    def _register_event_handler(self, event_name: str, handler: Callable,
+                                priority: EventPriority, plugin_id: str):
+        if event_name not in self._event_listeners:
+            self._event_listeners[event_name] = []
+        self._event_listeners[event_name].append(
+            _EventHandlerEntry(handler=handler, priority=priority, plugin_id=plugin_id)
+        )
 
-        raise ImportError(f"No PyMCPlugin subclass found in {py_path}")
+    def _unregister_plugin_events(self, plugin_id: str):
+        """Remove all event handlers for a plugin."""
+        for event_name in list(self._event_listeners.keys()):
+            self._event_listeners[event_name] = [
+                e for e in self._event_listeners[event_name]
+                if e.plugin_id != plugin_id
+            ]
+            if not self._event_listeners[event_name]:
+                del self._event_listeners[event_name]
 
-    def shutdown(self) -> None:
-        """Shut down the plugin system completely."""
-        self.disable_all()
-        self._pymc_plugins.clear()
-        self._command_handlers.clear()
-        if self._native.available:
-            self._native.shutdown()
+    def _unregister_plugin_commands(self, plugin_id: str):
+        """Remove all commands registered by a plugin."""
+        to_remove = [cmd for cmd, (_, pid) in self._commands.items() if pid == plugin_id]
+        for cmd in to_remove:
+            del self._commands[cmd]
+
+    # --- Internal: Discovery helpers ---
+
+    def _parse_plugin_descriptor(self, package_path: Path) -> Optional[PluginInfo]:
+        """Parse plugin descriptor from a plugin package directory."""
+        # Try pymc_plugin.json first
+        json_desc = package_path / "pymc_plugin.json"
+        if json_desc.exists():
+            return self._parse_json_descriptor(json_desc, package_path)
+
+        # Try plugin.yml (YAML-style, but we parse it simply)
+        yml_desc = package_path / "plugin.yml"
+        if yml_desc.exists():
+            return self._parse_yml_descriptor(yml_desc, package_path)
+
+        return None
+
+    def _parse_json_descriptor(self, descriptor: Path, package_path: Path) -> Optional[PluginInfo]:
+        try:
+            with open(descriptor, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.error(f"Failed to parse {descriptor}: {e}")
+            return None
+
+        plugin_id = data.get("id", data.get("name", ""))
+        if not plugin_id:
+            logger.error(f"Plugin descriptor missing 'id': {descriptor}")
+            return None
+
+        # Normalize id (replace spaces with underscores, lowercase)
+        plugin_id = plugin_id.lower().replace(' ', '_')
+
+        return PluginInfo(
+            plugin_id=plugin_id,
+            name=data.get("name", plugin_id),
+            version=data.get("version", "0.0.0"),
+            description=data.get("description", ""),
+            main_class=data.get("main_class", data.get("main", plugin_id)),
+            api_version=data.get("api-version", data.get("api_version", "1.0")),
+            depend=data.get("depend", []),
+            softdepend=data.get("softdepend", []),
+            loadbefore=data.get("loadbefore", []),
+            authors=data.get("authors", []),
+            prefix=data.get("prefix", ""),
+            package_path=str(package_path),
+            extra={k: v for k, v in data.items()
+                   if k not in ("id", "name", "version", "description",
+                                "main_class", "main", "api-version", "api_version",
+                                "depend", "softdepend", "loadbefore",
+                                "authors", "prefix")},
+        )
+
+    def _parse_yml_descriptor(self, descriptor: Path, package_path: Path) -> Optional[PluginInfo]:
+        """Minimal YAML-like parser for plugin.yml (Bukkit format)."""
+        try:
+            with open(descriptor, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError as e:
+            logger.error(f"Failed to read {descriptor}: {e}")
+            return None
+
+        # Simple YAML key: value parser (doesn't handle nested structures well)
+        data: Dict[str, Any] = {}
+        for line in content.split('\n'):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if ':' in line:
+                key, _, value = line.partition(':')
+                key = key.strip()
+                value = value.strip()
+                # Handle list values (simplified)
+                if value.startswith('[') and value.endswith(']'):
+                    value = [v.strip().strip('"\'') for v in value[1:-1].split(',') if v.strip()]
+                elif value.startswith('"') and value.endswith('"'):
+                    value = value[1:-1]
+                elif value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                data[key] = value
+
+        plugin_name = data.get("name", "")
+        if not plugin_name:
+            logger.error(f"Plugin descriptor missing 'name': {descriptor}")
+            return None
+
+        plugin_id = plugin_name.lower().replace(' ', '_')
+
+        return PluginInfo(
+            plugin_id=plugin_id,
+            name=plugin_name,
+            version=data.get("version", "0.0.0"),
+            description=data.get("description", ""),
+            main_class=data.get("main", plugin_id),
+            api_version=data.get("api-version", "1.0"),
+            depend=data.get("depend", []) if isinstance(data.get("depend"), list) else [],
+            softdepend=data.get("softdepend", []) if isinstance(data.get("softdepend"), list) else [],
+            loadbefore=data.get("loadbefore", []) if isinstance(data.get("loadbefore"), list) else [],
+            authors=data.get("authors", []) if isinstance(data.get("authors"), list) else [],
+            prefix=data.get("prefix", ""),
+            package_path=str(package_path),
+        )
+
+    def _find_discovered(self, plugin_id: str) -> Optional[PluginInfo]:
+        for info in self._discovered:
+            if info.plugin_id == plugin_id:
+                return info
+        return None
+
+    def _import_plugin(self, info: PluginInfo) -> Optional[PyMCPlugin]:
+        """Import a Python plugin package and instantiate the main class."""
+        pkg_path = Path(info.package_path)
+        pkg_name = pkg_path.name
+
+        # Add parent directory to sys.path
+        parent = str(pkg_path.parent)
+        if parent not in sys.path:
+            sys.path.insert(0, parent)
+
+        try:
+            mod_module = importlib.import_module(pkg_name)
+        except ImportError as e:
+            logger.error(f"Failed to import plugin package {pkg_name}: {e}")
+            return None
+
+        # Resolve main_class
+        main_class_path = info.main_class
+        cls = None
+
+        if '.' in main_class_path:
+            parts = main_class_path.rsplit('.', 1)
+            try:
+                sub_module = importlib.import_module(parts[0])
+                cls = getattr(sub_module, parts[1], None)
+            except (ImportError, AttributeError) as e:
+                logger.error(f"Failed to resolve main_class {main_class_path}: {e}")
+                return None
+        else:
+            cls = getattr(mod_module, main_class_path, None)
+
+        if cls is None:
+            # Fallback: look for a PyMCPlugin subclass in the module
+            for attr_name in dir(mod_module):
+                attr = getattr(mod_module, attr_name)
+                if (isinstance(attr, type) and issubclass(attr, PyMCPlugin)
+                        and attr is not PyMCPlugin):
+                    cls = attr
+                    break
+
+        if cls is None:
+            logger.error(f"No plugin class found in {pkg_name} "
+                         f"(expected main_class={main_class_path} or PyMCPlugin subclass)")
+            return None
+
+        try:
+            instance = cls()
+            if not isinstance(instance, PyMCPlugin):
+                logger.error(f"Main class {main_class_path} is not a PyMCPlugin subclass")
+                return None
+            return instance
+        except Exception as e:
+            logger.error(f"Failed to instantiate plugin class {main_class_path}: {e}")
+            return None
+
+    # --- Internal: Dependency resolution ---
+
+    def _resolve_dependency_order(self) -> List[str]:
+        """Topological sort of discovered plugins based on dependencies."""
+        plugin_ids = {info.plugin_id for info in self._discovered}
+
+        # Build adjacency list and in-degrees
+        adj: Dict[str, List[str]] = {pid: [] for pid in plugin_ids}
+        in_deg: Dict[str, int] = {pid: 0 for pid in plugin_ids}
+
+        for info in self._discovered:
+            for dep in info.depend:
+                if dep in plugin_ids:
+                    adj[dep].append(info.plugin_id)
+                    in_deg[info.plugin_id] += 1
+
+        # Kahn's algorithm
+        queue = sorted([pid for pid in plugin_ids if in_deg[pid] == 0])
+        result = []
+
+        while queue:
+            current = queue.pop(0)
+            result.append(current)
+            for neighbor in sorted(adj[current]):
+                in_deg[neighbor] -= 1
+                if in_deg[neighbor] == 0:
+                    queue.append(neighbor)
+
+        # Add plugins with missing deps at the end
+        for info in self._discovered:
+            if info.plugin_id not in result:
+                missing = [d for d in info.depend if d not in plugin_ids]
+                if missing:
+                    logger.warning(f"Plugin {info.plugin_id} has missing dependencies: {missing}")
+                result.append(info.plugin_id)
+
+        return result

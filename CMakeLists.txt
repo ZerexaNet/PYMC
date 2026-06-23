@@ -129,7 +129,7 @@ elseif(UNIX)
 endif()
 
 # ===========================================================
-# Paper Plugin Compatibility Layer
+# PYMC Plugin API
 # ===========================================================
 
 # Event System (header-only, always built)
@@ -138,15 +138,9 @@ target_include_directories(plugin_event_system INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
 )
 
-# Bukkit API (header-only for now, implementation TBD)
-add_library(plugin_bukkit_api INTERFACE)
-target_include_directories(plugin_bukkit_api INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
-)
-
-# JVM Bridge (header-only, requires JDK at runtime)
-add_library(plugin_jvm_bridge INTERFACE)
-target_include_directories(plugin_jvm_bridge INTERFACE
+# PYMC Plugin API types (header-only, renamed from bukkit_api)
+add_library(plugin_pymc_api INTERFACE)
+target_include_directories(plugin_pymc_api INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
 )
 
@@ -157,8 +151,7 @@ target_include_directories(plugin_loader INTERFACE
 )
 target_link_libraries(plugin_loader INTERFACE
     plugin_event_system
-    plugin_bukkit_api
-    plugin_jvm_bridge
+    plugin_pymc_api
 )
 
 # Combined plugin shared library for Python ctypes bindings
@@ -182,7 +175,7 @@ elseif(UNIX)
 endif()
 
 # ===========================================================
-# Mod Compatibility Layer (Fabric/Forge/NeoForge/Quilt)
+# PYMC Native Mod API
 # ===========================================================
 
 # Mod Loader (header-only, core mod discovery & lifecycle management)
@@ -193,39 +186,16 @@ target_include_directories(mod_loader INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/native/core
 )
 
-# Fabric API Bridge (header-only, Fabric mod API -> PYMC translation)
-add_library(mod_fabric_api INTERFACE)
-target_include_directories(mod_fabric_api INTERFACE
+# PYMC Mod C API (header-only, C API bridge for ctypes)
+add_library(mod_pymc_api INTERFACE)
+target_include_directories(mod_pymc_api INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
-    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
 )
-target_link_libraries(mod_fabric_api INTERFACE
+target_link_libraries(mod_pymc_api INTERFACE
     mod_loader
 )
 
-# Forge API Bridge (header-only, Forge/NeoForge mod API -> PYMC translation)
-add_library(mod_forge_api INTERFACE)
-target_include_directories(mod_forge_api INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
-    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
-)
-target_link_libraries(mod_forge_api INTERFACE
-    mod_loader
-)
-
-# JVM Interface (header-only, JNI-based mod jar loading & execution)
-add_library(mod_jvm_interface INTERFACE)
-target_include_directories(mod_jvm_interface INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/native/mods
-    ${CMAKE_CURRENT_SOURCE_DIR}/native/plugins
-)
-target_link_libraries(mod_jvm_interface INTERFACE
-    mod_loader
-    plugin_jvm_bridge
-)
-
-# Combined mod compatibility shared library for Python ctypes bindings
-# This will include C API bridge functions when implementation files are added
+# Combined mod shared library for Python ctypes bindings
 add_library(pymc_mod_loader SHARED
     native/plugins/plugin_loader_api.cpp
 )
@@ -237,9 +207,7 @@ target_include_directories(pymc_mod_loader PUBLIC
 )
 target_link_libraries(pymc_mod_loader PUBLIC
     mod_loader
-    mod_fabric_api
-    mod_forge_api
-    mod_jvm_interface
+    mod_pymc_api
     ipc_shm
 )
 if(APPLE)
