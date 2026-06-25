@@ -11,12 +11,12 @@
 #define PYMC_EXPORT __attribute__((visibility("default")))
 #endif
 
+#include <cstdint>
+#include <cstddef>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <cstdint>
-#include <cstddef>
 
 // ===========================================================
 // Plugin Loader Lifecycle
