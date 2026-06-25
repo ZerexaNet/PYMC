@@ -343,7 +343,11 @@ class MinecraftServer:
         seed = parse_vanilla_seed(self.config.get("level-seed", 0))
 
         explicit_native_path = None
-        binary_names = ["terrain_gen.exe", "terrain_gen"]
+        # Pick binary name based on current OS
+        if os.name == "nt":
+            binary_names = ["terrain_gen.exe", "terrain_gen"]
+        else:
+            binary_names = ["terrain_gen", "terrain_gen.exe"]
         search_roots = [
             Path.cwd(),
             Path(__file__).resolve().parent.parent,
@@ -355,6 +359,16 @@ class MinecraftServer:
                 for name in binary_names:
                     candidate = (base / name).resolve()
                     if candidate.exists() and candidate.is_file():
+                        # Validate file format to avoid running wrong-arch binary
+                        try:
+                            with open(candidate, 'rb') as f:
+                                magic = f.read(4)
+                            if os.name == "nt" and magic[:2] != b'MZ':
+                                continue  # Not a valid PE executable
+                            elif os.name != "nt" and magic != b'\x7fELF':
+                                continue  # Not a valid ELF executable
+                        except Exception:
+                            continue
                         explicit_native_path = str(candidate)
                         break
                 if explicit_native_path:
@@ -597,19 +611,27 @@ class MinecraftServer:
         return loaded, generated
 
     async def _pregenerate_spawn_area(self):
-        """服务器启动时预生成出生点视距范围内的区块，并写入 Linear V2。"""
+        """服务器启动时预生成出生点周围的少量关键区块，确保玩家能进服。
+        
+        只预生成 join_immediate_radius 范围内的区块（默认 2 = 5x5 = 25 个），
+        而不是完整视距范围。其余区块在玩家加入后按需流式加载。
+        这样纯 Python 地形生成器也能在几秒内完成。
+        """
         spawn_x, _, spawn_z = self.spawn_position
         center_cx = int(spawn_x) >> 4
         center_cz = int(spawn_z) >> 4
+        
+        # 只预生成小范围，确保玩家加入时有地面可站
+        pregen_radius = min(self.join_immediate_radius, 3)  # 最多 7x7 = 49 个
         chunk_coords = [
             (cx, cz)
-            for cx in range(center_cx - self.view_distance, center_cx + self.view_distance + 1)
-            for cz in range(center_cz - self.view_distance, center_cz + self.view_distance + 1)
+            for cx in range(center_cx - pregen_radius, center_cx + pregen_radius + 1)
+            for cz in range(center_cz - pregen_radius, center_cz + pregen_radius + 1)
         ]
 
         logger.info(
-            f"正在检查出生点区块缓存 {len(chunk_coords)} 个 "
-            f"(中心={center_cx},{center_cz} 视距={self.view_distance})..."
+            f"正在预生成出生点核心区块 {len(chunk_coords)} 个 "
+            f"(中心={center_cx},{center_cz} 半径={pregen_radius})..."
         )
 
         def _generate_spawn_chunks():
@@ -621,7 +643,7 @@ class MinecraftServer:
             None, _generate_spawn_chunks
         )
         logger.info(
-            f"出生点区块预生成完成: 已缓存 {loaded} 个, 新生成 {generated} 个, "
+            f"出生点核心区块预生成完成: 已缓存 {loaded} 个, 新生成 {generated} 个, "
             f"耗时 {time.time() - start:.1f}s"
         )
 

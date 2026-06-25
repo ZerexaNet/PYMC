@@ -15,7 +15,7 @@ DEFAULT_CONFIG = {
     "motd": "PyMC - Python Minecraft 1.21.1 服务器",
     "max-players": 20,
     "online-mode": False,
-    "view-distance": 10,
+    "view-distance": 4,
     "network-compression-threshold": 256,
     "gamemode": "creative",
     "difficulty": "normal",
