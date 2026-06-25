@@ -31,7 +31,11 @@ MOB_TYPE_IDS = {
 
 
 def _find_native_binary() -> str | None:
-    binary_names = ["mob_ai.exe", "mob_ai"]
+    # Pick binary name based on current OS
+    if os.name == "nt":
+        binary_names = ["mob_ai.exe", "mob_ai"]
+    else:
+        binary_names = ["mob_ai", "mob_ai.exe"]
     compiled = globals().get("__compiled__")
     base_roots = [
         Path(__file__).resolve().parent.parent,
@@ -80,6 +84,16 @@ def _find_native_binary() -> str | None:
     for path in candidates:
         if path.exists() and path.is_file():
             if os.name == "nt" or os.access(path, os.X_OK):
+                # Validate file format to avoid running wrong-arch binary
+                try:
+                    with open(path, 'rb') as f:
+                        magic = f.read(4)
+                    if os.name == "nt" and magic[:2] != b'MZ':
+                        continue  # Not a valid PE executable
+                    elif os.name != "nt" and magic != b'\x7fELF':
+                        continue  # Not a valid ELF executable
+                except Exception:
+                    continue
                 return str(path)
     return None
 
