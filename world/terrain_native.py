@@ -55,7 +55,11 @@ BATCH_RESPONSE_HEADER_FORMAT = '<I'
 
 def _find_native_binary() -> str | None:
     """查找跨平台 terrain_gen 可执行文件路径。"""
-    binary_names = ["terrain_gen.exe", "terrain_gen"]
+    # Pick binary name based on current OS
+    if os.name == "nt":
+        binary_names = ["terrain_gen.exe", "terrain_gen"]
+    else:
+        binary_names = ["terrain_gen", "terrain_gen.exe"]
     compiled = globals().get("__compiled__")
     base_roots = [
         Path(__file__).resolve().parent.parent,
@@ -122,6 +126,23 @@ def _find_native_binary() -> str | None:
     for path in candidates:
         if path.exists() and path.is_file():
             if os.name == "nt" or os.access(path, os.X_OK):
+                # Validate file format: check magic bytes to avoid
+                # running a Linux ELF binary masquerading as .exe
+                try:
+                    with open(path, 'rb') as f:
+                        magic = f.read(4)
+                    if os.name == "nt":
+                        # Windows PE must start with 'MZ'
+                        if magic[:2] != b'MZ':
+                            logger.debug(f"Skipping {path}: not a valid PE executable")
+                            continue
+                    else:
+                        # Linux ELF must start with '\x7fELF'
+                        if magic != b'\x7fELF':
+                            logger.debug(f"Skipping {path}: not a valid ELF executable")
+                            continue
+                except Exception:
+                    continue
                 return str(path)
     logger.warning(
         "未在以下路径找到原生地形生成器: %s",
