@@ -33,7 +33,6 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] **流体系统**：水和岩浆流动模拟、水平扩散和垂直下落、水-岩浆交互 (石头/圆石/黑曜石)、维度感知流速。
 - [x] **多版本协议兼容**：1.8.9 - 1.21.4 (协议版本 47-770)，版本化数据包 ID 映射、配置阶段仅限 1.20.2+、版本化登录/加入游戏格式。
 - [x] **命令框架**：`CommandManager` 统一注册、解析、权限检查和调度；50+ 原版命令已注册；Tab 补全支持；别名系统。
-- [x] **Mod 兼容层**：`ModManager` 扫描 `.jar` 文件，识别 Fabric/Forge/NeoForge/Quilt mod；解析 `fabric.mod.json`、`quilt.mod.json`、`mods.toml`；依赖图解析；可选 C++ 原生 JVM 桥接。
 - [x] **插件兼容层**：`PluginManager` 支持 Paper/Bukkit `.jar` 插件 (C++ JVM 桥接) 和 PYMC 原生 Python 插件；`PythonEventBus` 事件系统；Bukkit 兼容事件名。
 - [x] **Watchdog 双进程保护**：UDP 心跳互检、自动重启伙伴进程、健康检查 API、协调关闭。
 - [x] **网络优化**：`PlayerNetworkOptimizer` 数据包批量发送、移动更新频率限制、区块发送距离排序。
