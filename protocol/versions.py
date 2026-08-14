@@ -149,9 +149,17 @@ def filter_supported_versions(version_list: list[int] | str,
         min_version: Minimum allowed protocol version (inclusive)
         max_version: Maximum allowed protocol version (inclusive)
     """
-    if version_list == "all":
-        return [pv for pv in SUPPORTED_VERSIONS
-                if min_version <= pv <= max_version]
+    if isinstance(version_list, str):
+        if version_list.strip().lower() == "all":
+            return [pv for pv in SUPPORTED_VERSIONS
+                    if min_version <= pv <= max_version]
+        parsed = []
+        for value in version_list.split(","):
+            try:
+                parsed.append(int(value.strip()))
+            except ValueError:
+                continue
+        version_list = parsed
 
     result = []
     for pv in version_list:
