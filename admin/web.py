@@ -3,6 +3,7 @@
 # ============================================================
 
 import asyncio
+import ipaddress
 import json
 import logging
 import threading
@@ -661,16 +662,24 @@ HTML_PAGE = """<!doctype html>
 class WebAdminServer:
     """轻量 Web 管理端。"""
 
-    def __init__(self, server, host: str, port: int):
+    def __init__(self, server, host: str, port: int,
+                 allow_remote: bool = False):
         self.server = server
         self.host = host
         self.port = port
+        self.allow_remote = allow_remote
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self):
         if self._httpd is not None:
             return
+        if not self.allow_remote and not self._is_loopback_host(self.host):
+            raise ValueError(
+                "Web admin has no authentication and may only bind to loopback. "
+                "Set web-admin-allow-remote=true only when protected by an "
+                "authenticated reverse proxy or equivalent access control."
+            )
         handler_cls = self._make_handler()
         self._httpd = ThreadingHTTPServer((self.host, self.port), handler_cls)
         self._thread = threading.Thread(
@@ -680,6 +689,16 @@ class WebAdminServer:
         )
         self._thread.start()
         logger.info(f"Web 管理台已启动: http://{self.host}:{self.port}")
+
+    @staticmethod
+    def _is_loopback_host(host: str) -> bool:
+        normalized = host.strip().lower()
+        if normalized == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(normalized).is_loopback
+        except ValueError:
+            return False
 
     def stop(self):
         if self._httpd is None:
