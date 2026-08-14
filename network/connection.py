@@ -89,6 +89,9 @@ class Connection:
         # 连接状态
         self.alive = True
         self.keepalive_id: int = 0
+        self.keepalive_pending: bool = False
+        self.keepalive_sent_at: float = 0.0
+        self.keepalive_rtt_ms: float | None = None
         self.teleport_id: int = 0
 
         logger.info(f"新连接来自 {self.address}")

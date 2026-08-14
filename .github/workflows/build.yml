@@ -59,6 +59,8 @@ jobs:
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
           make -j$(sysctl -n hw.ncpu)
+      - name: Run tests
+        run: python3 -m pytest tests/ -v
       - name: Build with Nuitka
         run: |
           pip install nuitka
@@ -98,6 +100,8 @@ jobs:
           mkdir -p build && cd build
           cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
           mingw32-make -j$(nproc)
+      - name: Run tests
+        run: python -m pytest tests/ -v
       - name: Build with Nuitka
         run: |
           pip install nuitka
