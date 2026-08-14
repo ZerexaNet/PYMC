@@ -830,6 +830,13 @@ class MinecraftServer:
             # Plugin/mod tick hook
             from plugins.bridge import hook_server_tick
             hook_server_tick(self)
+            if self.mod_manager is not None:
+                from mods.bridge import hook_tick
+                hook_tick(self)
+
+            # Process active furnace-like containers.
+            from world.block_behavior import container_manager
+            container_manager.tick_furnaces(self)
 
             # 发送 KeepAlive 心跳
             if tick_count % keepalive_interval == 0:
@@ -900,9 +907,17 @@ class MinecraftServer:
             return
 
         self.fluid_system.tick()
-
-        # Fluid system handles its own block updates internally
-        # via _broadcast_block_change in its _notify_fluid_update method
+        updates = getattr(self, "_fluid_updates", [])
+        self._fluid_updates = []
+        if not updates:
+            return
+        from handlers.play import _broadcast_block_change
+        # Keep only the final state when a position changes repeatedly in one tick.
+        final_updates = {}
+        for x, y, z, new_state in updates:
+            final_updates[(x, y, z)] = new_state
+        for (x, y, z), new_state in final_updates.items():
+            await _broadcast_block_change(self, x, y, z, new_state)
 
     async def _send_keepalive(self):
         """向所有在线玩家发送 KeepAlive 数据包。"""
