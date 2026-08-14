@@ -51,4 +51,4 @@ def get_version_handler(protocol_version: int):
     from protocol.versions import get_handler_version
     handler_key = get_handler_version(protocol_version)
     handler_class = HANDLER_MAP.get(handler_key, VersionHandlerV1_21)
-    return handler_class()
+    return handler_class(protocol_version)

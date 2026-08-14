@@ -16,13 +16,13 @@ PROTOCOL_VERSIONS = {
     498: {"name": "1.14.4",  "major": "1.14"},
     578: {"name": "1.15.2",  "major": "1.15"},
     736: {"name": "1.16.1",  "major": "1.16"},
-    754: {"name": "1.16.2",  "major": "1.16"},
-    757: {"name": "1.17.1",  "major": "1.17"},
+    754: {"name": "1.16.4/1.16.5", "major": "1.16"},
+    757: {"name": "1.18/1.18.1", "major": "1.18"},
     758: {"name": "1.18.2",  "major": "1.18"},
-    761: {"name": "1.19.2",  "major": "1.19"},
-    764: {"name": "1.19.3",  "major": "1.19"},
-    765: {"name": "1.19.4",  "major": "1.19"},
-    766: {"name": "1.20.1",  "major": "1.20"},
+    761: {"name": "1.19.3",  "major": "1.19"},
+    764: {"name": "1.20.2",  "major": "1.20"},
+    765: {"name": "1.20.3/1.20.4", "major": "1.20"},
+    766: {"name": "1.20.5/1.20.6", "major": "1.20"},
     767: {"name": "1.21.1",  "major": "1.21"},
     770: {"name": "1.21.4",  "major": "1.21"},
 }
@@ -122,6 +122,8 @@ def get_handler_version(protocol_version: int) -> str:
         return "v1_21"
     elif protocol_version >= 764:
         return "v1_20"
+    elif protocol_version >= 761:
+        return "v1_19"
     elif protocol_version >= 757:
         return "v1_17"
     elif protocol_version >= 736:

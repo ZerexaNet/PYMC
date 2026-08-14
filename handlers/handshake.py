@@ -44,19 +44,10 @@ async def handle_handshake(conn: Connection, packet_id: int, payload: bytes):
                 f"地址={server_address}:{server_port}, "
                 f"下一状态={next_state}")
 
-    # Check if this protocol version is supported
+    # Preserve the requested protocol. Unsupported versions may query status,
+    # but login rejects them instead of silently speaking a different protocol.
     if not is_supported(protocol_version):
-        # Try to find the closest supported version
-        from protocol.versions import get_closest_supported_version, SUPPORTED_VERSIONS
-        closest = get_closest_supported_version(protocol_version)
-        if closest is not None:
-            logger.info(f"协议版本 {protocol_version} 不直接支持，"
-                       f"将使用最接近的支持版本 {closest} ({get_version_name(closest)}) 的格式")
-            conn.protocol_version = closest
-            conn.mc_version = get_version_name(closest)
-        else:
-            logger.warning(f"协议版本 {protocol_version} 不受支持且无兼容版本")
-            # We'll still try to handle it with the native version
+        logger.warning(f"协议版本 {protocol_version} 不受支持")
 
     # Set up the version handler
     _setup_version_handler(conn)

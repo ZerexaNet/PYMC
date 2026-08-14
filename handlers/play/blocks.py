@@ -199,7 +199,7 @@ def _get_held_item_for_placement(conn: Connection) -> tuple[int, str | None]:
     inv = getattr(conn, 'inventory_obj', None)
     if inv is not None:
         held = inv.get_held_item_from_slot(conn.selected_hotbar_slot)
-        if held is not None and not held.is_empty():
+        if held is not None and not held.is_empty:
             # Check if this item corresponds to a placeable block
             block_state = BLOCK_NAME_TO_DEFAULT_STATE.get(held.item_id)
             if block_state is not None:
@@ -232,7 +232,7 @@ def _consume_placement_item(conn: Connection, item_name: str | None):
     inv = getattr(conn, 'inventory_obj', None)
     if inv is not None:
         held = inv.get_held_item_from_slot(conn.selected_hotbar_slot)
-        if held is not None and not held.is_empty() and held.item_id == item_name:
+        if held is not None and not held.is_empty and held.item_id == item_name:
             held.count -= 1
             if held.count <= 0:
                 inv.set_slot(conn.selected_hotbar_slot, None)
@@ -290,7 +290,7 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
         # Drop container contents before removing
         if conn.gamemode in ("survival", "adventure"):
             for item in container.items:
-                if item is not None and not item.is_empty():
+                if item is not None and not item.is_empty:
                     entity = server.entity_manager.create_item(
                         x + 0.5, y + 0.5, z + 0.5,
                         item_name=item.item_id, count=item.count
@@ -332,7 +332,7 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
 
         if drops:
             for drop in drops:
-                if drop.is_empty():
+                if drop.is_empty:
                     continue
                 entity = server.entity_manager.create_item(
                     x + 0.5, y + 0.5, z + 0.5,
@@ -356,7 +356,7 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
                 await broadcast_entity_spawn(server, entity)
 
         # Damage tool on use
-        if tool_item is not None and not tool_item.is_empty():
+        if tool_item is not None and not tool_item.is_empty:
             tool_type = tool_item.get_tool_type()
             if tool_type is not None:
                 tool_item.damage += 1
@@ -375,7 +375,7 @@ def _drop_held_item(conn: Connection, server):
         return
 
     held = inv.get_held_item_from_slot(conn.selected_hotbar_slot)
-    if held is None or held.is_empty():
+    if held is None or held.is_empty:
         return
 
     if conn.gamemode in ("creative", "spectator"):
