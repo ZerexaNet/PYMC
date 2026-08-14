@@ -1,7 +1,9 @@
 import unittest
 from types import SimpleNamespace
 
-from handlers.play import _handle_click_container
+from handlers.play import (
+    _handle_click_container, _player_window_slot_to_inventory,
+)
 from network.server import MinecraftServer
 from protocol.data_types import write_varint, write_short, write_byte
 from world.entities import EntityManager
@@ -58,6 +60,16 @@ class InventoryPrimitiveTests(unittest.TestCase):
         self.assertEqual(restored.ender_chest[2].nbt, {"source": "test"})
         self.assertEqual(restored.held_slot, 4)
 
+    def test_player_window_slot_mapping_matches_java_layout(self):
+        self.assertEqual(_player_window_slot_to_inventory(0), 45)
+        self.assertEqual(_player_window_slot_to_inventory(5), 39)
+        self.assertEqual(_player_window_slot_to_inventory(8), 36)
+        self.assertEqual(_player_window_slot_to_inventory(9), 9)
+        self.assertEqual(_player_window_slot_to_inventory(36), 0)
+        self.assertEqual(_player_window_slot_to_inventory(44), 8)
+        self.assertEqual(_player_window_slot_to_inventory(45), 40)
+        self.assertIsNone(_player_window_slot_to_inventory(-999))
+
 
 class InventoryClickTests(unittest.IsolatedAsyncioTestCase):
     def make_connection(self):
@@ -72,7 +84,7 @@ class InventoryClickTests(unittest.IsolatedAsyncioTestCase):
         conn = self.make_connection()
         conn.inventory_obj.set_slot(0, ItemStack("minecraft:stone", 12))
 
-        await _handle_click_container(conn, click_payload(0), None)
+        await _handle_click_container(conn, click_payload(36), None)
 
         self.assertIsNone(conn.inventory_obj.get_slot(0))
         self.assertEqual(conn.inventory_obj.carried_item, ItemStack("minecraft:stone", 12))
@@ -83,7 +95,7 @@ class InventoryClickTests(unittest.IsolatedAsyncioTestCase):
         conn = self.make_connection()
         conn.inventory_obj.set_slot(0, ItemStack("minecraft:stone", 5))
 
-        await _handle_click_container(conn, click_payload(0, button=1), None)
+        await _handle_click_container(conn, click_payload(36, button=1), None)
 
         self.assertEqual(conn.inventory_obj.get_slot(0).count, 2)
         self.assertEqual(conn.inventory_obj.carried_item.count, 3)
@@ -92,7 +104,7 @@ class InventoryClickTests(unittest.IsolatedAsyncioTestCase):
         conn = self.make_connection()
         conn.inventory_obj.set_slot(0, ItemStack("minecraft:stone", 5))
 
-        await _handle_click_container(conn, click_payload(0, state_id=9), None)
+        await _handle_click_container(conn, click_payload(36, state_id=9), None)
 
         self.assertEqual(conn.inventory_obj.get_slot(0).count, 5)
         self.assertIsNone(conn.inventory_obj.carried_item)

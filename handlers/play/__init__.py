@@ -172,6 +172,23 @@ def _is_serverbound_packet(conn: Connection, packet_id: int,
             and packet_id == native_packet_id)
 
 
+def _player_window_slot_to_inventory(slot: int) -> int | None:
+    """Translate protocol window-0 slots to PlayerInventory indices."""
+    if slot == 0:       # crafting output
+        return 45
+    if 1 <= slot <= 4:  # 2x2 crafting input
+        return 40 + slot
+    if 5 <= slot <= 8:  # helmet, chest, legs, boots
+        return 44 - slot
+    if 9 <= slot <= 35:  # main inventory
+        return slot
+    if 36 <= slot <= 44:  # hotbar
+        return slot - 36
+    if slot == 45:      # offhand
+        return 40
+    return None
+
+
 async def handle_play(conn: Connection, packet_id: int, payload: bytes,
                       server):
     """分发 Play 阶段的客户端数据包。"""
@@ -288,15 +305,16 @@ async def _handle_click_container(conn: Connection, payload: bytes, server):
         _, offset = decode_slot_entry(payload, offset)
     _, offset = decode_slot_entry(payload, offset)
 
-    if mode == 0 and 0 <= slot_idx < inv.TOTAL_SLOTS and button in (0, 1):
-        slot_item = inv.get_slot(slot_idx)
+    inventory_slot = _player_window_slot_to_inventory(slot_idx)
+    if mode == 0 and inventory_slot is not None and button in (0, 1):
+        slot_item = inv.get_slot(inventory_slot)
         cursor = inv.carried_item
         if button == 0:  # left click: pick up, place, merge, or swap
             if cursor is None or cursor.is_empty:
                 inv.carried_item = slot_item
-                inv.set_slot(slot_idx, None)
+                inv.set_slot(inventory_slot, None)
             elif slot_item is None or slot_item.is_empty:
-                inv.set_slot(slot_idx, cursor)
+                inv.set_slot(inventory_slot, cursor)
                 inv.carried_item = None
             elif slot_item.can_stack_with(cursor) and slot_item.count < slot_item.max_stack_size:
                 moved = min(cursor.count, slot_item.max_stack_size - slot_item.count)
@@ -306,7 +324,7 @@ async def _handle_click_container(conn: Connection, payload: bytes, server):
                     inv.carried_item = None
                 inv.state_id += 1
             else:
-                inv.set_slot(slot_idx, cursor)
+                inv.set_slot(inventory_slot, cursor)
                 inv.carried_item = slot_item
         else:  # right click: pick up half or place one
             if cursor is None or cursor.is_empty:
@@ -316,13 +334,13 @@ async def _handle_click_container(conn: Connection, payload: bytes, server):
                     inv.carried_item.count = take
                     slot_item.count -= take
                     if slot_item.count <= 0:
-                        inv.set_slot(slot_idx, None)
+                        inv.set_slot(inventory_slot, None)
                     else:
                         inv.state_id += 1
             elif slot_item is None or slot_item.is_empty:
                 placed = cursor.copy()
                 placed.count = 1
-                inv.set_slot(slot_idx, placed)
+                inv.set_slot(inventory_slot, placed)
                 cursor.count -= 1
                 if cursor.count <= 0:
                     inv.carried_item = None
@@ -361,12 +379,13 @@ async def _handle_creative_inventory_action(conn: Connection, payload: bytes, se
     if inv is None:
         return
 
-    if slot_idx < 0 or slot_idx >= 46:
+    inventory_slot = _player_window_slot_to_inventory(slot_idx)
+    if inventory_slot is None:
         return  # Invalid slot
 
     if clicked_item is None or clicked_item.is_empty:
-        inv.set_slot(slot_idx, None)
+        inv.set_slot(inventory_slot, None)
     else:
-        inv.set_slot(slot_idx, clicked_item)
+        inv.set_slot(inventory_slot, clicked_item)
 
     conn.inventory_state_id += 1
