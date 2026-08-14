@@ -273,7 +273,7 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
         return
 
     # Plugin hook: allow plugins to cancel block break
-    from plugins.bridge import hook_block_break
+    from mods.bridge import hook_block_break
     if not hook_block_break(server, conn, x, y, z, current):
         return  # Cancelled by a plugin
 
@@ -517,7 +517,7 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
 
     # Place the block
     # Plugin hook: allow plugins to cancel block placement
-    from plugins.bridge import hook_block_place
+    from mods.bridge import hook_block_place
     if not hook_block_place(server, conn, place_x, place_y, place_z, block_state):
         return  # Cancelled by a plugin
 

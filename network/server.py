@@ -759,7 +759,7 @@ class MinecraftServer:
             if conn.username and conn.state == ConnectionState.PLAY:
                 self.save_player_state(conn)
                 # Plugin hook: fire PlayerQuitEvent
-                from plugins.bridge import hook_player_quit
+                from mods.bridge import hook_player_quit
                 hook_player_quit(self, conn)
                 logger.info(f"玩家 {conn.username} 离开了游戏")
                 await self._handle_player_leave(conn)

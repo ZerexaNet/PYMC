@@ -97,7 +97,7 @@ async def _handle_chat_message(conn: Connection, payload: bytes, server):
     message, offset = read_string(payload, offset)
 
     # Plugin hook: allow plugins to cancel or modify chat
-    from plugins.bridge import hook_player_chat
+    from mods.bridge import hook_player_chat
     if not hook_player_chat(server, conn, message):
         return  # Cancelled by a plugin
 
