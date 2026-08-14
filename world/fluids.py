@@ -144,6 +144,8 @@ def _is_air_or_fluid_passable(state_id: int | None, fluid_type: str = "water") -
 
 def _get_water_state(level: int, falling: bool = False) -> int:
     """Get the water block state ID for a given level."""
+    if falling:
+        level = 8
     if level == 0:
         return WATER  # Source
     # Look up flowing water state
@@ -158,6 +160,8 @@ def _get_water_state(level: int, falling: bool = False) -> int:
 
 def _get_lava_state(level: int, falling: bool = False) -> int:
     """Get the lava block state ID for a given level."""
+    if falling:
+        level = 8
     if level == 0:
         return LAVA  # Source
     props = {"level": str(level)}
@@ -315,7 +319,7 @@ class FluidSystem:
                         set_world_block(self.server, x, y - 1, z, STONE)
                         self._notify_fluid_update(x, y - 1, z, STONE)
                 elif _is_air_or_fluid_passable(below, fluid_type) and not _is_fluid(below):
-                    # Flow down - create source at bottom
+                    # Downward flow is a falling state, never a new source.
                     if fluid_type == "water":
                         new_state = _get_water_state(0, falling=True)
                     else:
