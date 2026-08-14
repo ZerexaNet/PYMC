@@ -69,7 +69,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - 多版本协议兼容 (1.8.9 - 1.21.4, 协议版本 47-770)
 - 数据包压缩、KeepAlive、玩家移动同步
 - 类原版 384 高度主世界区块
-- 优先使用 `native/terrain_gen` C++ 原生地形生成器，回退到 1:1 Vanilla 或 Python 生成器
+- 优先使用 `native/terrain_gen` C++ 原生地形生成器，回退到原版风格近似或基础 Python 生成器
 - 红石系统：基础组件模拟，每 2 游戏刻 (0.1s) 红石刻；部分组件行为仍待完成
 - 流体系统：水/岩浆流动，水-岩浆交互
 - 物品栏系统：ItemStack、PlayerInventory、协议序列化和基础点击交互
@@ -97,7 +97,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - `protocol/`：VarInt、NBT、Packet 编解码
 - `world/`：方块、区块编码、地形生成、存档、实体和世界编辑
   - `world/redstone.py`：红石引擎
-  - `world/vanilla_terrain.py`：1:1 原版地形生成器
+  - `world/vanilla_terrain.py`：原版风格近似地形生成器
   - `world/inventory.py`：物品栏系统
   - `world/block_behavior.py`：方块行为系统
   - `world/fluids.py`：流体系统
@@ -126,7 +126,7 @@ python main.py
 
 - Minecraft 服务端: `0.0.0.0:25565`
 - Web 管理台: `127.0.0.1:25568`（无内置认证，默认禁止远程监听）
-- Watchdog 健康检查: `0.0.0.0:25569` (启用时)
+- Watchdog UDP 健康检查: `0.0.0.0:25569` (启用时)
 
 使用 Minecraft Java 1.21.1 客户端连接 `localhost:25565`。
 
@@ -147,7 +147,7 @@ python main.py
 - `permissions-file`：权限文件路径
 - `join-immediate-radius`：玩家入服时优先同步的近距离区块半径
 - `min-protocol-version` / `max-protocol-version`：允许的协议版本范围 (默认 47-770)
-- `vanilla-terrain`：使用 1:1 原版地形生成器 (默认 `true`)
+- `vanilla-terrain`：使用原版风格近似地形生成器 (默认 `true`)
 - `redstone-enabled`：启用红石模拟 (默认 `true`)
 - `fluid-flow-enabled`：启用流体流动 (默认 `true`)
 - `mods-directory`：Mod 扫描目录 (默认 `mods`)
