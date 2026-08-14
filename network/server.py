@@ -928,7 +928,13 @@ class MinecraftServer:
         payload = struct.pack('>q', keepalive_id)
 
         for conn in self.get_online_players():
+            if (conn.keepalive_pending
+                    and time.monotonic() - conn.keepalive_sent_at > 30.0):
+                await conn.disconnect("KeepAlive timeout")
+                continue
             conn.keepalive_id = keepalive_id
+            conn.keepalive_pending = True
+            conn.keepalive_sent_at = time.monotonic()
             # Use version-specific KeepAlive packet ID
             pid = get_clientbound_packet(conn.protocol_version, "keep_alive")
             if pid is not None:
