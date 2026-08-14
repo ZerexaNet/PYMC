@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 
 from handlers.play import _is_serverbound_packet
+from handlers.versioned import get_version_handler
+from protocol.packet_map import get_clientbound_packet
 
 
 class PlayDispatchTests(unittest.TestCase):
@@ -24,6 +26,18 @@ class PlayDispatchTests(unittest.TestCase):
         self.assertTrue(_is_serverbound_packet(conn, 0x10, "click_container", 0x0C))
         self.assertTrue(_is_serverbound_packet(conn, 0x3D, "use_item", 0x29))
         self.assertFalse(_is_serverbound_packet(conn, 0x0C, "click_container", 0x0C))
+
+    def test_grouped_handler_preserves_exact_negotiated_protocol(self):
+        handler = get_version_handler(770)
+        self.assertEqual(handler.PROTOCOL_VERSION, 770)
+        self.assertEqual(
+            handler.get_packet_id("keep_alive"),
+            get_clientbound_packet(770, "keep_alive"),
+        )
+
+    def test_1_19_protocol_routes_to_1_19_handler(self):
+        handler = get_version_handler(761)
+        self.assertEqual(handler.__class__.__name__, "VersionHandlerV1_19")
 
 
 if __name__ == "__main__":

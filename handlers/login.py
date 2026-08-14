@@ -10,7 +10,7 @@ from protocol.data_types import (
     read_string, read_varint, write_string, write_varint,
     write_uuid, write_boolean, read_uuid
 )
-from protocol.versions import has_configuration_phase
+from protocol.versions import has_configuration_phase, is_supported
 from network.connection import Connection, ConnectionState
 
 logger = logging.getLogger("PyMC.登录")
@@ -60,7 +60,9 @@ async def _handle_login_start(conn: Connection, payload: bytes, server):
     # Check if this protocol version is allowed by server config
     min_version = int(server.config.get("min-protocol-version", 47))
     max_version = int(server.config.get("max-protocol-version", 770))
-    if conn.protocol_version < min_version or conn.protocol_version > max_version:
+    if (not is_supported(conn.protocol_version)
+            or conn.protocol_version < min_version
+            or conn.protocol_version > max_version):
         logger.info(f"拒绝玩家 {username}: 协议版本 {conn.protocol_version} "
                     f"不在允许范围 [{min_version}, {max_version}]")
         await _send_disconnect_login(conn, f"Your protocol version ({conn.protocol_version}) is not supported.")
