@@ -126,7 +126,7 @@ python main.py
 
 - Minecraft 服务端: `0.0.0.0:25565`
 - Web 管理台: `127.0.0.1:25568`（无内置认证，默认禁止远程监听）
-- Watchdog UDP 健康检查: `0.0.0.0:25569` (启用时)
+- Watchdog UDP 健康检查: `127.0.0.1:25569` (启用时)
 
 使用 Minecraft Java 1.21.1 客户端连接 `localhost:25565`。
 
