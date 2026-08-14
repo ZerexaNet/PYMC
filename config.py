@@ -28,8 +28,9 @@ DEFAULT_CONFIG = {
     "spawn-protection": 0,
     "enable-command-block": True,
     "web-admin-enabled": True,
-    "web-admin-host": "0.0.0.0",
+    "web-admin-host": "127.0.0.1",
     "web-admin-port": 25568,
+    "web-admin-allow-remote": False,
     "permissions-file": "permissions.json",
     "chunk-generation-multithreading": False,
     "chunk-generation-workers": 0,
@@ -59,8 +60,8 @@ DEFAULT_CONFIG = {
     "fluid-flow-enabled": True,             # Enable water/lava flow simulation
 
     # Mod and plugin directories
-    "mods-directory": "mods",               # Directory to scan for Fabric/Forge mods
-    "plugins-directory": "plugins",          # Directory to scan for Paper/Bukkit plugins
+    "mods-directory": "mods",               # Directory for PYMC native Python mods
+    "plugins-directory": "plugins",          # Directory for PYMC native Python plugins
 }
 
 # 类型映射 (用于自动转换配置值)
@@ -77,6 +78,7 @@ TYPE_MAP = {
     "enable-command-block": lambda v: v.lower() in ("true", "1", "yes"),
     "web-admin-enabled": lambda v: v.lower() in ("true", "1", "yes"),
     "web-admin-port": int,
+    "web-admin-allow-remote": lambda v: v.lower() in ("true", "1", "yes"),
     "chunk-generation-multithreading": lambda v: v.lower() in ("true", "1", "yes"),
     "chunk-generation-workers": int,
     "join-immediate-radius": int,

@@ -306,8 +306,9 @@ class MinecraftServer:
             try:
                 self.web_admin = WebAdminServer(
                     self,
-                    self.config.get("web-admin-host", "0.0.0.0"),
+                    self.config.get("web-admin-host", "127.0.0.1"),
                     self.config.get("web-admin-port", 25568),
+                    self.config.get("web-admin-allow-remote", False),
                 )
                 self.web_admin.start()
             except Exception as e:

@@ -700,6 +700,11 @@ SERVERBOUND_PACKETS = {
         "held_item_slot": 0x31,
         "block_place": 0x3A,
         "chunk_batch_received": 0x09,
+        "click_container": 0x0C,
+        "close_container": 0x0D,
+        "interact": 0x14,
+        "set_creative_mode_slot": 0x22,
+        "use_item": 0x29,
     },
     770: {
         "confirm_teleportation": 0x00,
@@ -715,6 +720,11 @@ SERVERBOUND_PACKETS = {
         "held_item_slot": 0x32,
         "block_place": 0x3B,
         "chunk_batch_received": 0x09,
+        "click_container": 0x10,
+        "close_container": 0x11,
+        "interact": 0x18,
+        "set_creative_mode_slot": 0x36,
+        "use_item": 0x3D,
     },
 }
 
