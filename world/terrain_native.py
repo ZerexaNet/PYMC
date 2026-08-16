@@ -1,7 +1,7 @@
 # ============================================================
 # PyMC - C++ 原生地形生成器桥接
 # 通过子进程与 terrain_gen 可执行文件进行二进制协议通信
-# 自动回退到纯 Python 实现
+# 原生进程不可用时由 MinecraftServer 上层回退到 Python 实现
 # ============================================================
 
 """
@@ -30,6 +30,8 @@ import logging
 import subprocess
 import time
 from pathlib import Path
+
+from ._native_binary import is_runnable_native_binary
 
 logger = logging.getLogger("pymc.terrain_native")
 
@@ -89,7 +91,14 @@ def _find_native_binary() -> str | None:
     candidates: list[Path] = []
 
     for root in search_roots:
-        for relative in ("native", "."):
+        # Prefer source-tree artifacts first, then CMake install/build trees.
+        for relative in (
+            "native",
+            "build/stage/native",
+            "build/stage",
+            "build",
+            ".",
+        ):
             base = root / relative
             for name in binary_names:
                 candidate = (base / name).resolve()
@@ -124,30 +133,8 @@ def _find_native_binary() -> str | None:
             pass
 
     for path in candidates:
-        if path.exists() and path.is_file():
-            if os.name == "nt" or os.access(path, os.X_OK):
-                # Validate file format: check magic bytes to avoid
-                # running a Linux ELF binary masquerading as .exe
-                try:
-                    with open(path, 'rb') as f:
-                        magic = f.read(4)
-                    if os.name == "nt":
-                        # Windows PE must start with 'MZ'
-                        if magic[:2] != b'MZ':
-                            logger.debug(f"Skipping {path}: not a valid PE executable")
-                            continue
-                    else:
-                        # Linux ELF must start with '\x7fELF'
-                        if magic != b'\x7fELF':
-                            logger.debug(f"Skipping {path}: not a valid ELF executable")
-                            continue
-                except Exception:
-                    continue
-                return str(path)
-    logger.warning(
-        "未在以下路径找到原生地形生成器: %s",
-        ", ".join(str(path) for path in candidates),
-    )
+        if is_runnable_native_binary(path):
+            return str(path)
     return None
 
 

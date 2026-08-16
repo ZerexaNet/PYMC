@@ -22,6 +22,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+from world._native_binary import is_runnable_native_binary
 
 logger = logging.getLogger("pymc.native")
 
@@ -116,10 +117,15 @@ def _unpack_f64(data: bytes, offset: int = 0) -> float:
 # ===========================================================
 
 def _find_native_lib() -> Optional[str]:
-    """Find the pymc_native shared library."""
-    lib_names = ["libpymc_native.so", "pymc_native.dll", "pymc_native.dylib"]
-    compiled = globals().get("__compiled__")
+    """Find a pymc_native shared library loadable on the current OS."""
+    if os.name == "nt":
+        lib_names = ["pymc_native.dll", "libpymc_native.dll", "libpymc_native.so"]
+    elif sys.platform == "darwin":
+        lib_names = ["libpymc_native.dylib", "pymc_native.dylib", "libpymc_native.so"]
+    else:
+        lib_names = ["libpymc_native.so", "pymc_native.so", "libpymc_native.dylib"]
 
+    compiled = globals().get("__compiled__")
     search_roots = [
         Path(__file__).resolve().parent,
         Path(__file__).resolve().parent.parent,
@@ -127,7 +133,6 @@ def _find_native_lib() -> Optional[str]:
         Path(sys.argv[0]).resolve().parent,
         Path(sys.executable).resolve().parent,
     ]
-
     if compiled is not None and hasattr(compiled, "containing_dir"):
         search_roots.append(Path(compiled.containing_dir).resolve())
 
@@ -136,36 +141,61 @@ def _find_native_lib() -> Optional[str]:
         if root is None:
             continue
         for name in lib_names:
-            for subdir in [".", "native", "build", "lib"]:
+            for subdir in (
+                ".",
+                "native",
+                "build/stage/native",
+                "build/stage",
+                "build",
+                "lib",
+            ):
                 candidate = (root / subdir / name).resolve()
-                if candidate not in seen:
-                    seen.add(candidate)
-                    if candidate.exists() and candidate.is_file():
-                        return str(candidate)
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                if is_runnable_native_binary(candidate):
+                    return str(candidate)
     return None
 
 
 def _find_native_server() -> Optional[str]:
-    """Find the pymc_native_server executable."""
-    exe_names = ["pymc_native_server", "pymc_native_server.exe"]
+    """Find a pymc_native_server executable for the current OS."""
+    if os.name == "nt":
+        exe_names = ["pymc_native_server.exe", "pymc_native_server"]
+    else:
+        exe_names = ["pymc_native_server", "pymc_native_server.exe"]
+
+    compiled = globals().get("__compiled__")
     search_roots = [
         Path(__file__).resolve().parent,
         Path(__file__).resolve().parent.parent,
         Path.cwd(),
+        Path(sys.argv[0]).resolve().parent,
     ]
+    if compiled is not None and hasattr(compiled, "containing_dir"):
+        search_roots.append(Path(compiled.containing_dir).resolve())
 
+    seen: set = set()
     for root in search_roots:
-        for name in exe_names:
-            candidate = (root / name).resolve()
-            if candidate.exists() and candidate.is_file():
-                return str(candidate)
-            candidate = (root / "native" / name).resolve()
-            if candidate.exists() and candidate.is_file():
-                return str(candidate)
+        if root is None:
+            continue
+        for subdir in (
+            "native",
+            ".",
+            "build/stage/native",
+            "build/stage",
+            "build",
+        ):
+            for name in exe_names:
+                candidate = (root / subdir / name).resolve()
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                if is_runnable_native_binary(candidate):
+                    return str(candidate)
     return None
 
 
-# ===========================================================
 # IPC-based Native Core (separate process, shared memory)
 # ===========================================================
 
@@ -196,7 +226,7 @@ class NativeIPCConnection:
 
         lib_path = _find_native_lib()
         if lib_path is None:
-            logger.warning("pymc_native shared library not found")
+            logger.info("pymc_native shared library not found; IPC native mode unavailable")
             return False
 
         try:
@@ -232,7 +262,7 @@ class NativeIPCConnection:
         """Start the native server process and establish IPC."""
         server_path = _find_native_server()
         if server_path is None:
-            logger.warning("pymc_native_server not found")
+            logger.info("pymc_native_server not found; IPC native mode unavailable")
             return False
 
         if not self._ensure_lib():

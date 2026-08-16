@@ -1,17 +1,18 @@
 # ============================================================
-# PyMC - 1:1 Vanilla Terrain Generator (Minecraft Java 1.21.1)
-# Implements vanilla's density function pipeline, cell-based noise
-# interpolation, MultiNoise biome sampling, cave carvers with
-# aquifer, biome-specific surface rules, and triangular ore
-# distribution matching vanilla Java Edition.
+# PyMC - Vanilla-style approximate terrain generator (Minecraft Java 1.21.1)
+# Implements a clean-room approximation of vanilla's density function
+# pipeline, cell-based noise interpolation, MultiNoise biome sampling,
+# cave carvers, biome-specific surface rules, and triangular ore
+# distribution. It is not a guaranteed 1:1 block-for-block match.
 # ============================================================
 
 """
-1:1 Vanilla terrain generator for Minecraft Java Edition 1.21.1.
+Vanilla-style approximate terrain generator for Minecraft Java 1.21.1.
 
-This module replicates the terrain generation algorithm used by vanilla
-Minecraft Java Edition, producing terrain that closely matches vanilla
-output for the same seed.
+This module is a clean-room approximation of the terrain generation
+algorithm used by vanilla Minecraft Java Edition. It follows the same
+pipeline shape, but is not guaranteed to reproduce the same seed as the
+official game block-for-block.
 
 Architecture matches vanilla's worldgen pipeline:
   1. Climate sampling (Temperature, Humidity, Continentalness, Erosion, Weirdness)
@@ -1142,8 +1143,10 @@ class _ClimatePoint:
 
 class OverworldBiomeTable:
     """
-    Vanilla's overworld biome parameter point table.
-    Uses the exact same climate ranges and biome assignments as vanilla Java.
+    Overworld biome parameter point table, modeled on vanilla Java ranges.
+
+    The ranges and assignments follow the documented vanilla shape, but this
+    is a clean-room approximation rather than an exact copy.
     """
 
     def __init__(self):
@@ -2305,11 +2308,11 @@ class OreVeinGenerator:
 
 class VanillaTerrainGenerator:
     """
-    1:1 Vanilla terrain generator for Minecraft Java Edition 1.21.1.
+    Vanilla-style approximate terrain generator for Minecraft Java 1.21.1.
 
-    Uses the exact same noise algorithms, climate system, and
-    biome parameter points as vanilla to produce terrain that
-    closely matches vanilla output.
+    Uses clean-room noise algorithms, a climate system, and biome parameter
+    points modeled on vanilla. Output is intentionally close to vanilla, but
+    same-seed block-for-block equality is not guaranteed.
 
     Drop-in replacement for TerrainGenerator with the same interface:
       - generate_chunk(chunk_x, chunk_z) -> list[list[list[int]]]
