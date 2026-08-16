@@ -8,7 +8,6 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from pathlib import Path
 from typing import Optional
 from config import save_config
 from admin.permissions import PermissionManager
@@ -21,7 +20,7 @@ from handlers.configuration import handle_configuration
 from handlers.play import handle_play
 from world.storage import WorldStorage
 from world.terrain import TerrainGenerator
-from world.terrain_native import NativeTerrainGenerator
+from world.terrain_native import NativeTerrainGenerator, _find_native_binary
 from world.chunk import build_chunk_column_from_terrain, build_heightmap_from_terrain
 from world.biomes import BiomeSampler
 from world.entities import EntityManager
@@ -346,39 +345,9 @@ class MinecraftServer:
 
         seed = parse_vanilla_seed(self.config.get("level-seed", 0))
 
-        explicit_native_path = None
-        # Pick binary name based on current OS
-        if os.name == "nt":
-            binary_names = ["terrain_gen.exe", "terrain_gen"]
-        else:
-            binary_names = ["terrain_gen", "terrain_gen.exe"]
-        search_roots = [
-            Path.cwd(),
-            Path(__file__).resolve().parent.parent,
-            Path(getattr(os, "_MEIPASS", Path.cwd())),
-        ]
-        for root in search_roots:
-            for relative in ("native", "."):
-                base = root / relative
-                for name in binary_names:
-                    candidate = (base / name).resolve()
-                    if candidate.exists() and candidate.is_file():
-                        # Validate file format to avoid running wrong-arch binary
-                        try:
-                            with open(candidate, 'rb') as f:
-                                magic = f.read(4)
-                            if os.name == "nt" and magic[:2] != b'MZ':
-                                continue  # Not a valid PE executable
-                            elif os.name != "nt" and magic != b'\x7fELF':
-                                continue  # Not a valid ELF executable
-                        except Exception:
-                            continue
-                        explicit_native_path = str(candidate)
-                        break
-                if explicit_native_path:
-                    break
-            if explicit_native_path:
-                break
+        # 与 world.terrain_native 共用跨平台查找逻辑，避免选中仓库中
+        # 已提交的其它平台二进制（例如 macOS 上误选 Linux ELF）。
+        explicit_native_path = _find_native_binary()
 
         native_gen = NativeTerrainGenerator(
             seed,

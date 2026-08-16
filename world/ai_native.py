@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+from ._native_binary import is_runnable_native_binary
+
 logger = logging.getLogger("pymc.ai_native")
 
 TICK_COMMAND = b"T"
@@ -64,7 +66,14 @@ def _find_native_binary() -> str | None:
     seen: set[Path] = set()
     candidates: list[Path] = []
     for root in search_roots:
-        for relative in ("native", "."):
+        # Prefer source-tree artifacts first, then CMake install/build trees.
+        for relative in (
+            "native",
+            "build/stage/native",
+            "build/stage",
+            "build",
+            ".",
+        ):
             base = root / relative
             for name in binary_names:
                 candidate = (base / name).resolve()
@@ -72,7 +81,12 @@ def _find_native_binary() -> str | None:
                     seen.add(candidate)
                     candidates.append(candidate)
         try:
-            for pattern in ("mob_ai*", "native/mob_ai*"):
+            for pattern in (
+                "mob_ai*",
+                "native/mob_ai*",
+                "build/stage/native/mob_ai*",
+                "build/mob_ai*",
+            ):
                 for candidate in root.glob(pattern):
                     resolved = candidate.resolve()
                     if resolved not in seen:
@@ -82,19 +96,8 @@ def _find_native_binary() -> str | None:
             pass
 
     for path in candidates:
-        if path.exists() and path.is_file():
-            if os.name == "nt" or os.access(path, os.X_OK):
-                # Validate file format to avoid running wrong-arch binary
-                try:
-                    with open(path, 'rb') as f:
-                        magic = f.read(4)
-                    if os.name == "nt" and magic[:2] != b'MZ':
-                        continue  # Not a valid PE executable
-                    elif os.name != "nt" and magic != b'\x7fELF':
-                        continue  # Not a valid ELF executable
-                except Exception:
-                    continue
-                return str(path)
+        if is_runnable_native_binary(path):
+            return str(path)
     return None
 
 

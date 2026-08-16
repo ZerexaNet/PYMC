@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
     "network-movement-rate-hz": 20.0,      # Max position updates per second per player
 
     # Vanilla terrain generation
-    "vanilla-terrain": True,                # Use the 1:1 vanilla terrain generator
+    "vanilla-terrain": True,                # Use the vanilla-style approximate terrain generator
 
     # Redstone
     "redstone-enabled": True,               # Enable redstone simulation

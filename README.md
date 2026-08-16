@@ -22,7 +22,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] 玩家 JSON 存档：位置、生命值、饱食度、经验、游戏模式和个人出生点。
 - [x] 基础聊天、方块挖掘/放置、掉落物、经验球和简单生物实体。
 - [x] C++ 原生轻量生物 AI `native/mob_ai`，支持随机游走、看向玩家、敌对追击、近战冷却等行为。
-- [x] 基础 `gamerule`：昼夜流动、自然刷怪、自然回血、死亡后重生屏幕等。
+- [x] 基础 `gamerule`：昼夜流动、自然刷怪、自然回血、死亡后自动重生回出生点。
 - [x] 控制台和游戏内基础命令。
 - [x] Web 管理台、权限组、OP、封禁和白名单。
 - [x] 单元测试覆盖原生地形、原生 AI、种子解析和安全出生点。
@@ -40,7 +40,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [ ] **命令覆盖**：`CommandManager`、权限、别名和大量命令已注册，但部分命令或子命令仍只返回“暂未实现”。
 - [ ] **Watchdog**：已有 UDP 心跳、监控和重启框架，但缺少双进程端到端测试。
 - [ ] **网络优化**：已有批处理、限频和区块排序组件，但普通发送/移动路径尚未全面接入。
-- [x] **CI/CD**：GitHub Actions 工作流，Linux/Windows 双平台构建、CMake 原生组件编译、Nuitka 打包。
+- [x] **CI/CD**：GitHub Actions 工作流，Linux/macOS/Windows 三平台构建、CMake 原生组件编译、pytest 测试和 Nuitka 打包。
 
 ### 正在推进 / 待实现
 
@@ -83,7 +83,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - Mod/插件：仅支持 PYMC 原生 Python API
 - Watchdog：UDP 心跳与自动重启框架（尚缺端到端验证）
 - 网络优化：批处理、移动限频和区块排序组件（尚未全面接入）
-- 基础 `gamerule`：控制昼夜流动、自然刷怪和自然回血
+- 基础 `gamerule`：控制昼夜流动、自然刷怪、自然回血和死亡自动重生
 - 控制台和游戏内基础命令
 - Web 管理台、权限组、OP、封禁和白名单
 
@@ -110,7 +110,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
   - `watchdog/restart_handler.py`：自动重启处理
 - `mods/`：PYMC 原生 Python Mod API
 - `plugins/`：PYMC 原生 Python Plugin API（事件名受 Bukkit 启发，不运行 Java 插件）
-- `native/`：C++ 原生地形生成器、红石引擎、光照引擎、物理引擎
+- `native/`：C++ 原生地形生成器、轻量生物 AI、红石引擎、光照引擎、物理引擎及 PYMC 原生扩展接口
 - `pumpkin-ref/`：本地参考源码，不属于 PyMC 运行时
 
 ## 运行
