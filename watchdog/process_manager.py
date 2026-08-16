@@ -278,7 +278,7 @@ class WatchdogManager:
         try:
             transport, protocol = await loop.create_datagram_endpoint(
                 lambda: HealthProtocol(self),
-                local_addr=('0.0.0.0', self.health_port),
+                local_addr=('127.0.0.1', self.health_port),
             )
             self._health_server = transport
             logger.info(f"Health check UDP server started on port {self.health_port}")
@@ -291,7 +291,7 @@ class WatchdogManager:
                 self.health_port = alt_port
                 transport, protocol = await loop.create_datagram_endpoint(
                     lambda: HealthProtocol(self),
-                    local_addr=('0.0.0.0', self.health_port),
+                    local_addr=('127.0.0.1', self.health_port),
                 )
                 self._health_server = transport
                 logger.info(f"Health check UDP server started on alternate port {self.health_port}")
@@ -307,6 +307,11 @@ class WatchdogManager:
             elif message.startswith("PYMC_HEALTH|"):
                 # Health check response
                 pass
+            elif message == "PYMC_PING":
+                import json
+                response = f"PYMC_HEALTH|{json.dumps(self.get_health_status())}"
+                if self._health_server is not None:
+                    self._health_server.sendto(response.encode("utf-8"), addr)
             elif message.startswith("PYMC_RESTART|"):
                 # Restart command
                 self._handle_restart_command(message)

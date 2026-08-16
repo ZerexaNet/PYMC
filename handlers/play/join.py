@@ -138,6 +138,17 @@ async def send_join_game(conn: Connection, server):
 
     # --- 5. 恢复玩家存档位置，必要时回退到安全出生点 ---
     player_state = server.world_storage.load_player_data(str(conn.uuid))
+    from world.inventory import PlayerInventory, initialize_player_inventory
+    inventory_data = player_state.get("inventory") if player_state else None
+    if isinstance(inventory_data, list):
+        # Compatibility with compact saves written by earlier releases.
+        conn.inventory_obj = PlayerInventory()
+        conn.inventory_obj.deserialize(inventory_data)
+    elif isinstance(inventory_data, dict):
+        conn.inventory_obj = PlayerInventory.deserialize_full(inventory_data)
+    else:
+        initialize_player_inventory(conn)
+    conn.inventory_state_id = 0
     target_x, target_y, target_z = _resolve_initial_player_location(
         server, player_state
     )
@@ -193,12 +204,15 @@ async def send_join_game(conn: Connection, server):
         await _send_set_experience(conn)
         await _send_time_update(conn, server)
 
+    from world.inventory import send_inventory_sync
+    await send_inventory_sync(conn)
+
     # --- 7. 通知其他玩家 ---
     await _broadcast_player_join(conn, server)
     await _send_visible_entities_to_player(conn, server)
 
     # Plugin hook: fire PlayerJoinEvent
-    from plugins.bridge import hook_player_join
+    from mods.bridge import hook_player_join
     hook_player_join(server, conn)
 
     load_elapsed = time.time() - load_start

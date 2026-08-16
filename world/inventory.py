@@ -788,6 +788,7 @@ class PlayerInventory:
                     "item": slot.item_id,
                     "count": slot.count,
                     "damage": slot.damage,
+                    "nbt": slot.nbt,
                 }
 
         ender_data = {}
@@ -797,6 +798,7 @@ class PlayerInventory:
                     "item": slot.item_id,
                     "count": slot.count,
                     "damage": slot.damage,
+                    "nbt": slot.nbt,
                 }
 
         return {
@@ -825,6 +827,7 @@ class PlayerInventory:
                     item_id=v.get("item", "minecraft:air"),
                     count=v.get("count", 1),
                     damage=v.get("damage", 0),
+                    nbt=v.get("nbt", {}),
                 )
         for k, v in data.get("ender_chest", {}).items():
             slot_idx = int(k)
@@ -833,6 +836,7 @@ class PlayerInventory:
                     item_id=v.get("item", "minecraft:air"),
                     count=v.get("count", 1),
                     damage=v.get("damage", 0),
+                    nbt=v.get("nbt", {}),
                 )
         inv._selected_slot = data.get("selected_slot", 0)
         inv.held_slot = data.get("held_slot", 0)

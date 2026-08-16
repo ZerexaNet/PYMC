@@ -32,6 +32,12 @@ class VersionHandler:
     HAS_FLATTENING = True
     HAS_DIMENSION_REGISTRY = True
 
+    def __init__(self, protocol_version: int | None = None):
+        # Grouped handlers share payload logic, but packet IDs must use the
+        # exact protocol negotiated with this connection.
+        if protocol_version is not None:
+            self.PROTOCOL_VERSION = protocol_version
+
     def get_packet_map(self) -> dict:
         """Return clientbound packet ID mappings for this version."""
         from protocol.packet_map import get_clientbound_map

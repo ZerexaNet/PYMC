@@ -81,7 +81,7 @@ class PlayerInventory:
         result = {}
         for i in range(NewPlayerInventory.TOTAL_SLOTS):
             item = self._inv.get_slot(i)
-            if item is not None and not item.is_empty():
+            if item is not None and not item.is_empty:
                 result[i] = (item.item_id, item.count)
         return result
 
@@ -108,7 +108,7 @@ class PlayerInventory:
         result = {}
         for i in range(27):
             item = self._inv.ender_chest[i]
-            if item is not None and not item.is_empty():
+            if item is not None and not item.is_empty:
                 result[i] = (item.item_id, item.count)
         return result
 
@@ -131,7 +131,7 @@ class PlayerInventory:
     @property
     def carried_item(self):
         """Legacy carried item accessor."""
-        if self._inv.carried_item is not None and not self._inv.carried_item.is_empty():
+        if self._inv.carried_item is not None and not self._inv.carried_item.is_empty:
             return (self._inv.carried_item.item_id, self._inv.carried_item.count)
         return None
 
@@ -153,7 +153,7 @@ class PlayerInventory:
     def get_slot(self, slot: int) -> Optional[tuple[str, int]]:
         """获取指定槽位的物品 (legacy tuple format)."""
         item = self._inv.get_slot(slot)
-        if item is not None and not item.is_empty():
+        if item is not None and not item.is_empty:
             return (item.item_id, item.count)
         return None
 
@@ -173,7 +173,7 @@ class PlayerInventory:
     def get_item_in_slot(self, slot: int) -> dict | None:
         """Get item in slot as dict (for /item command)."""
         item = self._inv.get_slot(slot)
-        if item is not None and not item.is_empty():
+        if item is not None and not item.is_empty:
             return {"item": item.item_id, "count": item.count}
         return None
 
@@ -208,7 +208,7 @@ class PlayerInventory:
         armor = self._inv.get_armor()
         result = {}
         for i, item in enumerate(armor):
-            if item is not None and not item.is_empty():
+            if item is not None and not item.is_empty:
                 slot = 36 + i  # Armor slots start at 36
                 result[slot] = (item.item_id, item.count)
         return result

@@ -231,7 +231,7 @@ class MinecraftServer:
 
         # 保存物品栏数据
         if hasattr(conn, 'inventory_obj') and conn.inventory_obj is not None:
-            player_data["inventory"] = conn.inventory_obj.serialize()
+            player_data["inventory"] = conn.inventory_obj.serialize_full()
 
         self.world_storage.save_player_data(str(conn.uuid), player_data)
 
@@ -242,6 +242,11 @@ class MinecraftServer:
 
     async def start(self):
         """启动服务器。"""
+        if self.online_mode:
+            raise RuntimeError(
+                "online-mode=true is not supported yet: encryption and Mojang "
+                "session authentication are not implemented"
+            )
         self.running = True
         self.start_time = time.time()
         self.loop = asyncio.get_running_loop()
@@ -285,12 +290,10 @@ class MinecraftServer:
 
         # Mod 管理器集成 (如果 main.py 没有提前初始化)
         if self.mod_manager is None:
-            from mods import ModManager
-            self.mod_manager = ModManager(self)
+            from mods.bridge import init_mod_system
             mods_dir = self.config.get("mods-directory", "mods")
-            discovered = self.mod_manager.discover_mods(mods_dir)
-            self.mod_manager.load_all()
-            logger.info(f"Mod 管理器已初始化: 发现 {len(discovered)} 个 Mod")
+            init_mod_system(self, mods_dir)
+            logger.info(f"Mod 管理器已初始化: {self.mod_manager.mod_count} 个 Mod 已启用")
 
         # 插件管理器集成 (如果 main.py 没有提前初始化)
         if self.plugin_manager is None:
@@ -306,8 +309,9 @@ class MinecraftServer:
             try:
                 self.web_admin = WebAdminServer(
                     self,
-                    self.config.get("web-admin-host", "0.0.0.0"),
+                    self.config.get("web-admin-host", "127.0.0.1"),
                     self.config.get("web-admin-port", 25568),
+                    self.config.get("web-admin-allow-remote", False),
                 )
                 self.web_admin.start()
             except Exception as e:
@@ -667,6 +671,8 @@ class MinecraftServer:
 
         # 卸载所有 Mod
         if self.mod_manager is not None:
+            from mods.bridge import shutdown_mod_system
+            shutdown_mod_system(self)
             self.mod_manager = None
 
         # 停止网络优化器
@@ -753,7 +759,7 @@ class MinecraftServer:
             if conn.username and conn.state == ConnectionState.PLAY:
                 self.save_player_state(conn)
                 # Plugin hook: fire PlayerQuitEvent
-                from plugins.bridge import hook_player_quit
+                from mods.bridge import hook_player_quit
                 hook_player_quit(self, conn)
                 logger.info(f"玩家 {conn.username} 离开了游戏")
                 await self._handle_player_leave(conn)
@@ -824,6 +830,13 @@ class MinecraftServer:
             # Plugin/mod tick hook
             from plugins.bridge import hook_server_tick
             hook_server_tick(self)
+            if self.mod_manager is not None:
+                from mods.bridge import hook_tick
+                hook_tick(self)
+
+            # Process active furnace-like containers.
+            from world.block_behavior import container_manager
+            container_manager.tick_furnaces(self)
 
             # 发送 KeepAlive 心跳
             if tick_count % keepalive_interval == 0:
@@ -894,9 +907,17 @@ class MinecraftServer:
             return
 
         self.fluid_system.tick()
-
-        # Fluid system handles its own block updates internally
-        # via _broadcast_block_change in its _notify_fluid_update method
+        updates = getattr(self, "_fluid_updates", [])
+        self._fluid_updates = []
+        if not updates:
+            return
+        from handlers.play import _broadcast_block_change
+        # Keep only the final state when a position changes repeatedly in one tick.
+        final_updates = {}
+        for x, y, z, new_state in updates:
+            final_updates[(x, y, z)] = new_state
+        for (x, y, z), new_state in final_updates.items():
+            await _broadcast_block_change(self, x, y, z, new_state)
 
     async def _send_keepalive(self):
         """向所有在线玩家发送 KeepAlive 数据包。"""
@@ -907,7 +928,13 @@ class MinecraftServer:
         payload = struct.pack('>q', keepalive_id)
 
         for conn in self.get_online_players():
+            if (conn.keepalive_pending
+                    and time.monotonic() - conn.keepalive_sent_at > 30.0):
+                await conn.disconnect("KeepAlive timeout")
+                continue
             conn.keepalive_id = keepalive_id
+            conn.keepalive_pending = True
+            conn.keepalive_sent_at = time.monotonic()
             # Use version-specific KeepAlive packet ID
             pid = get_clientbound_packet(conn.protocol_version, "keep_alive")
             if pid is not None:
@@ -948,13 +975,33 @@ class MinecraftServer:
                         continue
 
                     count = int(entity.metadata.get("count", 1))
-                    self.entity_manager.remove_entity(entity.entity_id)
-                    await _send_collect_entity(player, entity.entity_id, player.entity_id, count)
                     if entity.kind == "orb":
+                        self.entity_manager.remove_entity(entity.entity_id)
+                        await _send_collect_entity(player, entity.entity_id, player.entity_id, count)
                         await _add_player_experience(player, count)
                     else:
                         item_name = entity.metadata.get("item_name", "minecraft:stone")
-                        await send_system_message(player, f"[PyMC] 拾取 {item_name} x{count}")
+                        inventory = getattr(player, "inventory_obj", None)
+                        if inventory is None:
+                            continue
+                        from world.inventory import ItemStack, send_inventory_sync
+                        leftover = inventory.add_item(ItemStack(item_name, count))
+                        accepted = count - leftover
+                        if accepted <= 0:
+                            continue
+                        player.inventory_state_id += 1
+                        await _send_collect_entity(
+                            player, entity.entity_id, player.entity_id, accepted
+                        )
+                        if leftover == 0:
+                            self.entity_manager.remove_entity(entity.entity_id)
+                        else:
+                            entity.count = leftover
+                            entity.metadata["count"] = leftover
+                        await send_inventory_sync(player)
+                        await send_system_message(
+                            player, f"[PyMC] 拾取 {item_name} x{accepted}"
+                        )
                     break
 
             if entity.kind == "mob" and entity.metadata.get("category") == "hostile":

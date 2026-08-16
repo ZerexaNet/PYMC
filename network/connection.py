@@ -4,6 +4,7 @@
 # ============================================================
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from enum import IntEnum
@@ -88,6 +89,9 @@ class Connection:
         # 连接状态
         self.alive = True
         self.keepalive_id: int = 0
+        self.keepalive_pending: bool = False
+        self.keepalive_sent_at: float = 0.0
+        self.keepalive_rtt_ms: float | None = None
         self.teleport_id: int = 0
 
         logger.info(f"新连接来自 {self.address}")
@@ -123,8 +127,12 @@ class Connection:
     def generate_offline_uuid(self) -> uuid.UUID:
         """根据用户名生成离线模式 UUID。"""
         # 与 Java 版一致: UUID.nameUUIDFromBytes("OfflinePlayer:" + name)
-        return uuid.uuid3(uuid.UUID("00000000-0000-0000-0000-000000000000"),
-                          f"OfflinePlayer:{self.username}")
+        digest = bytearray(
+            hashlib.md5(f"OfflinePlayer:{self.username}".encode("utf-8")).digest()
+        )
+        digest[6] = (digest[6] & 0x0F) | 0x30
+        digest[8] = (digest[8] & 0x3F) | 0x80
+        return uuid.UUID(bytes=bytes(digest))
 
     def __repr__(self):
         return f"<Connection {self.address} state={self.state.name} user={self.username or '未登录'}>"
