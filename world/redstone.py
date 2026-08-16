@@ -272,6 +272,10 @@ class RedstoneComponent:
     target_timer: int = 0
     # Piston
     extended: bool = False
+    # Note block
+    note: int = 0  # 0-24 pitch
+    # TNT fuse (redstone ticks; 40 = 80 game ticks = 4 seconds)
+    fuse_ticks: int = 0
     # Dirty flag - needs recalculation
     dirty: bool = True
     # Wire connections (computed)
@@ -315,6 +319,8 @@ class RedstoneEngine:
         self.dirty_positions: set[tuple[int, int, int]] = set()
         # Positions whose block state needs updating for clients
         self.visual_updates: list[tuple[int, int, int, int]] = []  # (x, y, z, new_state_id)
+        # Async effects emitted by the sync tick (explosions, sounds, item drops)
+        self.pending_effects: list[tuple[str, dict]] = []
         # Native engine reference (optional C++ acceleration)
         self._native_engine = None
         # Performance tracking
@@ -417,6 +423,11 @@ class RedstoneEngine:
             comp.extended = props.get("extended", "false") == "true"
         elif name == "minecraft:redstone_lamp":
             comp.powered = props.get("lit", "false") == "true"
+        elif name == "minecraft:note_block":
+            comp.note = int(props.get("note", "0"))
+            comp.powered = props.get("powered", "false") == "true"
+        elif name == "minecraft:tnt":
+            comp.powered = props.get("unstable", "false") == "true"
         elif name in REDSTONE_ACTIVATABLE:
             comp.powered = props.get("powered", "false") == "true" or props.get("open", "false") == "true"
 
@@ -1189,9 +1200,23 @@ class RedstoneEngine:
         if block_name not in CONTAINER_NAMES:
             return 0
 
-        # Check if we have inventory data for this block
-        # For now, use a simplified calculation based on block entity data
-        # In a full implementation, this would read from the inventory system
+        # Prefer the real block-container inventory when it exists.
+        from .block_behavior import container_manager
+
+        container = container_manager.get_container(x, y, z)
+        if container is not None:
+            total = 0
+            for stack in container.items:
+                if stack is None or stack.is_empty:
+                    continue
+                max_size = max(1, stack.max_stack_size)
+                # Vanilla comparator formula:
+                # floor(1 + (count / max_stack_size) * 14).
+                total += 1 + (stack.count * 14) // max_size
+            return min(15, total)
+
+        # Compatibility fallback for older callers that populated
+        # ``server._block_inventories`` directly.
         inventory_data = getattr(self.server, '_block_inventories', {}).get((x, y, z))
         if inventory_data is None:
             return 0
@@ -1306,9 +1331,38 @@ class RedstoneEngine:
             comp.dirty = True
 
     def _update_detector_rail(self, comp: RedstoneComponent):
-        """Update detector rail - detects minecart presence."""
-        # Simplified: no minecart entity tracking yet
-        pass
+        """Update detector rail - detects an entity riding on the rail.
+
+        PyMC does not have a dedicated minecart entity yet, so this checks
+        every tracked entity/player overlapping the rail block. That covers
+        minecarts once they are represented as ordinary entities.
+        """
+        x, y, z = comp.pos
+        detected = False
+
+        for player in self.server.get_online_players():
+            if (abs(player.x - (x + 0.5)) < 0.75
+                    and abs(player.z - (z + 0.5)) < 0.75
+                    and abs(player.y - y) < 0.6):
+                detected = True
+                break
+
+        if not detected and hasattr(self.server, 'entity_manager'):
+            try:
+                for entity in self.server.entity_manager.list_entities():
+                    if (abs(entity.x - (x + 0.5)) < 0.75
+                            and abs(entity.z - (z + 0.5)) < 0.75
+                            and abs(entity.y - y) < 0.6):
+                        detected = True
+                        break
+            except Exception:
+                pass
+
+        was_powered = comp.powered
+        comp.powered = detected
+        comp.power = 15 if detected else 0
+        if was_powered != comp.powered:
+            comp.dirty = True
 
     # --------------------------------------------------
     # Mechanical block activation
@@ -1330,18 +1384,27 @@ class RedstoneEngine:
                     comp.dirty = True
 
             elif name == "minecraft:tnt":
-                if powered and not comp.powered:
-                    # TNT ignited by redstone
-                    comp.powered = True
-                    logger.info(f"TNT ignited at {pos}")
-                    # TODO: Schedule TNT explosion
+                if powered:
+                    if not comp.powered:
+                        comp.powered = True
+                        comp.fuse_ticks = 40
+                        comp.dirty = True
+                        logger.info(f"TNT ignited by redstone at {pos}")
+                    elif comp.fuse_ticks > 0:
+                        comp.fuse_ticks -= 1
+                        if comp.fuse_ticks <= 0:
+                            self._detonate_tnt(pos, comp)
+                elif comp.powered:
+                    comp.powered = False
+                    comp.fuse_ticks = 0
+                    comp.dirty = True
 
             elif name == "minecraft:note_block":
-                # Note blocks play on rising edge
+                # Note blocks play on rising edge.
                 if powered and not comp.powered:
                     comp.powered = True
                     comp.dirty = True
-                    # TODO: Play note sound
+                    self._queue_effect("note", {"x": x, "y": y, "z": z, "note": comp.note})
                 elif not powered and comp.powered:
                     comp.powered = False
                     comp.dirty = True
@@ -1366,7 +1429,7 @@ class RedstoneEngine:
                 if powered and not comp.powered:
                     comp.powered = True
                     comp.dirty = True
-                    # TODO: Dispense/drop item
+                    self._activate_dispenser_or_dropper(pos, comp)
                 elif not powered and comp.powered:
                     comp.powered = False
                     comp.dirty = True
@@ -1380,6 +1443,69 @@ class RedstoneEngine:
                 if powered != comp.powered:
                     comp.powered = powered
                     comp.dirty = True
+
+    def _detonate_tnt(self, pos: tuple[int, int, int], comp: RedstoneComponent):
+        """Remove lit TNT and queue the explosion for the async server tick."""
+        x, y, z = pos
+        tnt_state = self._get_block_at(x, y, z)
+
+        # Remove the block from the world synchronously so further redstone
+        # ticks do not double-trigger it. The actual explosion is async.
+        self._set_block_state(x, y, z, AIR)
+        self.on_block_change(x, y, z, tnt_state, AIR)
+        self.visual_updates.append((x, y, z, AIR))
+        self._queue_effect("explosion", {"x": x, "y": y, "z": z})
+
+    def _activate_dispenser_or_dropper(self, pos: tuple[int, int, int],
+                                       comp: RedstoneComponent):
+        """Drop/dispense the first non-empty item on a rising redstone edge."""
+        from .block_behavior import container_manager
+
+        x, y, z = pos
+        container = container_manager.get_container(x, y, z)
+        if container is None:
+            logger.debug(f"No container data for {comp.block_name} at {pos}")
+            return
+
+        # Find the first occupied slot.
+        for slot_idx, stack in enumerate(container.items):
+            if stack is None or stack.is_empty:
+                continue
+
+            item_name = stack.item_id
+            stack.count -= 1
+            if stack.count <= 0:
+                container.items[slot_idx] = None
+
+            fdx, fdy, fdz = FACING_DX.get(comp.facing, (0, 0, 1))
+            out_x = x + fdx * 1.0
+            out_y = y + fdy * 0.5
+            out_z = z + fdz * 1.0
+
+            entity_manager = getattr(self.server, 'entity_manager', None)
+            if entity_manager is not None:
+                try:
+                    entity = entity_manager.create_item(
+                        out_x + 0.5, out_y + 0.3, out_z + 0.5,
+                        item_name=item_name, count=1
+                    )
+                    entity.vx = fdx * 0.16
+                    entity.vy = 0.06
+                    entity.vz = fdz * 0.16
+                    self._queue_effect("entity_spawn", {"entity_id": entity.entity_id})
+                except Exception as e:
+                    logger.warning(f"Failed to drop item from {comp.block_name}: {e}")
+            return
+
+    def _queue_effect(self, kind: str, payload: dict):
+        """Queue an effect that must be broadcast/awaited outside the sync tick."""
+        self.pending_effects.append((kind, payload))
+
+    def drain_pending_effects(self) -> list[tuple[str, dict]]:
+        """Return and clear queued async effects (sounds, explosions, drops)."""
+        effects = self.pending_effects
+        self.pending_effects = []
+        return effects
 
     def _toggle_openable(self, pos: tuple[int, int, int], comp: RedstoneComponent,
                           should_open: bool):
@@ -1882,7 +2008,7 @@ class RedstoneEngine:
                 props = _get_block_props(block_id)
                 return resolve_state_id(name,
                     instrument=props.get("instrument", "harp"),
-                    note=props.get("note", "0"),
+                    note=str(max(0, min(24, int(comp.note)))),
                     powered="true" if comp.powered else "false")
 
             elif name == "minecraft:tnt":
@@ -2014,9 +2140,10 @@ class RedstoneEngine:
             return True
 
         elif name == "minecraft:note_block":
-            # Right-click changes note pitch
-            # TODO: Implement note change
+            # Right-click changes note pitch 0 -> 24 -> 0.
+            comp.note = (comp.note + 1) % 25
             comp.dirty = True
+            self._queue_effect("note", {"x": x, "y": y, "z": z, "note": comp.note})
             return True
 
         return False

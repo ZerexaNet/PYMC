@@ -271,88 +271,13 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
 
 
 async def _handle_click_container(conn: Connection, payload: bytes, server):
-    """Handle Click Container packet (0x0C)."""
-    from protocol.data_types import read_varint, read_short, read_byte
-    from world.inventory import decode_slot_entry, send_inventory_sync
+    """Handle Click Container packet (0x0C).
 
-    offset = 0
-    window_id, offset = read_varint(payload, offset)
-    state_id, offset = read_varint(payload, offset)
-    slot_idx, offset = read_short(payload, offset)
-    button, offset = read_byte(payload, offset)
-    mode, offset = read_varint(payload, offset)
-
-    # Only the player inventory is currently backed by server-side storage.
-    if window_id != 0:
-        return
-
-    # Reject stale client actions and restore the authoritative state.
-    if state_id != conn.inventory_state_id:
-        await send_inventory_sync(conn)
-        return
-
-    inv = getattr(conn, 'inventory_obj', None)
-    if inv is None:
-        return
-
-    # Consume, but do not trust, the client-predicted slot changes.
-    changed_count, offset = read_varint(payload, offset)
-    if changed_count < 0 or changed_count > 128:
-        await send_inventory_sync(conn)
-        return
-    for _ in range(changed_count):
-        _, offset = read_short(payload, offset)
-        _, offset = decode_slot_entry(payload, offset)
-    _, offset = decode_slot_entry(payload, offset)
-
-    inventory_slot = _player_window_slot_to_inventory(slot_idx)
-    if mode == 0 and inventory_slot is not None and button in (0, 1):
-        slot_item = inv.get_slot(inventory_slot)
-        cursor = inv.carried_item
-        if button == 0:  # left click: pick up, place, merge, or swap
-            if cursor is None or cursor.is_empty:
-                inv.carried_item = slot_item
-                inv.set_slot(inventory_slot, None)
-            elif slot_item is None or slot_item.is_empty:
-                inv.set_slot(inventory_slot, cursor)
-                inv.carried_item = None
-            elif slot_item.can_stack_with(cursor) and slot_item.count < slot_item.max_stack_size:
-                moved = min(cursor.count, slot_item.max_stack_size - slot_item.count)
-                slot_item.count += moved
-                cursor.count -= moved
-                if cursor.count <= 0:
-                    inv.carried_item = None
-                inv.state_id += 1
-            else:
-                inv.set_slot(inventory_slot, cursor)
-                inv.carried_item = slot_item
-        else:  # right click: pick up half or place one
-            if cursor is None or cursor.is_empty:
-                if slot_item is not None and not slot_item.is_empty:
-                    take = (slot_item.count + 1) // 2
-                    inv.carried_item = slot_item.copy()
-                    inv.carried_item.count = take
-                    slot_item.count -= take
-                    if slot_item.count <= 0:
-                        inv.set_slot(inventory_slot, None)
-                    else:
-                        inv.state_id += 1
-            elif slot_item is None or slot_item.is_empty:
-                placed = cursor.copy()
-                placed.count = 1
-                inv.set_slot(inventory_slot, placed)
-                cursor.count -= 1
-                if cursor.count <= 0:
-                    inv.carried_item = None
-            elif slot_item.can_stack_with(cursor) and slot_item.count < slot_item.max_stack_size:
-                slot_item.count += 1
-                cursor.count -= 1
-                if cursor.count <= 0:
-                    inv.carried_item = None
-                inv.state_id += 1
-
-    conn.inventory_state_id += 1
-    await send_inventory_sync(conn)
+    Delegates to the server-authoritative interaction engine so the same
+    logic covers both the player inventory and opened block containers.
+    """
+    from world.inventory_interactions import handle_container_click
+    await handle_container_click(conn, payload, server, _player_window_slot_to_inventory)
 
 
 def _handle_close_container(conn: Connection, payload: bytes):
@@ -360,7 +285,18 @@ def _handle_close_container(conn: Connection, payload: bytes):
     from protocol.data_types import read_varint
     offset = 0
     window_id, offset = read_varint(payload, offset)
-    # No server-side action needed for now
+
+    if getattr(conn, '_open_window_id', None) != window_id:
+        return
+
+    from world.block_behavior import container_manager
+    pos = getattr(conn, '_open_container_pos', None)
+    if pos is not None and getattr(conn, '_open_container_type', 'block') == 'block':
+        container_manager.remove_viewer(*pos, conn.entity_id)
+
+    conn._open_window_id = None
+    conn._open_container_pos = None
+    conn._open_container_type = None
 
 
 async def _handle_creative_inventory_action(conn: Connection, payload: bytes, server):
