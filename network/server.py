@@ -252,6 +252,7 @@ class MinecraftServer:
 
         # 初始化世界存储 (Anvil -> Linear 自动转换)
         self.world_storage.initialize()
+        container_manager.load(str(self.world_storage.world_dir))
         self._initialize_terrain_generator()
         await self._pregenerate_spawn_area()
 
@@ -626,6 +627,7 @@ class MinecraftServer:
         self.running = False
 
         self.save_all_player_states()
+        container_manager.save(str(self.world_storage.world_dir))
 
         # 停止 Watchdog
         if self.watchdog_manager is not None:
@@ -815,6 +817,7 @@ class MinecraftServer:
             if self.autosave_enabled and tick_count % autosave_interval == 0:
                 self.save_all_player_states()
                 self.world_storage.flush()
+                container_manager.save(str(self.world_storage.world_dir))
 
             if self.autosave_enabled and tick_count % world_flush_interval == 0:
                 if self.world_storage.has_dirty_regions():
@@ -869,6 +872,30 @@ class MinecraftServer:
         updates = self.redstone_engine.get_visual_updates()
         for x, y, z, new_state in updates:
             await _broadcast_block_change(self, x, y, z, new_state)
+
+        # Process effects that require async work (note sounds, explosions,
+        # item-drop broadcasts).
+        for kind, payload in self.redstone_engine.drain_pending_effects():
+            try:
+                if kind == "note":
+                    from world.block_behavior import NoteBlockBehavior
+                    await NoteBlockBehavior._play_note(
+                        self,
+                        payload["x"], payload["y"], payload["z"],
+                        payload.get("note", 0),
+                    )
+                elif kind == "explosion":
+                    from world.block_behavior import TNTBehavior
+                    await TNTBehavior._create_explosion(
+                        self, payload["x"], payload["y"], payload["z"]
+                    )
+                elif kind == "entity_spawn":
+                    entity = self.entity_manager.get_entity(payload.get("entity_id"))
+                    if entity is not None:
+                        from handlers.play.entities import broadcast_entity_spawn
+                        await broadcast_entity_spawn(self, entity)
+            except Exception as e:
+                logger.warning(f"红石效果处理失败 ({kind}): {e}")
 
     async def _tick_fluids(self, tick_count: int):
         """Process fluid flow updates and broadcast visual changes."""

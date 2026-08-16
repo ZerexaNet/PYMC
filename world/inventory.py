@@ -489,15 +489,15 @@ class ItemStack:
         }
         if self.item_id in MAX_STACK_OVERRIDES:
             return MAX_STACK_OVERRIDES[self.item_id]
-        # Tools, weapons, armor = 1
-        for prefix in ("minecraft:wooden_", "minecraft:stone_", "minecraft:iron_",
-                       "minecraft:golden_", "minecraft:diamond_", "minecraft:netherite_"):
-            if self.item_id.startswith(prefix):
-                return 1
+        # Tools, weapons, armor and other non-stackable equipment = 1.
+        # Match by suffix rather than material prefix so materials such as
+        # iron_ingot, golden_apple, diamond_block and netherite_scrap keep
+        # their normal 64-stack behaviour.
         for suffix in ("_sword", "_pickaxe", "_axe", "_shovel", "_hoe",
                        "_helmet", "_chestplate", "_leggings", "_boots",
                        "_bow", "_crossbow", "_trident", "_shield",
-                       "_fishing_rod", "_shears"):
+                       "_fishing_rod", "_shears", "_horse_armor",
+                       "_elytra"):
             if self.item_id.endswith(suffix):
                 return 1
         # Additional single-item overrides

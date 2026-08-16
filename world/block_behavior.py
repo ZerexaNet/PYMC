@@ -32,8 +32,11 @@ Key behaviors:
   - WaterBehavior / LavaBehavior: Fluid behaviors
 """
 
+import json
 import logging
+import os
 import random
+from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -626,6 +629,31 @@ class ContainerData:
             else:
                 self.items = [None] * 27
 
+    def to_dict(self) -> dict:
+        """Serialize container data for world storage."""
+        items = [None if item is None or item.is_empty else item.to_dict()
+                 for item in self.items]
+        return {
+            "type": self.type,
+            "items": items,
+            "burn_time": self.burn_time,
+            "cook_time": self.cook_time,
+            "cook_time_total": self.cook_time_total,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'ContainerData':
+        """Deserialize container data from world storage."""
+        container = cls(type=data.get("type", "chest"))
+        raw_items = data.get("items", [])
+        if isinstance(raw_items, list):
+            container.items = [ItemStack.from_dict(item) if item else None
+                               for item in raw_items]
+        container.burn_time = int(data.get("burn_time", 0))
+        container.cook_time = int(data.get("cook_time", 0))
+        container.cook_time_total = int(data.get("cook_time_total", 0))
+        return container
+
 
 class ContainerManager:
     """Manages all block-based containers in the world."""
@@ -678,6 +706,77 @@ class ContainerManager:
         container = self.get_container(x, y, z)
         if container is not None:
             container.viewers.discard(entity_id)
+
+    def serialize(self) -> dict:
+        """Serialize all block containers and the window-ID counter."""
+        containers = {}
+        for (x, y, z), container in self.containers.items():
+            containers[f"{x},{y},{z}"] = container.to_dict()
+        return {
+            "next_window_id": self._next_window_id,
+            "containers": containers,
+        }
+
+    def deserialize(self, data: dict) -> bool:
+        """Replace current containers with serialized data."""
+        if not isinstance(data, dict):
+            return False
+        raw_containers = data.get("containers", {})
+        if not isinstance(raw_containers, dict):
+            return False
+        self.containers.clear()
+        for key, raw in raw_containers.items():
+            try:
+                parts = key.split(",")
+                if len(parts) != 3:
+                    continue
+                x, y, z = (int(part) for part in parts)
+                self.containers[(x, y, z)] = ContainerData.from_dict(raw)
+            except (TypeError, ValueError):
+                continue
+        try:
+            self._next_window_id = int(data.get("next_window_id", 1))
+        except (TypeError, ValueError):
+            self._next_window_id = 1
+        return True
+
+    def _container_data_path(self, world_dir) -> Path:
+        return Path(world_dir) / "containers.json"
+
+    def save(self, world_dir):
+        """Persist block container data to ``<world>/containers.json``."""
+        path = self._container_data_path(world_dir)
+        tmp_path = path.with_suffix(".json.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self.serialize(), f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+            logger.info(f"已保存 {len(self.containers)} 个方块容器到 {path}")
+        except Exception as e:
+            logger.error(f"Failed to save container data: {e}")
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+
+    def load(self, world_dir) -> bool:
+        """Load block container data from ``<world>/containers.json``."""
+        path = self._container_data_path(world_dir)
+        if not path.exists():
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if self.deserialize(data):
+                logger.info(f"已加载 {len(self.containers)} 个方块容器 (来自 {path})")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to load container data: {e}")
+        return False
 
     def tick_furnaces(self, server):
         """Tick all active furnaces (process smelting)."""
@@ -776,6 +875,7 @@ class ChestBehavior(BlockBehavior):
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'block'
 
         await send_open_container(conn, window_id, "minecraft:generic_9x3", "Chest")
 
@@ -829,6 +929,7 @@ class FurnaceBehavior(BlockBehavior):
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'block'
 
         await send_open_container(conn, window_id, "minecraft:furnace", "Furnace")
 
@@ -863,6 +964,7 @@ class BlastFurnaceBehavior(BlockBehavior):
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'block'
 
         await send_open_container(conn, window_id, "minecraft:blast_furnace", "Blast Furnace")
 
@@ -936,6 +1038,7 @@ class EnderChestBehavior(BlockBehavior):
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'ender_chest'
 
         await send_open_container(conn, window_id, "minecraft:generic_9x3", "Ender Chest")
 
@@ -1349,39 +1452,52 @@ class NoteBlockBehavior(BlockBehavior):
     @staticmethod
     async def _play_note(server, x: int, y: int, z: int, note: int):
         """Play a note block sound at the given position."""
-        # Note: 0-24 maps to F#3 to F#5
-        # Instrument depends on block below
+        # Note 0-24 maps to F#3-F#5. Instrument depends on the block below.
         instrument = NoteBlockBehavior._get_instrument(server, x, y, z)
 
         try:
-            from protocol.data_types import write_varint
-            # Send Sound Effect packet (0x26 in 1.21.1)
-            # sound_id, category, x*8, y*8, z*8, volume, pitch
-            sound_ids = {
-                "harp": 0, "basedrum": 1, "snare": 2, "hat": 3,
-                "bass": 4, "flute": 5, "bell": 6, "guitar": 7,
-                "chime": 8, "xylophone": 9, "iron_xylophone": 10,
-                "cow_bell": 11, "didgeridoo": 12, "bit": 13,
-                "banjo": 14, "pling": 15,
-            }
-            sound_id = sound_ids.get(instrument, 0)
+            from protocol.data_types import (
+                write_double, write_float, write_int, write_varint,
+            )
+            from protocol.packet_map import CLIENTBOUND_PACKETS
 
+            # Registry IDs for the vanilla 1.21 sound event registry.
+            sound_ids = {
+                "harp": 1163, "basedrum": 1157, "snare": 1166,
+                "hat": 1164, "bass": 1158, "flute": 1161,
+                "bell": 1159, "guitar": 1162, "chime": 1160,
+                "xylophone": 1171, "iron_xylophone": 1172,
+                "cow_bell": 1173, "didgeridoo": 1174, "bit": 1175,
+                "banjo": 1176, "pling": 1165,
+            }
+            sound_id = sound_ids.get(instrument, 1163)
+
+            # Sound Effect packet (0x68 in 1.21.1):
+            #   sound_event VarInt, category VarInt, x/y/z i32 * 8,
+            #   volume f32, pitch f32, seed f64.
             payload = bytearray()
             payload.extend(write_varint(sound_id))
-            payload.extend(write_varint(4))  # category: record
-            payload.extend(write_varint(int(x * 8)))
-            payload.extend(write_varint(int(y * 8)))
-            payload.extend(write_varint(int(z * 8)))
-            # Volume and pitch
-            payload.extend(write_varint(0))  # volume fixed point
-            payload.extend(write_varint(0))  # pitch fixed point
+            payload.extend(write_varint(2))  # SoundCategory::Records
+            payload.extend(write_int(int(x * 8)))
+            payload.extend(write_int(int(y * 8)))
+            payload.extend(write_int(int(z * 8)))
+            payload.extend(write_float(3.0))  # Note block volume
+            payload.extend(write_float(0.5 * (2.0 ** (note / 12.0))))
+            payload.extend(write_double(0.0))  # seed
 
-            # Simplified: send as a named sound effect
             for player in server.get_online_players():
-                # Use play_named_sound packet instead
-                pass
-        except Exception:
-            pass
+                version_packets = CLIENTBOUND_PACKETS.get(
+                    getattr(player, "protocol_version", 767), {}
+                )
+                version_pid = version_packets.get("sound_effect")
+                if version_pid is None:
+                    # Older protocol mappings do not include this packet;
+                    # skipping the note sound is safer than sending the
+                    # native-version packet to a differently-shaped client.
+                    continue
+                await player.send_packet(version_pid, bytes(payload))
+        except Exception as e:
+            logger.warning(f"Failed to play note block sound: {e}")
 
     @staticmethod
     def _get_instrument(server, x: int, y: int, z: int) -> str:
