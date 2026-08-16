@@ -26,6 +26,7 @@ jobs:
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
           make -j$(nproc)
+          cmake --install . --prefix stage
       - name: Run tests
         run: python3 -m pytest tests/ -v
       - name: Build with Nuitka
@@ -33,6 +34,7 @@ jobs:
           pip install nuitka
           python3 -m nuitka --standalone --onefile --assume-yes-for-downloads \
             --include-data-file=world/blocks.json=world/blocks.json \
+            --include-data-dir=build/stage/native=native \
             main.py -o pymc-server-linux-x86_64
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -59,11 +61,15 @@ jobs:
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
           make -j$(sysctl -n hw.ncpu)
+          cmake --install . --prefix stage
+      - name: Run tests
+        run: python3 -m pytest tests/ -v
       - name: Build with Nuitka
         run: |
           pip install nuitka
           python3 -m nuitka --standalone --onefile --assume-yes-for-downloads \
             --include-data-file=world/blocks.json=world/blocks.json \
+            --include-data-dir=build/stage/native=native \
             main.py -o pymc-server-macos-arm64
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -98,11 +104,15 @@ jobs:
           mkdir -p build && cd build
           cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
           mingw32-make -j$(nproc)
+          cmake --install . --prefix stage
+      - name: Run tests
+        run: python -m pytest tests/ -v
       - name: Build with Nuitka
         run: |
           pip install nuitka
           python -m nuitka --standalone --onefile --mingw64 --assume-yes-for-downloads `
             --include-data-file=world/blocks.json=world/blocks.json `
+            --include-data-dir=build/stage/native=native `
             main.py -o pymc-server-windows-x86_64.exe
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4

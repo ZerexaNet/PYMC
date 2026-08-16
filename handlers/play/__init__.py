@@ -157,85 +157,111 @@ from handlers.play.spawn import (
 logger = logging.getLogger("PyMC.游戏")
 
 
+def _is_serverbound_packet(conn: Connection, packet_id: int,
+                           packet_name: str,
+                           native_packet_id: int | None = None) -> bool:
+    """Match a packet without leaking native IDs into older protocols."""
+    from protocol.packet_map import get_serverbound_packet
+    from protocol.versions import NATIVE_PROTOCOL_VERSION
+
+    mapped_id = get_serverbound_packet(conn.protocol_version, packet_name)
+    if mapped_id is not None:
+        return packet_id == mapped_id
+    return (conn.protocol_version == NATIVE_PROTOCOL_VERSION
+            and native_packet_id is not None
+            and packet_id == native_packet_id)
+
+
+def _player_window_slot_to_inventory(slot: int) -> int | None:
+    """Translate protocol window-0 slots to PlayerInventory indices."""
+    if slot == 0:       # crafting output
+        return 45
+    if 1 <= slot <= 4:  # 2x2 crafting input
+        return 40 + slot
+    if 5 <= slot <= 8:  # helmet, chest, legs, boots
+        return 44 - slot
+    if 9 <= slot <= 35:  # main inventory
+        return slot
+    if 36 <= slot <= 44:  # hotbar
+        return slot - 36
+    if slot == 45:      # offhand
+        return 40
+    return None
+
+
 async def handle_play(conn: Connection, packet_id: int, payload: bytes,
                       server):
     """分发 Play 阶段的客户端数据包。"""
 
-    # Use version-specific packet dispatching
-    from protocol.packet_map import get_serverbound_packet
-
-    # Map known packet names to handlers
-    # For older versions, packet IDs differ, so we check by name
-
-    if packet_id == 0x00 or get_serverbound_packet(conn.protocol_version, "confirm_teleportation") == packet_id:
+    if _is_serverbound_packet(conn, packet_id, "confirm_teleportation", 0x00):
         # Confirm Teleportation
         _handle_confirm_teleportation(conn, payload)
 
-    elif packet_id == 0x05 or get_serverbound_packet(conn.protocol_version, "chat_command") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "chat_command", 0x05):
         # Chat Command
         await _handle_chat_command(conn, payload, server)
 
-    elif packet_id == 0x06 or get_serverbound_packet(conn.protocol_version, "signed_chat_command") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "signed_chat_command", 0x06):
         # Signed Chat Command
         await _handle_chat_command(conn, payload, server)
 
-    elif packet_id == 0x07 or get_serverbound_packet(conn.protocol_version, "chat_message") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "chat_message", 0x07):
         # Chat Message (聊天消息)
         await _handle_chat_message(conn, payload, server)
 
-    elif packet_id == 0x09 or get_serverbound_packet(conn.protocol_version, "chunk_batch_received") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "chunk_batch_received", 0x09):
         # Chunk Batch Received (客户端确认区块批次)
         pass  # 不需要特殊处理
 
-    elif packet_id == 0x1A or get_serverbound_packet(conn.protocol_version, "keep_alive") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "keep_alive", 0x1A):
         # Keep Alive
         _handle_keepalive(conn, payload)
 
-    elif packet_id == 0x1C or get_serverbound_packet(conn.protocol_version, "player_position") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "player_position", 0x1C):
         # Player Position
         await _handle_player_position(conn, payload, server)
 
-    elif packet_id == 0x1D or get_serverbound_packet(conn.protocol_version, "player_position_rotation") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "player_position_rotation", 0x1D):
         # Player Position and Rotation
         await _handle_player_position_rotation(conn, payload, server)
 
-    elif packet_id == 0x1E or get_serverbound_packet(conn.protocol_version, "player_rotation") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "player_rotation", 0x1E):
         # Player Rotation
         await _handle_player_rotation(conn, payload, server)
 
-    elif packet_id == 0x1F or get_serverbound_packet(conn.protocol_version, "player_on_ground") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "player_on_ground", 0x1F):
         # Player On Ground
         await _handle_player_on_ground(conn, payload, server)
 
-    elif packet_id == 0x26 or get_serverbound_packet(conn.protocol_version, "block_dig") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "block_dig", 0x26):
         # Block Dig
         await _handle_block_dig(conn, payload, server)
 
-    elif packet_id == 0x31 or get_serverbound_packet(conn.protocol_version, "held_item_slot") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "held_item_slot", 0x31):
         # Held Item Slot
         _handle_held_item_slot(conn, payload)
 
-    elif packet_id == 0x3A or get_serverbound_packet(conn.protocol_version, "block_place") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "block_place", 0x3A):
         # Use Item On / Block Place
         await _handle_block_place(conn, payload, server)
 
-    elif packet_id == 0x0C or get_serverbound_packet(conn.protocol_version, "click_container") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "click_container", 0x0C):
         # Click Container (window click)
         await _handle_click_container(conn, payload, server)
 
-    elif packet_id == 0x0D or get_serverbound_packet(conn.protocol_version, "close_container") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "close_container", 0x0D):
         # Close Container
         _handle_close_container(conn, payload)
 
-    elif packet_id == 0x14 or get_serverbound_packet(conn.protocol_version, "interact") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "interact", 0x14):
         # Interact (Entity)
         pass  # TODO: entity interaction
 
-    elif packet_id == 0x22 or get_serverbound_packet(conn.protocol_version, "set_creative_mode_slot") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "set_creative_mode_slot", 0x22):
         # Set Creative Mode Slot
         await _handle_creative_inventory_action(conn, payload, server)
 
-    elif packet_id == 0x29 or get_serverbound_packet(conn.protocol_version, "use_item") == packet_id:
+    elif _is_serverbound_packet(conn, packet_id, "use_item", 0x29):
         # Use Item (right-click air)
         pass  # TODO: item use in air
 
@@ -246,8 +272,8 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
 
 async def _handle_click_container(conn: Connection, payload: bytes, server):
     """Handle Click Container packet (0x0C)."""
-    from protocol.data_types import read_varint, read_short, read_byte, read_boolean
-    from world.inventory import ItemStack, decode_slot_entry, send_slot_update
+    from protocol.data_types import read_varint, read_short, read_byte
+    from world.inventory import decode_slot_entry, send_inventory_sync
 
     offset = 0
     window_id, offset = read_varint(payload, offset)
@@ -256,19 +282,77 @@ async def _handle_click_container(conn: Connection, payload: bytes, server):
     button, offset = read_byte(payload, offset)
     mode, offset = read_varint(payload, offset)
 
-    # Validate state ID
+    # Only the player inventory is currently backed by server-side storage.
+    if window_id != 0:
+        return
+
+    # Reject stale client actions and restore the authoritative state.
     if state_id != conn.inventory_state_id:
-        # Client is out of sync; they will retry
+        await send_inventory_sync(conn)
         return
 
     inv = getattr(conn, 'inventory_obj', None)
     if inv is None:
         return
 
-    # Read the clicked item (slot data)
-    carried = decode_slot_entry(payload, offset)
-    # Update the inventory state
+    # Consume, but do not trust, the client-predicted slot changes.
+    changed_count, offset = read_varint(payload, offset)
+    if changed_count < 0 or changed_count > 128:
+        await send_inventory_sync(conn)
+        return
+    for _ in range(changed_count):
+        _, offset = read_short(payload, offset)
+        _, offset = decode_slot_entry(payload, offset)
+    _, offset = decode_slot_entry(payload, offset)
+
+    inventory_slot = _player_window_slot_to_inventory(slot_idx)
+    if mode == 0 and inventory_slot is not None and button in (0, 1):
+        slot_item = inv.get_slot(inventory_slot)
+        cursor = inv.carried_item
+        if button == 0:  # left click: pick up, place, merge, or swap
+            if cursor is None or cursor.is_empty:
+                inv.carried_item = slot_item
+                inv.set_slot(inventory_slot, None)
+            elif slot_item is None or slot_item.is_empty:
+                inv.set_slot(inventory_slot, cursor)
+                inv.carried_item = None
+            elif slot_item.can_stack_with(cursor) and slot_item.count < slot_item.max_stack_size:
+                moved = min(cursor.count, slot_item.max_stack_size - slot_item.count)
+                slot_item.count += moved
+                cursor.count -= moved
+                if cursor.count <= 0:
+                    inv.carried_item = None
+                inv.state_id += 1
+            else:
+                inv.set_slot(inventory_slot, cursor)
+                inv.carried_item = slot_item
+        else:  # right click: pick up half or place one
+            if cursor is None or cursor.is_empty:
+                if slot_item is not None and not slot_item.is_empty:
+                    take = (slot_item.count + 1) // 2
+                    inv.carried_item = slot_item.copy()
+                    inv.carried_item.count = take
+                    slot_item.count -= take
+                    if slot_item.count <= 0:
+                        inv.set_slot(inventory_slot, None)
+                    else:
+                        inv.state_id += 1
+            elif slot_item is None or slot_item.is_empty:
+                placed = cursor.copy()
+                placed.count = 1
+                inv.set_slot(inventory_slot, placed)
+                cursor.count -= 1
+                if cursor.count <= 0:
+                    inv.carried_item = None
+            elif slot_item.can_stack_with(cursor) and slot_item.count < slot_item.max_stack_size:
+                slot_item.count += 1
+                cursor.count -= 1
+                if cursor.count <= 0:
+                    inv.carried_item = None
+                inv.state_id += 1
+
     conn.inventory_state_id += 1
+    await send_inventory_sync(conn)
 
 
 def _handle_close_container(conn: Connection, payload: bytes):
@@ -295,12 +379,13 @@ async def _handle_creative_inventory_action(conn: Connection, payload: bytes, se
     if inv is None:
         return
 
-    if slot_idx < 0 or slot_idx >= 46:
+    inventory_slot = _player_window_slot_to_inventory(slot_idx)
+    if inventory_slot is None:
         return  # Invalid slot
 
-    if clicked_item is None or clicked_item.is_empty():
-        inv.set_slot(slot_idx, None)
+    if clicked_item is None or clicked_item.is_empty:
+        inv.set_slot(inventory_slot, None)
     else:
-        inv.set_slot(slot_idx, clicked_item)
+        inv.set_slot(inventory_slot, clicked_item)
 
     conn.inventory_state_id += 1

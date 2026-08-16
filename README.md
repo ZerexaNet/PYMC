@@ -26,16 +26,20 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] 控制台和游戏内基础命令。
 - [x] Web 管理台、权限组、OP、封禁和白名单。
 - [x] 单元测试覆盖原生地形、原生 AI、种子解析和安全出生点。
-- [x] **红石系统**：线、火把、中继器、比较器、活塞、按钮、拉杆、压力板等全组件模拟，每 2 游戏刻 (0.1s) 执行一次红石刻。
-- [x] **1:1 原版地形生成器**：密度函数管线、气候采样、洞穴雕刻 (Cheese/Spaghetti/Noodle + Aquifer)、生物群系表面规则、三角矿石分布，力求输入相同种子后生成同位置同地形。
-- [x] **物品栏系统**：`ItemStack` 表示、`PlayerInventory` 管理、协议序列化、生存模式消耗、创造模式物品拾取。
-- [x] **方块行为系统**：箱子/工作台/熔炉/铁砧/附魔台交互、门/活板门/栅栏门开关、床/告示牌/TNT/音符盒/耕地等行为、方块硬度与工具要求。
-- [x] **流体系统**：水和岩浆流动模拟、水平扩散和垂直下落、水-岩浆交互 (石头/圆石/黑曜石)、维度感知流速。
-- [x] **多版本协议兼容**：1.8.9 - 1.21.4 (协议版本 47-770)，版本化数据包 ID 映射、配置阶段仅限 1.20.2+、版本化登录/加入游戏格式。
-- [x] **命令框架**：`CommandManager` 统一注册、解析、权限检查和调度；50+ 原版命令已注册；Tab 补全支持；别名系统。
-- [x] **插件兼容层**：`PluginManager` 支持 Paper/Bukkit `.jar` 插件 (C++ JVM 桥接) 和 PYMC 原生 Python 插件；`PythonEventBus` 事件系统；Bukkit 兼容事件名。
-- [x] **Watchdog 双进程保护**：UDP 心跳互检、自动重启伙伴进程、健康检查 API、协调关闭。
-- [x] **网络优化**：`PlayerNetworkOptimizer` 数据包批量发送、移动更新频率限制、区块发送距离排序。
+- [x] **PYMC 原生扩展 API**：支持 Python Mod/Plugin 的发现、依赖排序、生命周期、事件和命令注册。Java Fabric/Forge Mod 与 Bukkit/Paper `.jar` 插件不受支持，详见 `MOD_COMPATIBILITY.md`。
+- [x] **Web 管理台安全默认值**：默认只监听 `127.0.0.1`；由于当前没有内置认证，远程监听必须显式设置 `web-admin-allow-remote=true` 并部署外部访问控制。
+
+### 部分实现（不可视为完成）
+
+- [ ] **红石系统**：已有 tick 引擎和多种组件，但 TNT、音符盒、发射器等行为仍有未实现路径。
+- [ ] **原版地形近似实现**：已有密度、气候、洞穴、surface rule 和矿石管线，但并非同种子逐区块 1:1 复刻。
+- [ ] **物品栏系统**：已有 `ItemStack`、玩家物品栏、协议序列化、创造模式修改和基础左右键点击；拖拽、Shift-点击、容器持久化等仍待完成。
+- [ ] **方块行为系统**：已有多种交互框架和基础行为，但部分容器与特殊方块仍是简化实现。
+- [ ] **流体系统**：已有基础水/岩浆传播与交互，但尚未达到完整原版规则。
+- [ ] **多版本协议兼容**：已有 47-770 的版本映射和处理器框架；只有核心路径经过有限验证，不能宣称所有版本完整兼容。
+- [ ] **命令覆盖**：`CommandManager`、权限、别名和大量命令已注册，但部分命令或子命令仍只返回“暂未实现”。
+- [ ] **Watchdog**：已有 UDP 心跳、监控和重启框架，但缺少双进程端到端测试。
+- [ ] **网络优化**：已有批处理、限频和区块排序组件，但普通发送/移动路径尚未全面接入。
 - [x] **CI/CD**：GitHub Actions 工作流，Linux/Windows 双平台构建、CMake 原生组件编译、Nuitka 打包。
 
 ### 正在推进 / 待实现
@@ -56,7 +60,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - 这是服务端原型，不是完整原版服务端替代品。
 - 当前地形生成不会下载或运行 Mojang 原版服务端；地形和 AI 走本项目 C++/Python clean-room 实现。
 - 目标是逐步逼近原版，但现在还不能保证任意原版种子生成完全相同地形。
-- Mod/插件兼容层目前为框架实现，JVM 桥接需要编译 C++ 原生库才能完整支持 .jar mod/插件。
+- 不支持 Java Fabric/Forge/NeoForge/Quilt Mod 或 Bukkit/Paper `.jar` 插件；仅支持 PYMC 原生 Python 扩展。
 
 ## 当前能力
 
@@ -65,21 +69,20 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - 多版本协议兼容 (1.8.9 - 1.21.4, 协议版本 47-770)
 - 数据包压缩、KeepAlive、玩家移动同步
 - 类原版 384 高度主世界区块
-- 优先使用 `native/terrain_gen` C++ 原生地形生成器，回退到 1:1 Vanilla 或 Python 生成器
-- 红石系统：全组件模拟，每 2 游戏刻 (0.1s) 红石刻
+- 优先使用 `native/terrain_gen` C++ 原生地形生成器，回退到原版风格近似或基础 Python 生成器
+- 红石系统：基础组件模拟，每 2 游戏刻 (0.1s) 红石刻；部分组件行为仍待完成
 - 流体系统：水/岩浆流动，水-岩浆交互
-- 物品栏系统：ItemStack、PlayerInventory、协议序列化
-- 方块行为：箱子、工作台、熔炉、门、床、告示牌、TNT 等交互
+- 物品栏系统：ItemStack、PlayerInventory、协议序列化和基础点击交互
+- 方块行为：基础容器和多种交互框架，部分行为为简化实现
 - 安全出生点解析，避免首次进入或重生时卡在地下、水里或危险方块上
 - Linear V2 `.linear` 区域文件读写，并支持从 Anvil `.mca` 自动转换
 - 玩家位置、生命值、饱食度、经验、游戏模式等 JSON 存档
 - 基础聊天、方块挖掘/放置、掉落物、经验球和简单生物实体
 - 原版 Goal 思路的轻量生物 AI：随机游走、看向玩家、敌对追击、近战冷却
-- 命令框架：50+ 原版命令注册，Tab 补全，权限检查
-- Mod 兼容：Fabric/Forge/NeoForge/Quilt mod 扫描和识别
-- 插件兼容：Paper/Bukkit .jar 插件 (C++ 桥接) + Python 原生插件
-- Watchdog 双进程保护：UDP 心跳、自动重启
-- 网络优化：数据包批量发送、移动频率限制
+- 命令框架：大量命令注册、权限检查和别名；部分子命令仍未完成
+- Mod/插件：仅支持 PYMC 原生 Python API
+- Watchdog：UDP 心跳与自动重启框架（尚缺端到端验证）
+- 网络优化：批处理、移动限频和区块排序组件（尚未全面接入）
 - 基础 `gamerule`：控制昼夜流动、自然刷怪和自然回血
 - 控制台和游戏内基础命令
 - Web 管理台、权限组、OP、封禁和白名单
@@ -94,7 +97,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - `protocol/`：VarInt、NBT、Packet 编解码
 - `world/`：方块、区块编码、地形生成、存档、实体和世界编辑
   - `world/redstone.py`：红石引擎
-  - `world/vanilla_terrain.py`：1:1 原版地形生成器
+  - `world/vanilla_terrain.py`：原版风格近似地形生成器
   - `world/inventory.py`：物品栏系统
   - `world/block_behavior.py`：方块行为系统
   - `world/fluids.py`：流体系统
@@ -105,8 +108,8 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
   - `watchdog/network_optimizer.py`：网络优化器
   - `watchdog/health_check.py`：健康检查
   - `watchdog/restart_handler.py`：自动重启处理
-- `mods/`：Mod 兼容层 (Fabric/Forge/NeoForge/Quilt)
-- `plugins/`：插件兼容层 (Paper/Bukkit + Python)
+- `mods/`：PYMC 原生 Python Mod API
+- `plugins/`：PYMC 原生 Python Plugin API（事件名受 Bukkit 启发，不运行 Java 插件）
 - `native/`：C++ 原生地形生成器、红石引擎、光照引擎、物理引擎
 - `pumpkin-ref/`：本地参考源码，不属于 PyMC 运行时
 
@@ -122,8 +125,8 @@ python main.py
 默认监听:
 
 - Minecraft 服务端: `0.0.0.0:25565`
-- Web 管理台: `0.0.0.0:25568`
-- Watchdog 健康检查: `0.0.0.0:25569` (启用时)
+- Web 管理台: `127.0.0.1:25568`（无内置认证，默认禁止远程监听）
+- Watchdog UDP 健康检查: `127.0.0.1:25569` (启用时)
 
 使用 Minecraft Java 1.21.1 客户端连接 `localhost:25565`。
 
@@ -139,10 +142,12 @@ python main.py
 - `level-seed`：世界种子
 - `gamemode`：默认游戏模式
 - `web-admin-enabled`：是否启用 Web 管理台
+- `web-admin-host`：管理台监听地址，默认 `127.0.0.1`
+- `web-admin-allow-remote`：允许无内置认证的远程监听；仅应在受认证反向代理等外部访问控制保护时启用
 - `permissions-file`：权限文件路径
 - `join-immediate-radius`：玩家入服时优先同步的近距离区块半径
 - `min-protocol-version` / `max-protocol-version`：允许的协议版本范围 (默认 47-770)
-- `vanilla-terrain`：使用 1:1 原版地形生成器 (默认 `true`)
+- `vanilla-terrain`：使用原版风格近似地形生成器 (默认 `true`)
 - `redstone-enabled`：启用红石模拟 (默认 `true`)
 - `fluid-flow-enabled`：启用流体流动 (默认 `true`)
 - `mods-directory`：Mod 扫描目录 (默认 `mods`)
@@ -192,7 +197,8 @@ Linux/macOS 可参考 `build.sh` 和 `CMakeLists.txt`。
 
 支持平台：
 - Linux (ubuntu-latest)：CMake 原生编译 + pytest + Nuitka 打包
-- Windows (windows-latest)：Visual Studio 原生编译 + Nuitka 打包
+- macOS (macos-latest)：CMake 原生编译 + Nuitka 打包
+- Windows (windows-latest)：MinGW/CMake 原生编译 + Nuitka 打包
 
 ## 运行数据
 

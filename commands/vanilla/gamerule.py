@@ -32,11 +32,26 @@ def register(manager):
             return SUCCESS
 
         raw_value = args[1].lower()
-        if raw_value not in {"true", "false"}:
-            await ctx.reply("[PyMC] 当前 gamerule 仅支持 true/false 值")
+        current = rules[rule_name]
+        if isinstance(current, bool):
+            if raw_value not in {"true", "false"}:
+                await ctx.reply(f"[PyMC] {rule_name} 需要 true/false 值")
+                return FAILURE
+            value = raw_value == "true"
+        elif isinstance(current, int):
+            try:
+                value = int(raw_value)
+            except ValueError:
+                await ctx.reply(f"[PyMC] {rule_name} 需要整数值")
+                return FAILURE
+            if value < 0:
+                await ctx.reply(f"[PyMC] {rule_name} 不能为负数")
+                return FAILURE
+        else:
+            await ctx.reply(f"[PyMC] 不支持的游戏规则类型: {rule_name}")
             return FAILURE
-        rules[rule_name] = raw_value == "true"
-        await ctx.reply(f"[PyMC] 游戏规则 {rule_name} 已设置为 {raw_value}")
+        rules[rule_name] = value
+        await ctx.reply(f"[PyMC] 游戏规则 {rule_name} 已设置为 {str(value).lower()}")
         return SUCCESS
 
     cmd = Command(

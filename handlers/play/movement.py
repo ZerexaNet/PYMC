@@ -18,6 +18,7 @@
 
 import struct
 import logging
+import time
 
 from protocol.data_types import (
     read_varint, read_double, read_float,
@@ -34,10 +35,24 @@ def _handle_confirm_teleportation(conn: Connection, payload: bytes):
 
 
 def _handle_keepalive(conn: Connection, payload: bytes):
-    """处理 Keep Alive (0x18) 响应。"""
-    if len(payload) >= 8:
-        keepalive_id = struct.unpack('>q', payload[:8])[0]
-        logger.debug(f"{conn.username} KeepAlive 响应: {keepalive_id}")
+    """Validate a Keep Alive response and record round-trip latency."""
+    if len(payload) < 8:
+        return False
+    keepalive_id = struct.unpack('>q', payload[:8])[0]
+    if not conn.keepalive_pending or keepalive_id != conn.keepalive_id:
+        logger.warning(
+            f"{conn.username} returned unexpected KeepAlive ID {keepalive_id}"
+        )
+        return False
+    conn.keepalive_pending = False
+    conn.keepalive_rtt_ms = max(
+        0.0, (time.monotonic() - conn.keepalive_sent_at) * 1000.0
+    )
+    logger.debug(
+        f"{conn.username} KeepAlive response: {keepalive_id} "
+        f"({conn.keepalive_rtt_ms:.1f}ms)"
+    )
+    return True
 
 
 def _read_movement_on_ground(payload: bytes, offset: int) -> tuple[bool, int]:
