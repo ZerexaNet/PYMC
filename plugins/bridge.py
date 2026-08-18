@@ -909,6 +909,24 @@ def init_plugin_system(server, plugins_dir: str = "plugins") -> 'PluginManager':
     # Register plugin commands into CommandManager
     register_plugin_commands(server)
 
+    # Best-effort Bukkit/Paper .jar bridge.
+    server.java_plugin_bridge = None
+    try:
+        from plugins.java_plugin import JavaPluginBridge, discover_jar_plugins
+        if discover_jar_plugins(plugins_dir):
+            java_bridge = JavaPluginBridge(
+                plugins_dir,
+                on_broadcast=server.broadcast_system_message,
+            )
+            if java_bridge.start():
+                results = java_bridge.load_all()
+                enabled_java = [r.get("name") for r in results if r.get("status") == "enabled"]
+                if enabled_java:
+                    logger.info(f"Java Bukkit/Paper 插件已通过桥接层加载: {enabled_java}")
+                server.java_plugin_bridge = java_bridge
+    except Exception as e:
+        logger.warning(f"初始化 Java 插件桥接层失败: {e}")
+
     # Fire server start event
     hook_server_start(server)
 
@@ -926,6 +944,11 @@ def shutdown_plugin_system(server):
 
     # Fire server stop event
     hook_server_stop(server)
+
+    java_bridge = getattr(server, 'java_plugin_bridge', None)
+    if java_bridge is not None:
+        java_bridge.stop()
+        server.java_plugin_bridge = None
 
     # Disable all plugins
     pm.shutdown_all()

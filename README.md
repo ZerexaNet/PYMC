@@ -28,7 +28,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] 单元测试覆盖原生地形、原生 AI、种子解析和安全出生点。
 - [x] **红石系统**：tick 引擎、电源/导线/火把/中继器/比较器/观察者/活塞、门与灯控制、TNT 起爆、音符盒、发射器/投掷器；红石时序为原版近似。
 - [x] **物品栏系统**：`ItemStack`、玩家物品栏、协议序列化、左右键/Shift/数字键/拖拽/丢弃，以及方块容器交互与持久化；铁砧/附魔台等专业界面仍为简化。
-- [x] **PYMC 原生扩展 API**：支持 Python Mod/Plugin 的发现、依赖排序、生命周期、事件和命令注册。Java Fabric/Forge Mod 与 Bukkit/Paper `.jar` 插件不受支持，详见 `MOD_COMPATIBILITY.md`。
+- [x] **PYMC 原生扩展 API**：支持 Python Mod/Plugin 的发现、依赖排序、生命周期、事件和命令注册。Java Fabric/Forge Mod 不受支持；Bukkit/Paper `.jar` 插件通过可选 Java 桥接层提供 best-effort 兼容，详见 `MOD_COMPATIBILITY.md`。
 - [x] **Web 管理台安全默认值**：默认只监听 `127.0.0.1`；由于当前没有内置认证，远程监听必须显式设置 `web-admin-allow-remote=true` 并部署外部访问控制。
 
 ### 部分实现（不可视为完成）
@@ -60,7 +60,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - 这是服务端原型，不是完整原版服务端替代品。
 - 当前地形生成不会下载或运行 Mojang 原版服务端；地形和 AI 走本项目 C++/Python clean-room 实现。
 - 目标是逐步逼近原版，但现在还不能保证任意原版种子生成完全相同地形。
-- 不支持 Java Fabric/Forge/NeoForge/Quilt Mod 或 Bukkit/Paper `.jar` 插件；仅支持 PYMC 原生 Python 扩展。
+- 不支持 Java Fabric/Forge/NeoForge/Quilt Mod；Bukkit/Paper `.jar` 插件经 Java 桥接层提供生命周期与命令兼容（best-effort），另支持 PYMC 原生 Python 扩展。
 
 ## 当前能力
 
@@ -109,7 +109,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
   - `watchdog/health_check.py`：健康检查
   - `watchdog/restart_handler.py`：自动重启处理
 - `mods/`：PYMC 原生 Python Mod API
-- `plugins/`：PYMC 原生 Python Plugin API（事件名受 Bukkit 启发，不运行 Java 插件）
+- `plugins/`：PYMC 原生 Python Plugin API + Java Bukkit/Paper 桥接层（`plugins/java_plugin.py`）
 - `native/`：C++ 原生地形生成器、轻量生物 AI、红石引擎、光照引擎、物理引擎及 PYMC 原生扩展接口
 - `pumpkin-ref/`：本地参考源码，不属于 PyMC 运行时
 

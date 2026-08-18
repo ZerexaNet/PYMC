@@ -186,6 +186,20 @@ async def execute_server_command(server, command: str,
     if not command:
         return False
 
+    # Let Java Bukkit/Paper plugins handle matching commands first.
+    java_bridge = getattr(server, 'java_plugin_bridge', None)
+    if java_bridge is not None:
+        try:
+            if java_bridge.dispatch_command(command):
+                if source_conn is not None:
+                    await send_system_message(
+                        source_conn,
+                        f"[PyMC] 已转交 Java 插件命令: /{command.split()[0]}"
+                    )
+                return True
+        except Exception as e:
+            logger.debug(f"Java plugin command bridge failed: {e}")
+
     # All commands go through the CommandManager framework
     if hasattr(server, 'command_manager') and server.command_manager is not None:
         result = await server.command_manager.execute(source_conn, command)
