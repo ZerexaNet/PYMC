@@ -4,7 +4,7 @@
 
 **PYMC 不支持 Java Fabric/Forge/NeoForge/Quilt 模组。**
 
-**PYMC 不支持 Java Bukkit/Paper 插件。**
+**PyMC 通过可选的 Java 桥接层提供 Bukkit/Paper 插件的 best-effort 兼容；不保证完整 Paper API 语义。**
 
 ## 为什么不支持？
 
@@ -16,7 +16,7 @@ Java 模组加载器（Fabric、Forge、NeoForge、Quilt）依赖以下技术：
 
 PYMC 是一个 Python/C++ 实现的 Minecraft 服务器，**没有 JVM**，**无法执行 Mixin 字节码注入**。这不是功能缺失，而是根本性的架构差异——Mixin 需要在 JVM 字节码层面操作，Python/C++ 服务器无法提供这个环境。
 
-同样，Bukkit/Paper 插件也是 Java 程序，依赖完整的 Bukkit API 类层次和 JVM 来运行，PYMC 无法提供这些。
+Bukkit/Paper 插件可以在检测到 Java 运行时后，由 `plugins/java_plugin.py` 启动一个薄 JVM 桥接进程，加载标准 `JavaPlugin` 生命周期、日志、广播、`plugin.yml` 命令和基础事件。使用 Paper 内部 API / NMS / 复杂 GUI / 完整调度器等深层特性的插件仍可能报错或不受支持。
 
 ## PYMC 提供什么？
 
@@ -181,12 +181,11 @@ plugins/
 
 ## 未来的可能性
 
-理论上可以通过嵌入 JVM（使用 JNI）来实现 Java 模组/插件的支持，但这是一个极其庞大的工程：
+PyMC 现在提供一个薄 JVM 胶水层（`native/plugins/java/PyMCBukkitBridge.java` + 预编译 bridge jar）：
 
-- 需要实现完整的 Bukkit API 桩代码
-- 需要支持 Mixin 框架的字节码操作
-- 需要桥接 Java 对象和 PYMC 的 C++/Python 内部结构
-- 性能开销巨大（JVM + Python + C++ 三层调用）
-- 维护成本极高（需要跟进每个 Minecraft 版本的 API 变更）
+- 加载标准 Paper API `JavaPlugin` 并调用 `onLoad/onEnable/onDisable`
+- 解析 `plugin.yml` 并注册执行 `onCommand`
+- 转发广播/控制台输出到 Python 服务端
+- 对未实现的 Paper 服务能力返回安全默认值并记录错误
 
-目前 PYMC 选择提供简洁、诚实的 Python 原生 API，而不是假装支持无法真正实现的 Java 兼容层。
+这不等于完整运行 Paper 服务端核心；使用 Mixin、NMS、Paper 内部类的插件仍无法支持。
