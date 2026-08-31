@@ -601,3 +601,7 @@ async def _broadcast_player_join(conn: Connection, server):
             pid = get_clientbound_packet(conn.protocol_version, "player_info")
             if pid is not None:
                 await conn.send_packet(pid, other_info)
+
+    # 双向生成玩家实体 (必须在 Player Info 之后, 客户端需要列表项渲染皮肤)
+    from handlers.play.players import sync_player_visibility
+    await sync_player_visibility(server, conn)
