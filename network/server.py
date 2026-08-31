@@ -201,6 +201,34 @@ class MinecraftServer:
             if conn != exclude and conn.version_handler is not None:
                 asyncio.ensure_future(conn.version_handler.send_system_chat(conn, text))
 
+    async def queue_or_send(self, conn: Connection, packet_id: int, payload: bytes):
+        """
+        优先经网络优化器批量发送 (合并为单次 TCP write),
+        优化器未启用时直接发送。用于高频广播路径 (如实体位置同步)。
+        """
+        optimizer = self.network_optimizer
+        if optimizer is not None and optimizer.queue_packet(conn, packet_id, payload):
+            return
+        await conn.send_packet(packet_id, payload)
+
+    async def set_weather(self, weather: str, duration: int = 0):
+        """
+        设置天气并立即同步到所有客户端。
+
+        Args:
+            weather: "clear" | "rain" | "thunder"
+            duration: 持续 tick 数 (0 = 无限, 直到天气循环或手动变更)
+        """
+        old_weather = self.weather
+        self._time_manager.set_weather(weather, duration)
+        self.weather = self._time_manager.weather
+        if self.weather == old_weather:
+            return
+        from handlers.play.weather import broadcast_weather_change
+        await broadcast_weather_change(self, old_weather, self.weather)
+        from plugins.bridge import hook_weather_change
+        hook_weather_change(self, old_weather, self.weather)
+
     def save_player_state(self, conn: Connection):
         """保存单个玩家存档。"""
         if not conn.username:
@@ -754,6 +782,7 @@ class MinecraftServer:
         for other_conn in self.get_online_players():
             if other_conn == conn:
                 continue
+            other_conn.tracked_players.discard(conn.entity_id)
             player_remove_pid = get_clientbound_packet(other_conn.protocol_version, "player_remove")
             if player_remove_pid is not None:
                 await other_conn.send_packet(player_remove_pid, remove_info)
@@ -778,14 +807,17 @@ class MinecraftServer:
 
             # 使用 TimeManager 推进时间
             self._time_manager.do_daylight_cycle = self.gamerules.get("doDaylightCycle", True)
+            self._time_manager.do_weather_cycle = self.gamerules.get("doWeatherCycle", True)
             old_weather = self.weather
             old_time = self.world_time
             self._time_manager.tick()
             self.world_time = self._time_manager.time
             self.weather = self._time_manager.weather
 
-            # Plugin hooks: weather/time change
+            # Plugin hooks + client sync: weather/time change
             if self.weather != old_weather:
+                from handlers.play.weather import broadcast_weather_change
+                await broadcast_weather_change(self, old_weather, self.weather)
                 from plugins.bridge import hook_weather_change
                 hook_weather_change(self, old_weather, self.weather)
             if self.world_time != old_time and tick_count % 200 == 0:
@@ -839,6 +871,10 @@ class MinecraftServer:
             if tick_count % 2 == 0:
                 await self._tick_redstone()
 
+            # 雷暴落雷 (每 5 秒一次判定)
+            if tick_count % 100 == 0:
+                await self._tick_lightning()
+
             # Fluid system tick
             if self.fluid_system is not None:
                 await self._tick_fluids(tick_count)
@@ -859,6 +895,43 @@ class MinecraftServer:
             elapsed = time.time() - tick_start
             sleep_time = max(0, tick_interval - elapsed)
             await asyncio.sleep(sleep_time)
+
+    async def _tick_lightning(self):
+        """雷暴天气时在随机玩家附近落雷, 伤害落点附近的生物和玩家。"""
+        if self.weather != "thunder":
+            return
+        players = self.get_online_players()
+        if not players:
+            return
+
+        import random
+        target_player = random.choice(players)
+        lx = target_player.x + random.uniform(-24, 24)
+        lz = target_player.z + random.uniform(-24, 24)
+        ly = target_player.y
+
+        bolt = self.entity_manager.create_lightning(lx, ly, lz)
+        from handlers.play import broadcast_entity_spawn
+        await broadcast_entity_spawn(self, bolt)
+        logger.info(
+            f"闪电击中 ({lx:.1f}, {ly:.1f}, {lz:.1f}) "
+            f"附近玩家 {target_player.username}"
+        )
+
+        # 伤害落点 3 格内的玩家
+        from handlers.play import _damage_player
+        for player in players:
+            if player.gamemode in {"creative", "spectator"}:
+                continue
+            if bolt.distance_squared_to(player.x, player.y, player.z) <= 9.0:
+                await _damage_player(player, 5.0, "闪电", self)
+
+        # 伤害落点 3 格内的生物
+        from handlers.play.combat import damage_mob
+        for entity in self.entity_manager.list_entities():
+            if entity.kind == "mob" and entity.entity_id != bolt.entity_id:
+                if bolt.distance_squared_to(entity.x, entity.y, entity.z) <= 9.0:
+                    damage_mob(self, entity, 5.0)
 
     async def _tick_redstone(self):
         """Process a redstone tick and broadcast visual changes to players."""
@@ -1003,26 +1076,28 @@ class MinecraftServer:
             if entity.kind == "mob" and entity.metadata.get("category") == "hostile":
                 if getattr(entity, "attack_cooldown", 0) > 0:
                     continue
+                profile = getattr(entity, "profile", {})
+                is_ranged = bool(profile.get("ranged", False))
                 for player in players:
                     if player.gamemode in {"creative", "spectator"}:
                         continue
-                    attack_range = float(getattr(entity, "profile", {}).get("attack_range", 1.7))
+                    attack_range = float(profile.get("attack_range", 1.7))
                     if entity.distance_squared_to(player.x, player.y, player.z) > attack_range * attack_range:
                         continue
-                    entity.attack_cooldown = int(getattr(entity, "profile", {}).get("attack_interval", 20))
-                    damage = float(getattr(entity, "profile", {}).get("attack_damage", 2.0))
+                    entity.attack_cooldown = int(profile.get("attack_interval", 20))
+                    damage = float(profile.get("attack_damage", 2.0))
                     mob_name = entity.metadata.get("mob_type", "生物")
-                    await _damage_player(player, damage, mob_name, self)
+                    reason = f"{mob_name}的箭" if is_ranged else mob_name
+                    await _damage_player(player, damage, reason, self)
                     break
 
     async def _tick_entity_sync(self):
         """向客户端同步基础实体位置与移除。"""
         from handlers.play import (
-            _send_entity_teleport,
+            _send_entity_remove,
             _send_experience_orb_spawn,
             _send_generic_entity_spawn,
             _entity_within_tracking_range,
-            build_remove_entities,
             broadcast_entity_remove,
         )
 
@@ -1034,7 +1109,7 @@ class MinecraftServer:
         live_entities = {
             entity.entity_id: entity
             for entity in entities
-            if entity.kind in {"orb", "item", "mob"}
+            if entity.kind in {"orb", "item", "mob", "lightning_bolt"}
         }
 
         for conn in self.get_online_players():
@@ -1044,13 +1119,13 @@ class MinecraftServer:
             ]
             if stale_ids:
                 conn.tracked_entities.difference_update(stale_ids)
-                await conn.send_packet(0x42, build_remove_entities(stale_ids))
+                await _send_entity_remove(conn, stale_ids)
 
             for entity in live_entities.values():
                 if not _entity_within_tracking_range(entity, conn, self.view_distance):
                     if entity.entity_id in conn.tracked_entities:
                         conn.tracked_entities.discard(entity.entity_id)
-                        await conn.send_packet(0x42, build_remove_entities([entity.entity_id]))
+                        await _send_entity_remove(conn, [entity.entity_id])
                     continue
                 if entity.entity_id not in conn.tracked_entities:
                     if entity.kind == "orb":
@@ -1059,4 +1134,11 @@ class MinecraftServer:
                         await _send_generic_entity_spawn(conn, entity)
                     conn.tracked_entities.add(entity.entity_id)
                     continue
-                await _send_entity_teleport(conn, entity)
+                # 高频传送包走批量发送, 合并为单次 TCP write
+                from handlers.play.entities import build_entity_teleport_payload
+                from protocol.packet_map import get_clientbound_packet
+                teleport_pid = get_clientbound_packet(
+                    conn.protocol_version, "entity_teleport")
+                if teleport_pid is not None:
+                    await self.queue_or_send(
+                        conn, teleport_pid, build_entity_teleport_payload(entity))

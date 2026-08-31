@@ -58,11 +58,12 @@ def register(manager):
         # Apply enchantment (record on inventory item if available)
         if hasattr(target, 'inventory_obj') and target.inventory_obj is not None:
             slot = target.selected_hotbar_slot
-            item = target.inventory_obj.get_item_in_slot(slot)
-            if item is not None:
-                if "enchantments" not in item:
-                    item["enchantments"] = {}
-                item["enchantments"][enchant_name] = level
+            item = target.inventory_obj.get_slot(slot)
+            if item is not None and not item.is_empty:
+                from world.item_properties import add_enchantment
+                add_enchantment(item, enchant_name, level)
+                from world.inventory import send_inventory_sync
+                await send_inventory_sync(target)
                 await ctx.reply(f"[PyMC] 已附魔 {target.username} 手持物品: {enchant_name} {level}")
                 return SUCCESS
             else:

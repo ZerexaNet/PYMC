@@ -2193,60 +2193,99 @@ class CaveCarver:
 
 class OreVeinGenerator:
     """
-    Vanilla-style ore vein generator with triangular distribution.
+    Vanilla-style ore vein generator.
 
-    Ore distributions match vanilla Minecraft 1.21.1:
-      - Coal: y=0 to y=320, peak at y=96 (main) + y=-64 to y=0, peak at y=-64 (underground)
-      - Iron: y=-64 to y=320, peak at y=16 (common) + y=80 to y=384, peak at y=232 (high)
-      - Gold: y=-64 to y=32, peak at y=-16
-      - Diamond: y=-64 to y=16, peak at y=-64
-      - Lapis: y=-64 to y=64, peak at y=0
-      - Redstone: y=-64 to y=16
-      - Copper: y=-16 to y=112, peak at y=48
-      - Emerald: y=-16 to y=320, peak at y=256 (mountains only)
+    Ore batch parameters aligned with vanilla 1.21.1 worldgen configs
+    (ore_coal_upper/lower, ore_iron_middle/upper/small, ore_copper,
+    ore_gold, ore_redstone(+_lower), ore_lapis(+_buried),
+    ore_diamond_small/medium/large/buried):
+      - Coal: 30x triangle(136..320) + 20x triangle(0..192, peak 96)
+      - Iron: 10x triangle(-24..56, peak 16) + 10x triangle(80..384, peak 232)
+              + 10x uniform(-64..72)
+      - Copper: 16x triangle(-16..112, peak 48)
+      - Gold: 4x triangle(-64..32, peak -16)
+      - Redstone: 4x uniform(-64..15) + 8x trapezoid(-64..-32)
+      - Lapis: 2x triangle(-32..32, peak 0) + 4x uniform(-64..64, buried)
+      - Diamond: 7x triangle(-64..16) + 4x triangle(-64..16, medium)
+                 + 2x uniform(-64..-4, buried) + 1/9 chunks large vein
+      - Emerald: mountain-gated in vanilla; biome gating not yet wired,
+                 kept rare to avoid flooding non-mountain biomes
+
+    Air exposure: veins whose seed block touches air are discarded with
+    the batch's probability (vanilla discard_chance_on_air_exposure).
+
+    Known deviations from vanilla:
+      - emerald batch not biome-gated (kept rare instead)
+      - badlands extra gold / dripstone extra copper not implemented
+      - vein shape is a spherical random walk, not vanilla's ore blob
     """
 
     def __init__(self, seed: int):
         self._seed = seed
 
+    @staticmethod
+    def _sample_trapezoid(rng, y_min: int, y_max: int) -> int:
+        """Vanilla trapezoid height provider: ramp up, flat middle, ramp down."""
+        span = y_max - y_min
+        plateau = span // 3
+        a = rng.random() * span
+        b = rng.random() * span
+        lo, hi = min(a, b), max(a, b)
+        if hi - lo >= plateau:
+            return int(y_min + (lo + hi) / 2)
+        mid = (lo + hi) / 2
+        return int(y_min + max(lo, min(hi, mid)))
+
     def place(self, blocks: list, base_x: int, base_z: int):
-        """Place ore veins in a chunk using vanilla triangular distribution."""
+        """Place ore veins in a chunk using vanilla batch parameters."""
         rng = _random.Random(
             self._seed ^ (base_x * 6364136223846793005 + base_z * 1442695040888963407)
         )
 
-        # Ore configurations matching vanilla 1.21.1
-        # (ore_id, deepslate_ore_id, attempts, vein_size, y_min, y_max, peak_y, distribution)
+        # (ore_id, deepslate_ore_id, attempts, vein_size, y_min, y_max,
+        #  distribution, air_discard_chance)
         ore_configs = [
-            # Coal - two distributions (main + underground)
-            (COAL_ORE, DEEPSLATE_COAL_ORE, 20, 10, 0, 320, 96, 'triangular'),
-            (COAL_ORE, DEEPSLATE_COAL_ORE, 10, 10, -64, 0, -64, 'triangular'),
-            # Iron - two distributions (common + high)
-            (IRON_ORE, DEEPSLATE_IRON_ORE, 20, 8, -64, 320, 16, 'triangular'),
-            (IRON_ORE, DEEPSLATE_IRON_ORE, 10, 4, 80, 384, 232, 'triangular'),
+            # Coal (size 17, air discard 0.5)
+            (COAL_ORE, DEEPSLATE_COAL_ORE, 30, 17, 136, 320, 'triangle', 0.5),
+            (COAL_ORE, DEEPSLATE_COAL_ORE, 20, 17, 0, 192, 'triangle', 0.5),
+            # Iron (air discard 0)
+            (IRON_ORE, DEEPSLATE_IRON_ORE, 10, 9, -24, 56, 'triangle', 0.0),
+            (IRON_ORE, DEEPSLATE_IRON_ORE, 10, 9, 80, 384, 'triangle', 0.0),
+            (IRON_ORE, DEEPSLATE_IRON_ORE, 10, 4, -64, 72, 'uniform', 0.0),
             # Copper
-            (COPPER_ORE, DEEPSLATE_COPPER_ORE, 16, 9, -16, 112, 48, 'triangular'),
+            (COPPER_ORE, DEEPSLATE_COPPER_ORE, 16, 10, -16, 112, 'triangle', 0.0),
             # Gold
-            (GOLD_ORE, DEEPSLATE_GOLD_ORE, 4, 7, -64, 32, -16, 'triangular'),
+            (GOLD_ORE, DEEPSLATE_GOLD_ORE, 4, 9, -64, 32, 'triangle', 0.0),
             # Redstone
-            (REDSTONE_ORE, DEEPSLATE_REDSTONE_ORE, 8, 6, -64, 16, -32, 'triangular'),
-            # Lapis
-            (LAPIS_ORE, DEEPSLATE_LAPIS_ORE, 2, 5, -64, 64, 0, 'triangular'),
+            (REDSTONE_ORE, DEEPSLATE_REDSTONE_ORE, 4, 8, -64, 15, 'uniform', 0.0),
+            (REDSTONE_ORE, DEEPSLATE_REDSTONE_ORE, 8, 8, -64, -32, 'trapezoid', 0.0),
+            # Lapis (buried batch never touches air)
+            (LAPIS_ORE, DEEPSLATE_LAPIS_ORE, 2, 7, -32, 32, 'triangle', 0.0),
+            (LAPIS_ORE, DEEPSLATE_LAPIS_ORE, 4, 7, -64, 64, 'uniform', 1.0),
             # Diamond
-            (DIAMOND_ORE, DEEPSLATE_DIAMOND_ORE, 2, 4, -64, 16, -64, 'triangular'),
-            # Emerald (mountains only - rare)
-            (EMERALD_ORE, DEEPSLATE_EMERALD_ORE, 1, 2, -16, 320, 256, 'triangular'),
+            (DIAMOND_ORE, DEEPSLATE_DIAMOND_ORE, 7, 4, -64, 16, 'triangle', 0.5),
+            (DIAMOND_ORE, DEEPSLATE_DIAMOND_ORE, 4, 8, -64, 16, 'triangle', 0.7),
+            (DIAMOND_ORE, DEEPSLATE_DIAMOND_ORE, 2, 8, -64, -4, 'uniform', 1.0),
+            # Emerald: vanilla gates to mountain biomes; kept rare until
+            # biome gating is wired into ore placement
+            (EMERALD_ORE, DEEPSLATE_EMERALD_ORE, 1, 3, -16, 320, 'triangle', 0.0),
         ]
 
-        for ore_id, deep_ore_id, attempts, vein_size, y_min, y_max, peak_y, dist in ore_configs:
+        # Diamond large vein: 1 attempt per 9 chunks (air discard 0.7)
+        if rng.randint(1, 9) == 1:
+            ore_configs.append(
+                (DIAMOND_ORE, DEEPSLATE_DIAMOND_ORE, 1, 12, -64, 16, 'triangle', 0.7))
+
+        for ore_id, deep_ore_id, attempts, vein_size, y_min, y_max, dist, air_discard in ore_configs:
             for _ in range(attempts):
                 lx = rng.randint(0, 15)
                 lz = rng.randint(0, 15)
 
-                if dist == 'triangular':
-                    # Vanilla's triangular distribution:
-                    # P(y) = triangular(y_min, y_max, peak_y)
-                    wy = int(rng.triangular(y_min, y_max, peak_y))
+                if dist == 'triangle':
+                    # Vanilla triangle provider peaks at the midpoint
+                    wy = int(rng.triangular(y_min, y_max, (y_min + y_max) / 2))
+                elif dist == 'trapezoid':
+                    wy = self._sample_trapezoid(rng, y_min, y_max)
                 else:
                     wy = rng.randint(y_min, y_max)
 
@@ -2261,6 +2300,21 @@ class OreVeinGenerator:
                     ore_block = deep_ore_id
                 else:
                     continue
+
+                # discard_chance_on_air_exposure: 矿脉贴着空气时按概率丢弃
+                if air_discard > 0.0 and rng.random() < air_discard:
+                    exposed = False
+                    for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0),
+                                       (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                        nx2, ny2, nz2 = lx + dx, yi + dy, lz + dz
+                        if not (0 <= nx2 < 16 and 0 <= nz2 < 16
+                                and 0 <= ny2 < WORLD_HEIGHT):
+                            continue  # 跨区块邻居未知, 不视为暴露
+                        if blocks[ny2][nz2][nx2] == AIR:
+                            exposed = True
+                            break
+                    if exposed:
+                        continue
 
                 # Place vein (spherical scatter, matching vanilla's ore vein shape)
                 blocks[yi][lz][lx] = ore_block

@@ -75,6 +75,7 @@ class Connection:
         self.personal_spawn: tuple[int, int, int] | None = None
         self.loaded_chunks: set[tuple[int, int]] = set()
         self.tracked_entities: set[int] = set()
+        self.tracked_players: set[int] = set()  # 已生成玩家实体的 entity_id
         self.chunk_center: tuple[int, int] = (0, 0)
         self.chunk_stream_task: asyncio.Task | None = None
 
