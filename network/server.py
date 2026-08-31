@@ -201,6 +201,16 @@ class MinecraftServer:
             if conn != exclude and conn.version_handler is not None:
                 asyncio.ensure_future(conn.version_handler.send_system_chat(conn, text))
 
+    async def queue_or_send(self, conn: Connection, packet_id: int, payload: bytes):
+        """
+        优先经网络优化器批量发送 (合并为单次 TCP write),
+        优化器未启用时直接发送。用于高频广播路径 (如实体位置同步)。
+        """
+        optimizer = self.network_optimizer
+        if optimizer is not None and optimizer.queue_packet(conn, packet_id, payload):
+            return
+        await conn.send_packet(packet_id, payload)
+
     async def set_weather(self, weather: str, duration: int = 0):
         """
         设置天气并立即同步到所有客户端。
@@ -1040,7 +1050,6 @@ class MinecraftServer:
     async def _tick_entity_sync(self):
         """向客户端同步基础实体位置与移除。"""
         from handlers.play import (
-            _send_entity_teleport,
             _send_entity_remove,
             _send_experience_orb_spawn,
             _send_generic_entity_spawn,
@@ -1081,4 +1090,11 @@ class MinecraftServer:
                         await _send_generic_entity_spawn(conn, entity)
                     conn.tracked_entities.add(entity.entity_id)
                     continue
-                await _send_entity_teleport(conn, entity)
+                # 高频传送包走批量发送, 合并为单次 TCP write
+                from handlers.play.entities import build_entity_teleport_payload
+                from protocol.packet_map import get_clientbound_packet
+                teleport_pid = get_clientbound_packet(
+                    conn.protocol_version, "entity_teleport")
+                if teleport_pid is not None:
+                    await self.queue_or_send(
+                        conn, teleport_pid, build_entity_teleport_payload(entity))
