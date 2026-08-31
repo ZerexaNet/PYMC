@@ -772,6 +772,7 @@ class MinecraftServer:
         for other_conn in self.get_online_players():
             if other_conn == conn:
                 continue
+            other_conn.tracked_players.discard(conn.entity_id)
             player_remove_pid = get_clientbound_packet(other_conn.protocol_version, "player_remove")
             if player_remove_pid is not None:
                 await other_conn.send_packet(player_remove_pid, remove_info)

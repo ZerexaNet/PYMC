@@ -28,13 +28,15 @@ from network.connection import Connection
 
 logger = logging.getLogger("PyMC.实体")
 
-# --- 实体类型 ID 映射 ---
+# --- 实体类型 ID 映射 (1.21.1 注册表) ---
+# 来源: PrismarineJS/minecraft-data pc/1.20.5 entities.json
+# (dataPaths 将 1.21/1.21.1 映射到该注册表)
 ENTITY_TYPE_IDS = {
-    "item": 71,
-    "cow": 30,
-    "pig": 100,
-    "sheep": 111,
-    "zombie": 150,
+    "item": 58,
+    "cow": 22,
+    "pig": 77,
+    "sheep": 87,
+    "zombie": 124,
 }
 
 
