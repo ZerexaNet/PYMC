@@ -201,6 +201,24 @@ class MinecraftServer:
             if conn != exclude and conn.version_handler is not None:
                 asyncio.ensure_future(conn.version_handler.send_system_chat(conn, text))
 
+    async def set_weather(self, weather: str, duration: int = 0):
+        """
+        设置天气并立即同步到所有客户端。
+
+        Args:
+            weather: "clear" | "rain" | "thunder"
+            duration: 持续 tick 数 (0 = 无限, 直到天气循环或手动变更)
+        """
+        old_weather = self.weather
+        self._time_manager.set_weather(weather, duration)
+        self.weather = self._time_manager.weather
+        if self.weather == old_weather:
+            return
+        from handlers.play.weather import broadcast_weather_change
+        await broadcast_weather_change(self, old_weather, self.weather)
+        from plugins.bridge import hook_weather_change
+        hook_weather_change(self, old_weather, self.weather)
+
     def save_player_state(self, conn: Connection):
         """保存单个玩家存档。"""
         if not conn.username:
@@ -778,14 +796,17 @@ class MinecraftServer:
 
             # 使用 TimeManager 推进时间
             self._time_manager.do_daylight_cycle = self.gamerules.get("doDaylightCycle", True)
+            self._time_manager.do_weather_cycle = self.gamerules.get("doWeatherCycle", True)
             old_weather = self.weather
             old_time = self.world_time
             self._time_manager.tick()
             self.world_time = self._time_manager.time
             self.weather = self._time_manager.weather
 
-            # Plugin hooks: weather/time change
+            # Plugin hooks + client sync: weather/time change
             if self.weather != old_weather:
+                from handlers.play.weather import broadcast_weather_change
+                await broadcast_weather_change(self, old_weather, self.weather)
                 from plugins.bridge import hook_weather_change
                 hook_weather_change(self, old_weather, self.weather)
             if self.world_time != old_time and tick_count % 200 == 0:
@@ -1019,10 +1040,10 @@ class MinecraftServer:
         """向客户端同步基础实体位置与移除。"""
         from handlers.play import (
             _send_entity_teleport,
+            _send_entity_remove,
             _send_experience_orb_spawn,
             _send_generic_entity_spawn,
             _entity_within_tracking_range,
-            build_remove_entities,
             broadcast_entity_remove,
         )
 
@@ -1044,13 +1065,13 @@ class MinecraftServer:
             ]
             if stale_ids:
                 conn.tracked_entities.difference_update(stale_ids)
-                await conn.send_packet(0x42, build_remove_entities(stale_ids))
+                await _send_entity_remove(conn, stale_ids)
 
             for entity in live_entities.values():
                 if not _entity_within_tracking_range(entity, conn, self.view_distance):
                     if entity.entity_id in conn.tracked_entities:
                         conn.tracked_entities.discard(entity.entity_id)
-                        await conn.send_packet(0x42, build_remove_entities([entity.entity_id]))
+                        await _send_entity_remove(conn, [entity.entity_id])
                     continue
                 if entity.entity_id not in conn.tracked_entities:
                     if entity.kind == "orb":
