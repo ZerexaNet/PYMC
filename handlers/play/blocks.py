@@ -307,6 +307,11 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
         return
     await _broadcast_block_change(server, x, y, z, AIR)
 
+    # 生存/冒险模式下消耗工具耐久
+    if conn.gamemode in ("survival", "adventure"):
+        from world.item_properties import damage_held_item
+        await damage_held_item(conn, server)
+
     # Notify redstone engine of block change
     if server.redstone_engine:
         server.redstone_engine.on_block_change(x, y, z, current, AIR)

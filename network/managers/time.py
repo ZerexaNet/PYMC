@@ -37,6 +37,7 @@ class TimeManager:
     def __init__(self, initial_time: int = 1000, do_daylight_cycle: bool = True):
         self._time: int = initial_time % MAX_TIME
         self._do_daylight_cycle = do_daylight_cycle
+        self._do_weather_cycle: bool = True
         self._weather: str = "clear"
         self._weather_duration: int = 0  # ticks remaining
         self._thunder_duration: int = 0
@@ -71,6 +72,15 @@ class TimeManager:
     def do_daylight_cycle(self, value: bool):
         self._do_daylight_cycle = value
 
+    @property
+    def do_weather_cycle(self) -> bool:
+        """是否启用天气循环 (gamerule doWeatherCycle)。"""
+        return self._do_weather_cycle
+
+    @do_weather_cycle.setter
+    def do_weather_cycle(self, value: bool):
+        self._do_weather_cycle = value
+
     def tick(self):
         """
         每游戏 tick 调用。
@@ -79,7 +89,9 @@ class TimeManager:
         if self._do_daylight_cycle:
             self._time = (self._time + 1) % MAX_TIME
 
-        # 天气持续计时
+        # 天气持续计时 (doWeatherCycle=false 时天气保持不变)
+        if not self._do_weather_cycle:
+            return
         if self._weather_duration > 0:
             self._weather_duration -= 1
             if self._weather_duration == 0:
@@ -145,6 +157,7 @@ class TimeManager:
             "weather": self._weather,
             "weather_duration": self._weather_duration,
             "do_daylight_cycle": self._do_daylight_cycle,
+            "do_weather_cycle": self._do_weather_cycle,
         }
 
     @classmethod
@@ -156,4 +169,5 @@ class TimeManager:
         )
         mgr._weather = data.get("weather", "clear")
         mgr._weather_duration = data.get("weather_duration", 0)
+        mgr._do_weather_cycle = data.get("do_weather_cycle", True)
         return mgr

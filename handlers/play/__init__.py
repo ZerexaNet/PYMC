@@ -139,6 +139,12 @@ from handlers.play.entities import (
     ENTITY_TYPE_IDS,
 )
 
+from handlers.play.combat import (
+    _handle_interact,
+    damage_mob,
+    get_attack_damage,
+)
+
 from handlers.play.spawn import (
     _resolve_spawn_location,
     _is_safe_player_location,
@@ -152,6 +158,29 @@ from handlers.play.spawn import (
     SPAWN_CLEAR_BLOCKS,
     SPAWN_UNSAFE_GROUND_BLOCKS,
     SPAWN_CANOPY_BLOCKS,
+)
+
+from handlers.play.weather import (
+    build_game_event_payload,
+    send_weather_state,
+    broadcast_weather_change,
+    rain_strength,
+    thunder_strength,
+    GAME_EVENT_END_RAINING,
+    GAME_EVENT_BEGIN_RAINING,
+    GAME_EVENT_RAIN_LEVEL,
+    GAME_EVENT_THUNDER_LEVEL,
+)
+
+from handlers.play.players import (
+    build_spawn_player_payload,
+    build_player_metadata_payload,
+    build_rotate_head_payload,
+    send_player_spawn,
+    sync_player_visibility,
+    relay_player_movement,
+    remove_player_entity,
+    PLAYER_ENTITY_TYPE,
 )
 
 logger = logging.getLogger("PyMC.游戏")
@@ -254,8 +283,8 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
         _handle_close_container(conn, payload)
 
     elif _is_serverbound_packet(conn, packet_id, "interact", 0x14):
-        # Interact (Entity)
-        pass  # TODO: entity interaction
+        # Interact (Entity): 攻击动作由战斗系统处理
+        await _handle_interact(conn, payload, server)
 
     elif _is_serverbound_packet(conn, packet_id, "set_creative_mode_slot", 0x22):
         # Set Creative Mode Slot

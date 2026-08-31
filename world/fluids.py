@@ -292,6 +292,7 @@ class FluidSystem:
 
         level = _get_fluid_level(current_state)
         is_source = (level == 0)
+        is_falling = level >= 8  # 下落中的流体 (level 8-15)
         speed = WATER_FLOW_SPEED if fluid_type == "water" else (LAVA_FLOW_SPEED_NETHER if self.dimension == "the_nether" else LAVA_FLOW_SPEED)
         max_dist = WATER_MAX_DISTANCE if fluid_type == "water" else (LAVA_MAX_DISTANCE_NETHER if self.dimension == "the_nether" else LAVA_MAX_DISTANCE)
 
@@ -333,8 +334,9 @@ class FluidSystem:
                     pass
 
         # 2. Horizontal flow (only if can't flow down OR is source)
-        if level < max_dist or is_source:
-            new_level = 1 if is_source else level + 1
+        # 下落中的流体落地后按等级 1 向四周扩散
+        if is_source or is_falling or level < max_dist:
+            new_level = 1 if (is_source or is_falling) else level + 1
 
             for dx, dz in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
                 nx, nz = x + dx, z + dz
@@ -375,7 +377,11 @@ class FluidSystem:
                         if n_type == fluid_type and n_level <= new_level:
                             continue  # Already have equal or better flow
 
-                    if fluid_type == "water":
+                    # 无限水源: 水平相邻 >=2 个水源且下方为固体/水源时,
+                    # 流入的水直接成为水源 (仅水, 岩浆不适用)
+                    if fluid_type == "water" and self._can_form_infinite_source(nx, y, nz):
+                        new_state = WATER
+                    elif fluid_type == "water":
                         new_state = _get_water_state(new_level)
                     else:
                         new_state = _get_lava_state(new_level)
@@ -396,12 +402,13 @@ class FluidSystem:
                 if neighbor is not None:
                     if fluid_type == "water" and _is_water(neighbor):
                         n_level = _get_fluid_level(neighbor)
-                        if n_level < level:
+                        # 正上方的下落水柱也是合法供给方
+                        if n_level < level or (dy == 1 and n_level >= 8):
                             has_source_neighbor = True
                             break
                     elif fluid_type == "lava" and _is_lava(neighbor):
                         n_level = _get_fluid_level(neighbor)
-                        if n_level < level:
+                        if n_level < level or (dy == 1 and n_level >= 8):
                             has_source_neighbor = True
                             break
 
@@ -418,6 +425,29 @@ class FluidSystem:
                         n_type = "water" if _is_water(neighbor) else "lava"
                         n_speed = WATER_FLOW_SPEED if n_type == "water" else (LAVA_FLOW_SPEED_NETHER if self.dimension == "the_nether" else LAVA_FLOW_SPEED)
                         remaining.append((nx, y, nz, self.tick_count + n_speed, n_type))
+
+    def _can_form_infinite_source(self, x: int, y: int, z: int) -> bool:
+        """
+        判断流入 (x, y, z) 的水是否应形成无限水源。
+
+        原版规则: 下方是固体方块或水源, 且水平相邻有 >= 2 个水源。
+        """
+        below = self.server.get_block_at(x, y - 1, z)
+        if below is None:
+            return False
+        below_is_base = _is_solid(below) or (
+            _is_water(below) and _get_fluid_level(below) == 0
+        )
+        if not below_is_base:
+            return False
+
+        source_count = 0
+        for dx, dz in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            neighbor = self.server.get_block_at(x + dx, y, z + dz)
+            if neighbor is not None and _is_water(neighbor):
+                if _get_fluid_level(neighbor) == 0:
+                    source_count += 1
+        return source_count >= 2
 
     def _notify_fluid_update(self, x: int, y: int, z: int, new_state: int):
         """Record a fluid update for broadcasting."""

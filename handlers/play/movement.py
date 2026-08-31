@@ -86,6 +86,8 @@ async def _handle_player_position(conn: Connection, payload: bytes, server):
     conn.on_ground = on_ground
     from handlers.play.chunks import _schedule_chunk_stream_update
     _schedule_chunk_stream_update(conn, server)
+    from handlers.play.players import relay_player_movement
+    await relay_player_movement(server, conn)
 
 
 async def _handle_player_position_rotation(conn: Connection, payload: bytes,
@@ -111,6 +113,8 @@ async def _handle_player_position_rotation(conn: Connection, payload: bytes,
     conn.on_ground = on_ground
     from handlers.play.chunks import _schedule_chunk_stream_update
     _schedule_chunk_stream_update(conn, server)
+    from handlers.play.players import relay_player_movement
+    await relay_player_movement(server, conn)
 
 
 async def _handle_player_rotation(conn: Connection, payload: bytes, server):
@@ -127,6 +131,8 @@ async def _handle_player_rotation(conn: Connection, payload: bytes, server):
     conn.yaw = yaw
     conn.pitch = pitch
     conn.on_ground = on_ground
+    from handlers.play.players import relay_player_movement
+    await relay_player_movement(server, conn)
 
 
 async def _handle_player_on_ground(conn: Connection, payload: bytes, server):
