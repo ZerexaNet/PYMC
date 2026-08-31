@@ -17,6 +17,8 @@ MOB_PROFILES = {
         "wander_interval": 120,
         "look_range": 8.0,
         "height": 0.9,
+        "drops": [("minecraft:porkchop", 1, 3)],
+        "xp": (1, 3),
     },
     "cow": {
         "category": "passive",
@@ -25,6 +27,8 @@ MOB_PROFILES = {
         "wander_interval": 120,
         "look_range": 8.0,
         "height": 1.4,
+        "drops": [("minecraft:beef", 1, 3), ("minecraft:leather", 0, 2)],
+        "xp": (1, 3),
     },
     "sheep": {
         "category": "passive",
@@ -33,6 +37,8 @@ MOB_PROFILES = {
         "wander_interval": 120,
         "look_range": 8.0,
         "height": 1.3,
+        "drops": [("minecraft:mutton", 1, 2), ("minecraft:white_wool", 1, 1)],
+        "xp": (1, 3),
     },
     "zombie": {
         "category": "hostile",
@@ -43,6 +49,8 @@ MOB_PROFILES = {
         "attack_range": 1.7,
         "attack_interval": 20,
         "height": 1.95,
+        "drops": [("minecraft:rotten_flesh", 0, 2)],
+        "xp": (5, 5),
     },
     "skeleton": {
         "category": "hostile",
@@ -53,6 +61,9 @@ MOB_PROFILES = {
         "attack_range": 15.0,
         "attack_interval": 30,
         "height": 1.99,
+        "ranged": True,
+        "drops": [("minecraft:bone", 0, 2), ("minecraft:arrow", 0, 2)],
+        "xp": (5, 5),
     },
     "creeper": {
         "category": "hostile",
@@ -63,6 +74,8 @@ MOB_PROFILES = {
         "attack_range": 2.4,
         "attack_interval": 35,
         "height": 1.7,
+        "drops": [("minecraft:gunpowder", 0, 2)],
+        "xp": (5, 5),
     },
     "spider": {
         "category": "hostile",
@@ -73,6 +86,8 @@ MOB_PROFILES = {
         "attack_range": 1.9,
         "attack_interval": 20,
         "height": 0.9,
+        "drops": [("minecraft:string", 0, 2), ("minecraft:spider_eye", 0, 1)],
+        "xp": (5, 5),
     },
 }
 

@@ -1035,16 +1035,19 @@ class MinecraftServer:
             if entity.kind == "mob" and entity.metadata.get("category") == "hostile":
                 if getattr(entity, "attack_cooldown", 0) > 0:
                     continue
+                profile = getattr(entity, "profile", {})
+                is_ranged = bool(profile.get("ranged", False))
                 for player in players:
                     if player.gamemode in {"creative", "spectator"}:
                         continue
-                    attack_range = float(getattr(entity, "profile", {}).get("attack_range", 1.7))
+                    attack_range = float(profile.get("attack_range", 1.7))
                     if entity.distance_squared_to(player.x, player.y, player.z) > attack_range * attack_range:
                         continue
-                    entity.attack_cooldown = int(getattr(entity, "profile", {}).get("attack_interval", 20))
-                    damage = float(getattr(entity, "profile", {}).get("attack_damage", 2.0))
+                    entity.attack_cooldown = int(profile.get("attack_interval", 20))
+                    damage = float(profile.get("attack_damage", 2.0))
                     mob_name = entity.metadata.get("mob_type", "生物")
-                    await _damage_player(player, damage, mob_name, self)
+                    reason = f"{mob_name}的箭" if is_ranged else mob_name
+                    await _damage_player(player, damage, reason, self)
                     break
 
     async def _tick_entity_sync(self):

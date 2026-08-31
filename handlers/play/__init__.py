@@ -139,6 +139,12 @@ from handlers.play.entities import (
     ENTITY_TYPE_IDS,
 )
 
+from handlers.play.combat import (
+    _handle_interact,
+    damage_mob,
+    get_attack_damage,
+)
+
 from handlers.play.spawn import (
     _resolve_spawn_location,
     _is_safe_player_location,
@@ -277,8 +283,8 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
         _handle_close_container(conn, payload)
 
     elif _is_serverbound_packet(conn, packet_id, "interact", 0x14):
-        # Interact (Entity)
-        pass  # TODO: entity interaction
+        # Interact (Entity): 攻击动作由战斗系统处理
+        await _handle_interact(conn, payload, server)
 
     elif _is_serverbound_packet(conn, packet_id, "set_creative_mode_slot", 0x22):
         # Set Creative Mode Slot
