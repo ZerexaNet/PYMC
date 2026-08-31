@@ -62,7 +62,8 @@ class WeaponDamageTests(unittest.TestCase):
         self.assertEqual(get_attack_damage(conn), 1.0)
 
     def test_sword_damage(self):
-        held = SimpleNamespace(item_id="minecraft:diamond_sword", is_empty=False)
+        held = SimpleNamespace(
+            item_id="minecraft:diamond_sword", is_empty=False, nbt={})
         inventory = SimpleNamespace(get_held_item_from_slot=lambda slot: held)
         conn = SimpleNamespace(inventory_obj=inventory, selected_hotbar_slot=0)
         self.assertEqual(

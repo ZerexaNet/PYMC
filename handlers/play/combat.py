@@ -60,12 +60,14 @@ def parse_interact(payload: bytes) -> tuple[int, int] | None:
 
 
 def get_attack_damage(conn: Connection) -> float:
-    """根据手持物品计算攻击伤害。"""
+    """根据手持物品计算攻击伤害 (含锋利附魔加成)。"""
+    from world.item_properties import sharpness_damage_bonus
     inventory = getattr(conn, "inventory_obj", None)
     if inventory is not None:
         held = inventory.get_held_item_from_slot(conn.selected_hotbar_slot)
         if held is not None and not held.is_empty:
-            return WEAPON_DAMAGE.get(held.item_id, 1.0)
+            base = WEAPON_DAMAGE.get(held.item_id, 1.0)
+            return base + sharpness_damage_bonus(held)
     return 1.0
 
 
@@ -93,6 +95,12 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
 
     damage = get_attack_damage(conn)
     killed = damage_mob(server, entity, damage, source=conn)
+
+    # 生存/冒险模式下消耗武器耐久
+    if conn.gamemode in ("survival", "adventure"):
+        from world.item_properties import damage_held_item
+        await damage_held_item(conn, server)
+
     if killed:
         from handlers.play.chat import send_system_message
         mob_name = entity.metadata.get("mob_type", "生物")
