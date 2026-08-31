@@ -37,6 +37,7 @@ ENTITY_TYPE_IDS = {
     "pig": 77,
     "sheep": 87,
     "zombie": 124,
+    "lightning_bolt": 64,
 }
 
 
