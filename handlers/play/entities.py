@@ -82,8 +82,8 @@ async def _send_generic_entity_spawn(conn: Connection, entity):
     await conn.send_packet(0x01, bytes(payload))
 
 
-async def _send_entity_teleport(conn: Connection, entity):
-    from protocol.packet_map import get_clientbound_packet
+def build_entity_teleport_payload(entity) -> bytes:
+    """构建 Entity Teleport 数据包负载。"""
     payload = bytearray()
     payload.extend(write_varint(entity.entity_id))
     payload.extend(write_double(entity.x))
@@ -92,9 +92,14 @@ async def _send_entity_teleport(conn: Connection, entity):
     payload.extend(write_angle(entity.yaw))
     payload.extend(write_angle(entity.pitch))
     payload.extend(write_boolean(entity.on_ground))
+    return bytes(payload)
+
+
+async def _send_entity_teleport(conn: Connection, entity):
+    from protocol.packet_map import get_clientbound_packet
     pid = get_clientbound_packet(conn.protocol_version, "entity_teleport")
     if pid is not None:
-        await conn.send_packet(pid, bytes(payload))
+        await conn.send_packet(pid, build_entity_teleport_payload(entity))
 
 
 def build_remove_entities(entity_ids: list[int]) -> bytes:
