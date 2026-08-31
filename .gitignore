@@ -11,3 +11,13 @@ __pycache__/
 /world/playerdata/
 
 /pumpkin-ref/
+
+# 本地编译产物 (由 build.bat/build.sh/CMake 生成)
+native/terrain_gen
+native/terrain_gen.exe
+native/mob_ai
+native/mob_ai.exe
+native/pymc_native_server
+native/pymc_native_server.exe
+native/libpymc_native.so
+native/pymc_native.dll

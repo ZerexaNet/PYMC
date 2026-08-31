@@ -420,6 +420,23 @@ class MobEntity(Entity):
 
 
 @dataclass
+class LightningBoltEntity(Entity):
+    """闪电实体: 雷暴天气时生成, 数 tick 后自动消失。"""
+
+    lifetime_ticks: int = 4
+
+    def __init__(self, entity_id: int, x: float, y: float, z: float):
+        super().__init__(entity_id=entity_id, kind="lightning_bolt", x=x, y=y, z=z)
+        self.lifetime_ticks = 4
+
+    def tick(self, server):
+        super().tick(server)
+        self.lifetime_ticks -= 1
+        if self.lifetime_ticks <= 0:
+            self.alive = False
+
+
+@dataclass
 class ExperienceOrbEntity(Entity):
     count: int = 1
 
@@ -481,6 +498,11 @@ class EntityManager:
 
     def create_experience_orb(self, x: float, y: float, z: float, count: int = 1) -> ExperienceOrbEntity:
         entity = ExperienceOrbEntity(self.server.get_next_entity_id(), x, y, z, count)
+        self.add_entity(entity)
+        return entity
+
+    def create_lightning(self, x: float, y: float, z: float) -> LightningBoltEntity:
+        entity = LightningBoltEntity(self.server.get_next_entity_id(), x, y, z)
         self.add_entity(entity)
         return entity
 

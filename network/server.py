@@ -871,6 +871,10 @@ class MinecraftServer:
             if tick_count % 2 == 0:
                 await self._tick_redstone()
 
+            # 雷暴落雷 (每 5 秒一次判定)
+            if tick_count % 100 == 0:
+                await self._tick_lightning()
+
             # Fluid system tick
             if self.fluid_system is not None:
                 await self._tick_fluids(tick_count)
@@ -891,6 +895,43 @@ class MinecraftServer:
             elapsed = time.time() - tick_start
             sleep_time = max(0, tick_interval - elapsed)
             await asyncio.sleep(sleep_time)
+
+    async def _tick_lightning(self):
+        """雷暴天气时在随机玩家附近落雷, 伤害落点附近的生物和玩家。"""
+        if self.weather != "thunder":
+            return
+        players = self.get_online_players()
+        if not players:
+            return
+
+        import random
+        target_player = random.choice(players)
+        lx = target_player.x + random.uniform(-24, 24)
+        lz = target_player.z + random.uniform(-24, 24)
+        ly = target_player.y
+
+        bolt = self.entity_manager.create_lightning(lx, ly, lz)
+        from handlers.play import broadcast_entity_spawn
+        await broadcast_entity_spawn(self, bolt)
+        logger.info(
+            f"闪电击中 ({lx:.1f}, {ly:.1f}, {lz:.1f}) "
+            f"附近玩家 {target_player.username}"
+        )
+
+        # 伤害落点 3 格内的玩家
+        from handlers.play import _damage_player
+        for player in players:
+            if player.gamemode in {"creative", "spectator"}:
+                continue
+            if bolt.distance_squared_to(player.x, player.y, player.z) <= 9.0:
+                await _damage_player(player, 5.0, "闪电", self)
+
+        # 伤害落点 3 格内的生物
+        from handlers.play.combat import damage_mob
+        for entity in self.entity_manager.list_entities():
+            if entity.kind == "mob" and entity.entity_id != bolt.entity_id:
+                if bolt.distance_squared_to(entity.x, entity.y, entity.z) <= 9.0:
+                    damage_mob(self, entity, 5.0)
 
     async def _tick_redstone(self):
         """Process a redstone tick and broadcast visual changes to players."""
@@ -1068,7 +1109,7 @@ class MinecraftServer:
         live_entities = {
             entity.entity_id: entity
             for entity in entities
-            if entity.kind in {"orb", "item", "mob"}
+            if entity.kind in {"orb", "item", "mob", "lightning_bolt"}
         }
 
         for conn in self.get_online_players():
