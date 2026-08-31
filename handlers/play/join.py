@@ -204,6 +204,10 @@ async def send_join_game(conn: Connection, server):
         await _send_set_experience(conn)
         await _send_time_update(conn, server)
 
+    # 同步当前天气状态 (晴天时为空操作)
+    from handlers.play.weather import send_weather_state
+    await send_weather_state(conn, server)
+
     from world.inventory import send_inventory_sync
     await send_inventory_sync(conn)
 

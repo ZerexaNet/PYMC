@@ -21,13 +21,15 @@ def register(manager):
             await ctx.reply(f"[PyMC] {e}")
             return FAILURE
 
-        ctx.server.weather = weather
         duration = 6000
         if len(args) >= 2:
             try:
                 duration = int(args[1]) * 20  # Convert seconds to ticks
             except ValueError:
                 pass
+
+        # 走统一入口: 更新 TimeManager 持续时间并立即广播到客户端
+        await ctx.server.set_weather(weather, duration)
 
         await ctx.reply(f"[PyMC] 天气已设置为 {weather}")
         return SUCCESS
