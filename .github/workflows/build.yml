@@ -79,6 +79,13 @@ jobs:
           retention-days: 1
 
   # ── Windows build ──
+  # Uses Microsoft Visual C++ (MSVC) instead of MinGW to avoid UCRT
+  # api-ms-win-crt-* DLL dependencies that fail to load on Windows
+  # machines missing the Visual C++ Redistributable runtime.
+  # MSVC with /MT statically links the C runtime into the .exe, so
+  # the resulting terrain_gen.exe / mob_ai.exe have ZERO external
+  # DLL dependencies beyond KERNEL32.dll (present on every Windows
+  # since NT 4.0).
   build-windows:
     runs-on: windows-latest
     steps:
@@ -89,41 +96,45 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Install MinGW via MSYS2
-        uses: msys2/setup-msys2@v2
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-make
+          arch: x64
       - name: Build native components
-        shell: msys2 {0}
+        # Use MSVC (cl.exe) via CMake's default generator. CMakeLists.txt
+        # sets CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded (= /MT) so the
+        # C runtime is statically linked into each .exe, producing
+        # binaries with ZERO external DLL dependencies beyond KERNEL32.dll.
+        shell: cmd
         run: |
-          mkdir -p build && cd build
-          cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wno-unused-parameter -Wno-unused-variable"
-          mingw32-make -j$(nproc)
-          cmake --install . --prefix stage
+          mkdir build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release -j
+          cmake --install . --config Release --prefix stage
       - name: Run tests
         run: python -m pytest tests/ -v
       - name: Build with Nuitka
+        # Nuitka on Windows defaults to MSVC. No --mingw64 flag, so it
+        # picks up the MSVC environment set up by ilammy/msvc-dev-cmd above.
         run: |
           pip install nuitka
-          python -m nuitka --standalone --onefile --mingw64 --assume-yes-for-downloads `
+          python -m nuitka --standalone --onefile --assume-yes-for-downloads `
             --include-data-file=world/blocks.json=world/blocks.json `
             --include-data-dir=build/stage/native=native `
             main.py -o pymc-server-windows-x86_64.exe
       - name: Stage native binaries for separate download
-        # Users running PyMC directly from source (not via the Nuitka onefile)
-        # need access to the statically-linked terrain_gen.exe / mob_ai.exe.
-        # Upload them as separate files alongside the main .exe so the
-        # release-assets glob can pick them up without subdirectory issues.
+        # Copy the MSVC-built, statically-linked /MT .exe files so users
+        # running PyMC from Python source can drop them into their
+        # local native/ directory without needing any DLLs.
         shell: bash
         run: |
-          cp build/terrain_gen.exe terrain_gen.exe
-          cp build/mob_ai.exe      mob_ai.exe
+          cp build/Release/terrain_gen.exe terrain_gen.exe
+          cp build/Release/mob_ai.exe      mob_ai.exe
           ls -lh terrain_gen.exe mob_ai.exe
+          # Sanity check: list DLL dependencies. We expect only KERNEL32.dll
+          # and the api-ms-win-crt-* stubs (which are part of Windows itself,
+          # not the Visual C++ Redistributable).
+          dumpbin //dependents terrain_gen.exe || true
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:

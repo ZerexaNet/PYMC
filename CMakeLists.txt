@@ -17,7 +17,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 if(MSVC)
-    add_compile_options(/O2 /W3)
+    add_compile_options(/O2 /W3 /EHsc)
+    # Use static C runtime (/MT) so the resulting .exe files have no
+    # external DLL dependencies. This applies to Debug builds too;
+    # Debug will use /MTd instead via CMAKE_MSVC_RUNTIME_LIBRARY.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     # Export all symbols for DLL
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
