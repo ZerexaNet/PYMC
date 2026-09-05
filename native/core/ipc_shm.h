@@ -22,7 +22,10 @@
 #include <string>
 
 #ifdef _WIN32
+// Prevent windows.h from defining min/max macros that conflict with
+// std::min / std::max (MSVC error C2589).
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <sys/mman.h>
