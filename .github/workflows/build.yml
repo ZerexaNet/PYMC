@@ -114,11 +114,25 @@ jobs:
             --include-data-file=world/blocks.json=world/blocks.json `
             --include-data-dir=build/stage/native=native `
             main.py -o pymc-server-windows-x86_64.exe
+      - name: Stage native binaries for separate download
+        # Users running PyMC directly from source (not via the Nuitka onefile)
+        # need access to the statically-linked terrain_gen.exe / mob_ai.exe.
+        # Upload them as separate artifacts so they can be downloaded
+        # independently from the full server package.
+        shell: bash
+        run: |
+          mkdir -p native-binaries
+          cp build/terrain_gen.exe native-binaries/terrain_gen.exe
+          cp build/mob_ai.exe      native-binaries/mob_ai.exe
+          ls -lh native-binaries/
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: pymc-server-windows
-          path: pymc-server-windows-x86_64.exe
+          path: |
+            pymc-server-windows-x86_64.exe
+            native-binaries/terrain_gen.exe
+            native-binaries/mob_ai.exe
           retention-days: 1
 
   # ── Auto pre-release for non-tagged pushes ──
@@ -167,6 +181,17 @@ jobs:
             - **Linux (x86_64)**: `pymc-server-linux-x86_64`
             - **macOS (ARM64)**: `pymc-server-macos-arm64`
             - **Windows (x86_64)**: `pymc-server-windows-x86_64.exe`
+
+            ### Native helper binaries (Windows, separate download)
+            If you run PyMC directly from Python source on Windows (not via the
+            Nuitka-packaged `pymc-server-windows-x86_64.exe`), you also need
+            the statically-linked native helper binaries. Replace the files in
+            your local `native/` directory with these:
+            - `terrain_gen.exe` — C++ terrain generator (statically linked, no DLL dependencies)
+            - `mob_ai.exe` — C++ mob AI engine (statically linked, no DLL dependencies)
+
+            These are built with MinGW UCRT64 and have the C++ runtime baked in,
+            so they run on stock Windows 10/11 without requiring MSYS2 or MinGW.
 
       - name: Tag summary
         run: echo "Created pre-release tag ${{ steps.tag.outputs.tag }} with build artifacts"
