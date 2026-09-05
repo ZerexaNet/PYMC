@@ -117,22 +117,21 @@ jobs:
       - name: Stage native binaries for separate download
         # Users running PyMC directly from source (not via the Nuitka onefile)
         # need access to the statically-linked terrain_gen.exe / mob_ai.exe.
-        # Upload them as separate artifacts so they can be downloaded
-        # independently from the full server package.
+        # Upload them as separate files alongside the main .exe so the
+        # release-assets glob can pick them up without subdirectory issues.
         shell: bash
         run: |
-          mkdir -p native-binaries
-          cp build/terrain_gen.exe native-binaries/terrain_gen.exe
-          cp build/mob_ai.exe      native-binaries/mob_ai.exe
-          ls -lh native-binaries/
+          cp build/terrain_gen.exe terrain_gen.exe
+          cp build/mob_ai.exe      mob_ai.exe
+          ls -lh terrain_gen.exe mob_ai.exe
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: pymc-server-windows
           path: |
             pymc-server-windows-x86_64.exe
-            native-binaries/terrain_gen.exe
-            native-binaries/mob_ai.exe
+            terrain_gen.exe
+            mob_ai.exe
           retention-days: 1
 
   # ── Auto pre-release for non-tagged pushes ──
