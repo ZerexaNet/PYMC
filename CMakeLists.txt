@@ -32,6 +32,22 @@ add_executable(mob_ai native/mob_ai.cpp)
 add_executable(rootree_worldgen src/main.cpp)
 set_target_properties(rootree_worldgen PROPERTIES CXX_STANDARD 20)
 
+# Windows + MinGW: statically link the C++ runtime libraries
+# (libgcc, libstdc++, libwinpthread) so the resulting .exe files
+# can run on user machines without requiring MSYS2/MinGW DLLs
+# in PATH. Without this, terrain_gen.exe / mob_ai.exe crash
+# immediately on machines that don't have MinGW installed.
+if(MINGW)
+    set(MINGW_STATIC_LINK_FLAGS
+        -static-libgcc
+        -static-libstdc++
+        -static
+    )
+    target_link_options(terrain_gen        PRIVATE ${MINGW_STATIC_LINK_FLAGS})
+    target_link_options(mob_ai             PRIVATE ${MINGW_STATIC_LINK_FLAGS})
+    target_link_options(pymc_native_server PRIVATE ${MINGW_STATIC_LINK_FLAGS})
+endif()
+
 # ===========================================================
 # Core IPC shared memory library
 # ===========================================================

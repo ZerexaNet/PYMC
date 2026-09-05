@@ -250,6 +250,47 @@ class NativeTerrainGenerator:
             logger.error(f"启动原生地形生成器失败: {e}")
             self._process = None
 
+    def _harvest_stderr(self) -> str:
+        """读取子进程 stderr 中累积的数据。
+
+        安全策略：仅当子进程已退出 (poll() 返回非 None) 时才读 stderr。
+        否则返回空字符串，因为 read() 在活着的管道上会阻塞。
+        """
+        if not self._process or self._process.stderr is None:
+            return ""
+        if self._process.poll() is None:
+            # 进程还活着，不要读 (会阻塞)
+            return ""
+        try:
+            data = self._process.stderr.read() or b""
+            return data.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
+
+    def _diagnose_crash(self, context: str) -> str:
+        """子进程崩溃时，输出诊断信息。"""
+        if not self._process:
+            return f"{context} (子进程已退出)"
+        exit_code = self._process.poll()
+        stderr_text = self._harvest_stderr()
+        parts = [context]
+        if exit_code is not None:
+            parts.append(f"退出码={exit_code}")
+        if stderr_text:
+            parts.append(f"stderr: {stderr_text}")
+        hint = ""
+        # 常见崩溃模式的人性化提示
+        if exit_code is not None and not stderr_text:
+            hint = ("无 stderr 输出 — 可能是 DLL 缺失或运行时初始化失败 "
+                    "(Windows MinGW 静态链接问题)")
+        elif stderr_text and ("dll" in stderr_text.lower() or
+                              "0xC0000135" in stderr_text or
+                              "0xc0000135" in stderr_text):
+            hint = "DLL 缺失或运行时错误"
+        if hint:
+            parts.append(f"提示: {hint}")
+        return " | ".join(parts)
+
     def _read_exact(self, n: int) -> bytes:
         """从子进程 stdout 精确读取 n 字节。"""
         data = b''
@@ -343,7 +384,8 @@ class NativeTerrainGenerator:
             return _decode_binary_blocks(blocks_data)
 
         except Exception as e:
-            logger.error(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            diag = self._diagnose_crash(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            logger.error(diag)
             # 子进程可能已崩溃，尝试重启
             self.shutdown()
             self._start_process()
@@ -373,7 +415,8 @@ class NativeTerrainGenerator:
             return blocks, height_map
 
         except Exception as e:
-            logger.error(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            diag = self._diagnose_crash(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            logger.error(diag)
             self.shutdown()
             self._start_process()
             raise
@@ -394,7 +437,8 @@ class NativeTerrainGenerator:
                 _decode_binary_biomes(biome_data),
             )
         except Exception as e:
-            logger.error(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            diag = self._diagnose_crash(f"原生区块生成失败 ({chunk_x}, {chunk_z}): {e}")
+            logger.error(diag)
             self.shutdown()
             self._start_process()
             raise
@@ -422,7 +466,8 @@ class NativeTerrainGenerator:
                 for blocks_data, heightmap_data, _ in raw_chunks
             ]
         except Exception as e:
-            logger.error(f"原生批量区块生成失败 ({len(chunk_coords)} 个): {e}")
+            diag = self._diagnose_crash(f"原生批量区块生成失败 ({len(chunk_coords)} 个): {e}")
+            logger.error(diag)
             self.shutdown()
             self._start_process()
             raise
@@ -449,7 +494,8 @@ class NativeTerrainGenerator:
                 for blocks_data, heightmap_data, biome_data in raw_chunks
             ]
         except Exception as e:
-            logger.error(f"原生批量区块生成失败 ({len(chunk_coords)} 个): {e}")
+            diag = self._diagnose_crash(f"原生批量区块生成失败 ({len(chunk_coords)} 个): {e}")
+            logger.error(diag)
             self.shutdown()
             self._start_process()
             raise
