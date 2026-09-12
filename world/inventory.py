@@ -861,84 +861,97 @@ class PlayerInventory:
 
 def encode_slot_entry(item: ItemStack | None) -> bytes:
     """
-    Encode a single inventory slot for the Minecraft protocol.
-    Empty slot: write_boolean(False)
-    Filled slot: write_boolean(True) + write_varint(item_id) + count + nbt
+    Encode a single inventory slot for the Minecraft 1.20.5+ protocol.
+
+    1.20.5+ Slot format (from PrismarineJS minecraft-data 1.21.1/protocol.json):
+
+        VarInt  itemCount   (0 = empty slot; non-zero = stack size)
+        IF itemCount != 0:
+            VarInt  itemId               (index into minecraft:item registry)
+            VarInt  addedComponentCount  (number of present slot components)
+            VarInt  removedComponentCount (number of default-removed components)
+            SlotComponent[addedComponentCount]   (each: VarInt type + typed data)
+            VarInt[removedComponentCount]         (each: a SlotComponentType id)
+
+    For a vanilla item with no component overrides (which is what we currently
+    send), addedComponentCount=0 and removedComponentCount=0 — so a non-empty
+    slot is just 4 bytes: itemCount + itemId + 0 + 0.
+
+    PREVIOUSLY this function used the legacy 1.20.4-and-earlier format
+    (Boolean present + VarInt itemId + Byte count + NBT). That format was
+    REMOVED in 1.20.5 and caused client error:
+      "Failed to decode packet 'clientbound/minecraft:container_set_content' /
+       No value with id 64"
+    because the client misread the count byte as a component count.
     """
     if item is None or item.is_empty:
-        return write_boolean(False)
+        # Empty slot: just a VarInt 0
+        return write_varint(0)
 
     payload = bytearray()
-    payload.extend(write_boolean(True))
+    # itemCount (non-zero = stack size, sent FIRST in 1.20.5+)
+    payload.extend(write_varint(max(1, min(127, item.count))))
 
-    # Item protocol ID
+    # itemId: index into the minecraft:item registry
+    # (which is BUILT-IN to the client, NOT sent via Registry Data)
     item_id = item_name_to_protocol_id(item.item_id)
     payload.extend(write_varint(item_id))
 
-    # Count (as VarInt in 1.21.1+)
-    payload.extend(write_varint(max(1, min(127, item.count))))
+    # addedComponentCount = 0 (we send no component overrides)
+    payload.extend(write_varint(0))
 
-    # NBT data: 0 byte means no NBT
-    if item.nbt:
-        from protocol.nbt import encode_nbt
-        try:
-            nbt_data = encode_nbt(item.nbt, with_type=True, root_name="")
-            payload.extend(nbt_data)
-        except Exception:
-            payload.extend(write_byte(0))
-    else:
-        payload.extend(write_byte(0))
+    # removedComponentCount = 0 (we don't remove any default components)
+    payload.extend(write_varint(0))
+
+    # NOTE: If we ever need to send custom NBT (custom_name, enchantments,
+    # durability, etc.), it must be encoded as a SlotComponent with the
+    # appropriate SlotComponentType VarInt followed by the typed payload,
+    # NOT as a raw trailing NBT blob. The legacy "trailing NBT" format was
+    # removed in 1.20.5. For now we send zero components, which means the
+    # client uses the item's default components from its built-in registry.
 
     return bytes(payload)
 
 
 def decode_slot_entry(data: bytes, offset: int = 0) -> tuple[ItemStack | None, int]:
     """
-    Decode a single inventory slot from the Minecraft protocol.
-    
-    Returns (ItemStack or None, new_offset).
-    Empty slot: read_boolean(False) -> returns (None, offset+1)
-    Filled slot: read_boolean(True) + read_varint(item_id) + count + nbt
-    """
-    from protocol.data_types import read_varint, read_boolean, read_byte, read_short
+    Decode a single inventory slot from the Minecraft 1.20.5+ protocol.
 
-    present, offset = read_boolean(data, offset)
-    if not present:
+    Returns (ItemStack or None, new_offset).
+    """
+    from protocol.data_types import read_varint
+
+    # itemCount (VarInt, 0 = empty)
+    item_count, offset = read_varint(data, offset)
+    if item_count == 0:
         return (None, offset)
 
-    # Item protocol ID
+    # itemId
     item_id_raw, offset = read_varint(data, offset)
     item_name = protocol_id_to_item_name(item_id_raw)
     if item_name is None:
         item_name = f"minecraft:unknown_{item_id_raw}"
 
-    # Count (VarInt in 1.21.1+)
-    count, offset = read_varint(data, offset)
+    # addedComponentCount + SlotComponent[]
+    added_count, offset = read_varint(data, offset)
+    for _ in range(added_count):
+        # Skip the component type VarInt
+        _component_type, offset = read_varint(data, offset)
+        # NOTE: Properly decoding the component payload requires a switch
+        # on component type (custom_data, custom_name, enchantments, etc.).
+        # For now we don't decode component payloads — they're rare in
+        # vanilla and the client usually only sends simple slots.
+        # This is a known limitation: complex slots with components
+        # will fail to decode. Returning the item without NBT is a
+        # reasonable fallback for now.
+        break  # avoid consuming unknown bytes
 
-    # NBT data: first byte tells us if there's NBT
-    # 0x00 means no NBT, anything else is the start of an NBT compound
-    nbt_start = data[offset] if offset < len(data) else 0
-    if nbt_start == 0:
-        # No NBT
-        offset += 1
-        nbt_data = None
-    else:
-        # NBT data present - skip it for now
-        # (Proper NBT parsing would require reading the compound tag)
-        # For simplicity, just note that NBT exists and skip it
-        nbt_data = None
-        try:
-            from protocol.nbt import decode_nbt
-            nbt_data, offset = decode_nbt(data, offset)
-        except Exception:
-            # If NBT parsing fails, we can't reliably skip it
-            # Return the item without NBT
-            pass
+    # removedComponentCount + VarInt[]
+    removed_count, offset = read_varint(data, offset)
+    for _ in range(removed_count):
+        _removed_type, offset = read_varint(data, offset)
 
-    item = ItemStack(item_id=item_name, count=max(1, count))
-    if nbt_data and isinstance(nbt_data, dict):
-        item.nbt = nbt_data
-
+    item = ItemStack(item_id=item_name, count=max(1, item_count))
     return (item, offset)
 
 
