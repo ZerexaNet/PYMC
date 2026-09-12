@@ -1423,7 +1423,7 @@ class TNTBehavior(BlockBehavior):
             payload.extend(write_float(0.0))
 
             for player in server.get_online_players():
-                await player.send_packet(0x24, bytes(payload))  # Explosion packet
+                await player.send_packet(0x20, bytes(payload))  # Explosion packet (was 0x24 which is hurt_animation)
         except Exception as e:
             logger.warning(f"Failed to send explosion packet: {e}")
 

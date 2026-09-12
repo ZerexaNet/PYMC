@@ -65,7 +65,7 @@ def register(manager):
             payload.extend(write_varint(count))
             # No extra data for most particles
 
-            await player.send_packet(0x24, bytes(payload))
+            await player.send_packet(0x29, bytes(payload))  # world_particles (was 0x24 which is hurt_animation)
 
         await ctx.reply(f"[PyMC] 已生成粒子: {particle_name} 在 ({x:.1f}, {y:.1f}, {z:.1f})")
         return SUCCESS

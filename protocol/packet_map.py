@@ -438,34 +438,131 @@ CLIENTBOUND_PACKETS = {
     },
 
     # --- 1.21.1 (Protocol 767) - NATIVE ---
+    # Packet IDs sourced from PrismarineJS minecraft-data 1.21.1/protocol.json
+    # which is derived from Mojang's official data generator reports.
+    # See: https://github.com/PrismarineJS/minecraft-data/blob/master/data/pc/1.21.1/protocol.json
     767: {
-        "join_game": 0x2B,
+        "join_game": 0x2B,           # login
         "keep_alive": 0x26,
-        "chunk_data": 0x27,
-        "player_position": 0x40,
-        "chat_message": None,
-        "player_info": 0x3E,
+        "chunk_data": 0x27,           # map_chunk
+        "update_light": 0x2A,         # update_light (separate from chunk_data in 1.21.1!)
+        "player_position": 0x40,      # position (Synchronize Player Position)
+        "chat_message": None,         # player_chat is 0x39, but None = not implemented
+        "player_info": 0x3E,          # player_info (PlayerInfoUpdate)
         "player_remove": 0x3D,
-        "spawn_position": 0x56,
-        "set_center_chunk": 0x54,
-        "game_event": 0x22,
+        "spawn_position": 0x56,        # spawn_position
+        "set_center_chunk": 0x54,     # update_view_position
+        "game_event": 0x22,           # game_state_change
         "update_time": 0x64,
         "update_health": 0x5D,
-        "set_experience": 0x5C,
+        "set_experience": 0x5C,       # experience
         "entity_teleport": 0x70,
-        "remove_entities": 0x42,
+        "remove_entities": 0x42,       # entity_destroy
         "multi_block_change": 0x49,
-        "block_update": 0x0C,
-        "set_chunk_cache_radius": 0x55,
+        "block_update": 0x09,          # block_change
+        "block_action": 0x08,          # block_event
+        "chunk_batch_start": 0x0D,
+        "chunk_batch_finished": 0x0C,
+        "set_chunk_cache_radius": 0x62,  # simulation_distance (NOT 0x55!)
         "sound_effect": 0x68,
         "system_chat": 0x6C,
-        "player_abilities": 0x3A,
-        "held_item_change": 0x4E,
-        "window_items": 0x11,
-        "disconnect": 0x1D,
-        "entity_metadata": 0x52,
-        "entity_velocity": 0x55,
-        "entity_status": 0x4A,
+        "player_abilities": 0x38,      # abilities (NOT 0x3A!)
+        "held_item_change": 0x53,      # held_item_slot (NOT 0x4E!)
+        "window_items": 0x13,          # window_items (NOT 0x11 — that was declare_commands!)
+        "set_slot": 0x15,              # set_slot (NOT 0x12 — that was close_window!)
+        "open_screen": 0x33,           # open_window
+        "close_window": 0x12,
+        "disconnect": 0x1D,             # kick_disconnect
+        "entity_metadata": 0x58,        # entity_metadata (NOT 0x52 — that was camera!)
+        "entity_velocity": 0x5A,       # entity_velocity (NOT 0x55 — that was update_view_distance!)
+        "entity_status": 0x1F,          # entity_status (NOT 0x4A — that was select_advancement_tab!)
+        "entity_head_rotation": 0x48,
+        "spawn_entity": 0x01,
+        "spawn_experience_orb": 0x02,
+        "entity_effect": 0x76,
+        "remove_entity_effect": 0x43,
+        "player_chat": 0x39,
+        "action_bar": 0x4C,
+        "title_text": 0x65,             # set_title_text
+        "title_subtitle": 0x63,         # set_title_subtitle
+        "title_times": 0x66,            # set_title_time
+        "clear_titles": 0x0F,
+        "tab_complete": 0x10,           # tab_complete (clientbound command suggestions)
+        "declare_commands": 0x11,       # declare_commands (we don't send this — root node only)
+        "particle": 0x29,               # world_particles
+        "world_event": 0x28,            # world_event (playsound etc.)
+        "explosion": 0x20,
+        "hurt_animation": 0x24,
+        "damage_event": 0x1A,
+        "unload_chunk": 0x21,
+        "open_sign_entity": 0x34,
+        "ping": 0x35,
+        "boss_bar": 0x0A,
+        "scoreboard_objective": 0x5E,
+        "scoreboard_display_objective": 0x57,
+        "scoreboard_score": 0x61,
+        "teams": 0x60,
+        "set_passengers": 0x5F,
+        "set_cooldown": 0x17,
+        "custom_payload": 0x19,         # plugin_message
+        "server_data": 0x4B,
+        "camera": 0x52,
+        "respawn": 0x47,
+        "death_combat_event": 0x3C,
+        "enter_combat_event": 0x3B,
+        "end_combat_event": 0x3A,
+        "difficulty": 0x0B,
+        "statistics": 0x04,
+        "acknowledge_player_digging": 0x05,
+        "set_ticking_state": 0x71,
+        "step_tick": 0x72,
+        "bundle_delimiter": 0x00,
+        "start_configuration": 0x69,
+        "cookie_request": 0x16,
+        "store_cookie": 0x6B,
+        "debug_sample": 0x1B,
+        "playerlist_header": 0x6D,
+        "select_advancement_tab": 0x4A,
+        "tags": 0x78,
+        "advancements": 0x74,
+        "declare_recipes": 0x77,
+        "unlock_recipes": 0x41,
+        "entity_equipment": 0x5B,
+        "entity_sound_effect": 0x67,
+        "stop_sound": 0x6A,
+        "nbt_query_response": 0x6E,
+        "trade_list": 0x2D,
+        "open_book": 0x32,
+        "open_horse_window": 0x23,
+        "vehicle_move": 0x31,
+        "attach_entity": 0x59,
+        "entity_look": 0x30,
+        "entity_move_look": 0x2F,
+        "rel_entity_move": 0x2E,
+        "tile_entity_data": 0x07,
+        "face_player": 0x3F,
+        "chat_suggestions": 0x18,
+        "hide_message": 0x1C,
+        "profileless_chat": 0x1E,
+        "block_break_animation": 0x06,
+        "animation": 0x03,
+        "map": 0x2C,
+        "world_border_center": 0x4D,
+        "world_border_lerp_size": 0x4E,
+        "world_border_size": 0x4F,
+        "world_border_warning_delay": 0x50,
+        "world_border_warning_reach": 0x51,
+        "spawn_entity_experience_orb_alt": 0x02,
+        "craft_progress_bar": 0x14,
+        "craft_recipe_response": 0x37,
+        "add_resource_pack": 0x46,
+        "remove_resource_pack": 0x45,
+        "transfer": 0x73,
+        "custom_report_details": 0x7A,
+        "server_links": 0x7B,
+        "set_projectile_power": 0x79,
+        "reset_score": 0x44,
+        "chunk_biomes": 0x0E,
     },
 
     # --- 1.21.4 (Protocol 770) ---

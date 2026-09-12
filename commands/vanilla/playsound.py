@@ -92,7 +92,7 @@ def register(manager):
         payload.extend(write_float(pitch))
         payload.extend(write_varint(0))  # Seed
 
-        await target.send_packet(0x5E, bytes(payload))
+        await target.send_packet(0x68, bytes(payload))  # sound_effect (was 0x5E which is scoreboard_objective)
         await ctx.reply(f"[PyMC] 已播放声音: {sound_name}")
         return SUCCESS
 
