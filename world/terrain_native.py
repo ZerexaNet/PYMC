@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 from ._native_binary import is_runnable_native_binary
+from ._native_downloader import ensure_native_binary
 
 logger = logging.getLogger("pymc.terrain_native")
 
@@ -56,7 +57,15 @@ BATCH_RESPONSE_HEADER_FORMAT = '<I'
 
 
 def _find_native_binary() -> str | None:
-    """查找跨平台 terrain_gen 可执行文件路径。"""
+    """查找跨平台 terrain_gen 可执行文件路径。
+
+    查找顺序:
+      1. 本地源码树 / build 目录 / 工作目录中已有的 terrain_gen(.exe)
+      2. 如果本地没有，自动从 GitHub Release 下载最新版
+
+    所有候选项都通过 is_runnable_native_binary() 验证 magic bytes
+    和架构匹配，避免在 Linux 上选到 .exe 或在 Windows 上选到 ELF。
+    """
     # Pick binary name based on current OS
     if os.name == "nt":
         binary_names = ["terrain_gen.exe", "terrain_gen"]
@@ -135,6 +144,22 @@ def _find_native_binary() -> str | None:
     for path in candidates:
         if is_runnable_native_binary(path):
             return str(path)
+
+    # 本地未找到可用二进制 — 尝试从 GitHub Release 自动下载
+    logger.info(
+        "本地未找到可用的 terrain_gen 二进制，尝试从 GitHub Release 自动下载..."
+    )
+    downloaded = ensure_native_binary("terrain_gen")
+    if downloaded:
+        # 下载后再次验证 magic
+        try:
+            if is_runnable_native_binary(Path(downloaded)):
+                return downloaded
+            logger.warning(
+                f"下载的 {downloaded} 未通过 magic 校验，将使用纯 Python 回退"
+            )
+        except Exception as e:
+            logger.warning(f"校验下载的二进制失败: {e}")
     return None
 
 
@@ -197,6 +222,8 @@ class NativeTerrainGenerator:
 
     自动管理子进程生命周期，支持多次调用。
     如果子进程崩溃会自动重启。
+    如果本地二进制是损坏的旧版（如动态链接 MinGW 版本），
+    会自动从 GitHub Release 下载最新版替换。
     """
 
     def __init__(self, seed: int, binary_path: str | None = None, worker_count: int | None = None):
@@ -204,12 +231,46 @@ class NativeTerrainGenerator:
         self._process: subprocess.Popen | None = None
         self._binary_path = binary_path or _find_native_binary()
         self.worker_count = max(1, int(worker_count or (os.cpu_count() or 1)))
+        self._redownload_attempted = False
 
         if self._binary_path:
             logger.info(f"找到原生地形生成器: {self._binary_path}")
             self._start_process()
+            # 启动后如果立即崩溃，可能是本地二进制版本不对（如缺 DLL），
+            # 尝试从 GitHub Release 重新下载最新版替换
+            if not self.available and not self._redownload_attempted:
+                self._try_redownload_after_crash()
         else:
             logger.warning("未找到 terrain_gen 原生生成器，将使用纯 Python 回退")
+
+    def _try_redownload_after_crash(self) -> None:
+        """子进程启动崩溃后，自动从 GitHub Release 重新下载二进制。"""
+        self._redownload_attempted = True
+        logger.warning(
+            "原生地形生成器启动失败，可能是本地二进制损坏或缺少 DLL。"
+            " 尝试从 GitHub Release 重新下载最新版..."
+        )
+        # 强制重新下载，会覆盖缓存目录中的旧版
+        new_path = ensure_native_binary("terrain_gen", force_redownload=True)
+        if not new_path:
+            logger.error(
+                "无法从 GitHub 下载新版 terrain_gen，将使用纯 Python 回退。"
+                " 请手动从 https://github.com/ZerexaNet/PYMC/releases/latest "
+                " 下载 terrain_gen.exe 并替换 native/ 目录中的同名文件"
+            )
+            return
+
+        logger.info(f"已下载/刷新 terrain_gen: {new_path}")
+        self._binary_path = new_path
+        # 清理旧进程残留，重新启动
+        self.shutdown()
+        self._start_process()
+        if self.available:
+            logger.info("重新下载后 terrain_gen 启动成功")
+        else:
+            logger.error(
+                "重新下载后 terrain_gen 仍启动失败，将使用纯 Python 回退"
+            )
 
     @property
     def available(self) -> bool:
