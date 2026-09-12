@@ -99,7 +99,26 @@ class VersionHandler:
         await conn.send_packet(pid, bytes(payload))
 
     async def send_synchronize_position(self, conn):
-        """Send Synchronize Player Position packet for this version."""
+        """Send Synchronize Player Position packet for this version.
+
+        Format reference (per protocol version):
+          < 1.20 (protocol < 763):
+            Double X, Y, Z, Delta X, Y, Z, Float Yaw, Pitch, Byte Flags, VarInt Teleport ID
+          1.20 - 1.20.1 (protocol 763):
+            Double X, Y, Z, Float Yaw, Pitch, Byte Flags, VarInt Teleport ID
+            (delta coordinates removed in 1.20)
+          1.20.2+ (protocol >= 764):
+            Double X, Y, Z, Float Yaw, Pitch, Byte Flags, VarInt Teleport ID
+            (same as 1.20 — no delta coordinates)
+          1.21+ (protocol >= 767):
+            Double X, Y, Z, Float Yaw, Pitch, Byte Flags, VarInt Teleport ID
+            (unchanged from 1.20.2)
+
+        The bug that caused 'found 24 bytes extra whilst reading packet
+        clientbound/minecraft:player_position' was sending the three
+        delta-Double fields on 1.21+ — that's exactly 24 bytes of extra
+        payload the 1.21 client doesn't expect.
+        """
         from protocol.data_types import (
             write_double, write_float, write_varint, write_byte
         )
@@ -114,8 +133,9 @@ class VersionHandler:
         payload.extend(write_double(conn.y))
         payload.extend(write_double(conn.z))
 
-        if self.PROTOCOL_VERSION >= 767:
-            # 1.21+ format: delta coordinates
+        # Delta coordinates only exist in pre-1.20 (protocol < 763)
+        # 1.20+ removed them. NEVER send delta on 1.21+.
+        if self.PROTOCOL_VERSION < 763:
             payload.extend(write_double(0.0))   # delta X
             payload.extend(write_double(0.0))   # delta Y
             payload.extend(write_double(0.0))   # delta Z
@@ -125,7 +145,8 @@ class VersionHandler:
 
         if self.PROTOCOL_VERSION >= 47:
             flags = 0
-            payload.extend(write_varint(flags))
+            # Flags is a Byte (signed 8-bit) on all modern versions
+            payload.extend(write_byte(flags))
             payload.extend(write_varint(conn.teleport_id))
 
         await conn.send_packet(pid, bytes(payload))

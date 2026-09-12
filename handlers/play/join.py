@@ -332,22 +332,31 @@ async def _send_center_chunk(conn: Connection, chunk_x: int, chunk_z: int):
 
 
 async def _send_synchronize_position(conn: Connection):
-    """发送 Synchronize Player Position 数据包。"""
+    """发送 Synchronize Player Position 数据包 (1.21.1 native 格式)。
+
+    1.21.1 (protocol 767) 格式:
+      Double  X
+      Double  Y
+      Double  Z
+      Float   Yaw
+      Float   Pitch
+      Byte    Flags       (signed 8-bit, NOT VarInt)
+      VarInt  Teleport ID
+
+    1.21+ 没有 Delta X/Y/Z 字段 (它们在 1.20 被移除)。
+    """
     if conn.version_handler is not None:
         await conn.version_handler.send_synchronize_position(conn)
         return
 
-    # Native 1.21.1 format
+    # Native 1.21.1 format — NO delta coordinates, Flags is Byte
     payload = bytearray()
     payload.extend(write_double(conn.x))    # X
     payload.extend(write_double(conn.y))    # Y
     payload.extend(write_double(conn.z))    # Z
-    payload.extend(write_double(0.0))       # Delta X
-    payload.extend(write_double(0.0))       # Delta Y
-    payload.extend(write_double(0.0))       # Delta Z
-    payload.extend(write_float(conn.yaw))   # Yaw
+    payload.extend(write_float(conn.yaw))  # Yaw
     payload.extend(write_float(conn.pitch)) # Pitch
-    payload.extend(write_varint(0))         # Flags
+    payload.extend(write_byte(0))           # Flags (Byte, not VarInt)
     conn.teleport_id = (conn.teleport_id + 1) & 0x7FFFFFFF
     payload.extend(write_varint(conn.teleport_id))  # Teleport ID
     await conn.send_packet(0x40, bytes(payload))
