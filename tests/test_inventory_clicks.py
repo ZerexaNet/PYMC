@@ -89,7 +89,7 @@ class InventoryClickTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(conn.inventory_obj.get_slot(0))
         self.assertEqual(conn.inventory_obj.carried_item, ItemStack("minecraft:stone", 12))
         self.assertEqual(conn.inventory_state_id, 1)
-        self.assertEqual(conn.sent_packets[-1][0], 0x11)
+        self.assertEqual(conn.sent_packets[-1][0], 0x13)  # window_items in 1.21.1
 
     async def test_right_click_picks_up_rounded_half(self):
         conn = self.make_connection()

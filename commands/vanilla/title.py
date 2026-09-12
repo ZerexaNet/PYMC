@@ -36,12 +36,12 @@ def register(manager):
         # Handle different title actions
         if action == "clear":
             for player in players:
-                await _send_title_packet(player, {"text": ""}, action=0)
+                await _send_title_clear(player, reset=False)
             return SUCCESS
 
         if action == "reset":
             for player in players:
-                await _send_title_packet(player, {"text": ""}, action=0)
+                await _send_title_clear(player, reset=True)
                 await _send_title_times(player, 10, 70, 20)
             return SUCCESS
 
@@ -72,9 +72,13 @@ def register(manager):
             except Exception:
                 component = {"text": message_str}
 
-            action_map = {"title": 0, "subtitle": 1, "actionbar": 2}
             for player in players:
-                await _send_title_packet(player, component, action=action_map[action])
+                if action == "title":
+                    await _send_title_text(player, component)
+                elif action == "subtitle":
+                    await _send_title_subtitle(player, component)
+                elif action == "actionbar":
+                    await _send_action_bar(player, component)
 
             return SUCCESS
 
@@ -98,25 +102,43 @@ def register(manager):
     manager.register(cmd)
 
 
-async def _send_title_packet(conn: Connection, component: dict, action: int = 0):
-    """Send a title/subtitle/actionbar packet."""
+async def _send_title_text(conn: Connection, component: dict):
+    """Send set_title_text packet (0x65 in 1.21.1)."""
     from protocol.nbt import encode_nbt
-    from protocol.data_types import write_varint
-
     payload = bytearray()
-    payload.extend(write_varint(action))
-    if action in (0, 1, 2):  # title, subtitle, actionbar need text
-        payload.extend(encode_nbt(component, with_type=True))
-    await conn.send_packet(0x6B, bytes(payload))
+    payload.extend(encode_nbt(component, with_type=True))
+    await conn.send_packet(0x65, bytes(payload))
+
+
+async def _send_title_subtitle(conn: Connection, component: dict):
+    """Send set_title_subtitle packet (0x63 in 1.21.1)."""
+    from protocol.nbt import encode_nbt
+    payload = bytearray()
+    payload.extend(encode_nbt(component, with_type=True))
+    await conn.send_packet(0x63, bytes(payload))
+
+
+async def _send_action_bar(conn: Connection, component: dict):
+    """Send action_bar packet (0x4C in 1.21.1)."""
+    from protocol.nbt import encode_nbt
+    payload = bytearray()
+    payload.extend(encode_nbt(component, with_type=True))
+    await conn.send_packet(0x4C, bytes(payload))
+
+
+async def _send_title_clear(conn: Connection, reset: bool = False):
+    """Send clear_titles packet (0x0F in 1.21.1)."""
+    from protocol.data_types import write_boolean
+    payload = bytearray()
+    payload.extend(write_boolean(reset))
+    await conn.send_packet(0x0F, bytes(payload))
 
 
 async def _send_title_times(conn: Connection, fade_in: int, stay: int, fade_out: int):
-    """Send title times packet."""
-    from protocol.data_types import write_varint, write_int
-
+    """Send set_title_time packet (0x66 in 1.21.1)."""
+    from protocol.data_types import write_int
     payload = bytearray()
-    payload.extend(write_varint(3))  # Set title times action
     payload.extend(write_int(fade_in))
     payload.extend(write_int(stay))
     payload.extend(write_int(fade_out))
-    await conn.send_packet(0x6B, bytes(payload))
+    await conn.send_packet(0x66, bytes(payload))

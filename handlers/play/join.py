@@ -100,7 +100,7 @@ async def send_join_game(conn: Connection, server):
         await conn.version_handler.send_set_chunk_cache_radius(conn, server.view_distance)
     else:
         await _send_center_chunk(conn, center_cx, center_cz)
-        await conn.send_packet(0x55, write_varint(server.view_distance))
+        await conn.send_packet(0x62, write_varint(server.view_distance))  # set_chunk_cache_radius (simulation_distance) — was 0x55 (wrong)
 
     view_distance = server.view_distance
     chunk_coords = _sorted_chunk_coords(center_cx, center_cz, view_distance)

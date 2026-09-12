@@ -1057,14 +1057,14 @@ async def send_inventory_sync(conn):
     if pid is not None:
         await conn.send_packet(pid, payload)
     else:
-        # Fallback: use 1.21.1 native packet ID
-        await conn.send_packet(0x11, payload)
+        # Fallback: use 1.21.1 native packet ID (0x13 = window_items)
+        await conn.send_packet(0x13, payload)
 
 
 async def send_slot_update(conn, slot: int):
     """
     Send a single slot update to the client.
-    Uses Set Slot packet (0x12 in 1.21.1).
+    Uses Set Slot packet (0x15 in 1.21.1).
     """
     inv = getattr(conn, 'inventory_obj', None)
     if inv is None:
@@ -1077,8 +1077,13 @@ async def send_slot_update(conn, slot: int):
         slot=slot,
         item=item,
     )
-    # Set Slot is 0x12 in 1.21.1
-    await conn.send_packet(0x12, payload)
+    # Set Slot is 0x15 in 1.21.1 (was incorrectly hardcoded as 0x12 which is close_window)
+    from protocol.packet_map import get_clientbound_packet
+    set_slot_pid = get_clientbound_packet(conn.protocol_version, "set_slot")
+    if set_slot_pid is not None:
+        await conn.send_packet(set_slot_pid, payload)
+    else:
+        await conn.send_packet(0x15, payload)
 
 
 async def send_hotbar_update(conn):
@@ -1094,8 +1099,13 @@ async def send_open_container(conn, window_id: int, window_type: str,
                                window_title: str):
     """Send the Open Screen packet to open a container window."""
     payload = build_open_screen_payload(window_id, window_type, window_title)
-    # Open Screen is 0x3F in 1.21.1
-    await conn.send_packet(0x3F, payload)
+    # Open Screen is 0x33 in 1.21.1 (was incorrectly hardcoded as 0x3F which is face_player)
+    from protocol.packet_map import get_clientbound_packet
+    open_screen_pid = get_clientbound_packet(conn.protocol_version, "open_screen")
+    if open_screen_pid is not None:
+        await conn.send_packet(open_screen_pid, payload)
+    else:
+        await conn.send_packet(0x33, payload)
 
 
 async def send_container_content(conn, window_id: int, slots: list[ItemStack | None]):
@@ -1115,7 +1125,7 @@ async def send_container_content(conn, window_id: int, slots: list[ItemStack | N
     if pid is not None:
         await conn.send_packet(pid, payload)
     else:
-        await conn.send_packet(0x11, payload)
+        await conn.send_packet(0x13, payload)  # 0x13 = window_items in 1.21.1
 
 
 def initialize_player_inventory(conn):
