@@ -2428,7 +2428,8 @@ class VanillaTerrainGenerator:
     def sample_column(self, x: int, z: int) -> tuple[int, int, ClimateSample]:
         """
         Sample a terrain column to get (height, biome_id, climate).
-        Uses the vanilla column sampling algorithm with density function.
+        Uses the actual density function to find where density crosses 0,
+        matching the same logic used in generate_chunk.
         """
         climate = self.sample_climate(x, z)
         biome_id = self.resolve_biome(climate, 0.0)
@@ -2436,50 +2437,30 @@ class VanillaTerrainGenerator:
         wx = float(x)
         wz = float(z)
 
-        # Use biome height parameters for base height
-        base_height, variation = _biome_height_params(biome_id)
-
-        # Compute terrain shape using density function
-        # Sample density at multiple y-levels to find the surface
-        # This is equivalent to vanilla's "final_density" > 0 check
-        # For efficiency, use a heuristic based on climate + noise
-
-        # Terrain shape blending (matching vanilla's noise router)
-        qx = wx / 16.0
-        qz = wz / 16.0
-        low = self._density._terrain_low.get_value(qx, 0.0, qz)
-        high = self._density._terrain_high.get_value(qx, 0.0, qz)
-        selector_raw = self._density._terrain_selector.get_value(qx, 0.0, qz)
-        blend = max(0.0, min(1.0, (selector_raw + 1.0) * 0.5))
-        terrain_shape = _clamped_lerp(low, high, blend)
-
-        # Climate-based density offsets (using generic SplineDensity)
+        # Use the actual density function to find the surface height.
+        # First estimate a starting point from climate parameters, then
+        # search around it for the actual density crossing.
         cont_offset = self._density._cont_spline.interpolate(climate.continentalness)
         erosion_offset = self._density._erosion_spline.interpolate(climate.erosion)
         pv_offset = self._density._pv_spline.interpolate(climate.peaks_valleys)
         factor = self._density._factor_func.interpolate(climate.continentalness)
         jaggedness = self._density._jaggedness_func.interpolate(climate.weirdness)
 
-        # Compute approximate surface height from density function
-        # h = y where density(x, y, z) crosses zero
-        # Start from sea level and adjust based on climate + noise
-        h = 63.0 + 2.0
-        h += base_height * 20.0
-        h += terrain_shape * 16.0
-        h += (blend - 0.5) * 6.0
-        h += cont_offset * 40.0
-        h += erosion_offset * 20.0
-        h += pv_offset * 25.0
-        # Factor and jaggedness add mountain peak contributions
-        h += factor * jaggedness * 12.0
+        # Estimate surface from the same formula used in compute_base_density
+        surface_approx = SEA_LEVEL + cont_offset * 300.0 + pv_offset * 180.0 + erosion_offset * 100.0
+        surface_approx += factor * jaggedness * 12.0
+        surface_approx = max(MIN_Y + 5, min(MAX_Y - 10, surface_approx))
 
-        # Detail noise
-        detail = self._density._detail_noise.get_value(
-            wx / 4.0, 0.0, wz / 4.0) * variation * 8.0
-        h += detail
+        # Search downward from estimated surface + margin to find actual surface
+        start_y = min(MAX_Y, int(surface_approx) + 20)
+        surface_y = MIN_Y
+        for y in range(start_y, MIN_Y - 1, -1):
+            density = self._density.compute_base_density(wx, float(y), wz, climate)
+            if density > 0:
+                surface_y = y
+                break
 
-        h = max(5.0, min(250.0, h))
-        return int(round(h)), biome_id, climate
+        return surface_y, biome_id, climate
 
     def generate_chunk(self, chunk_x: int, chunk_z: int) -> list[list[list[int]]]:
         """
@@ -2550,13 +2531,9 @@ class VanillaTerrainGenerator:
                 surface_h = height_map[lz][lx]
                 si = surface_h - MIN_Y
                 sea_yi = SEA_LEVEL - MIN_Y
-                # Fill water above solid but below sea level
+                # Fill water above solid surface but below sea level
                 for yi in range(si, min(sea_yi + 1, WORLD_HEIGHT)):
                     if blocks[yi][lz][lx] == AIR:
-                        blocks[yi][lz][lx] = WATER
-                # Fill any air below sea level that isn't in a cave
-                for yi in range(5, min(sea_yi + 1, WORLD_HEIGHT)):
-                    if blocks[yi][lz][lx] == AIR and height_map[lz][lx] <= SEA_LEVEL:
                         blocks[yi][lz][lx] = WATER
 
         # Step 5: Carve caves (with aquifer)
@@ -2591,14 +2568,14 @@ class VanillaTerrainGenerator:
 
     def _apply_density_functions(self, blocks, base_x, base_z,
                                  height_map, climate_map):
-        """Apply 3D density functions for terrain carving near the surface.
+        """Apply 3D density functions for terrain shaping.
         
-        The density function adds 3D terrain features (cliffs, overhangs, 
-        cave entrances) near the surface. The height_map is the primary
-        surface determination; density only carves away some solid blocks
-        within DENSITY_MARGIN of the surface to create natural transitions.
+        Uses the actual density function to determine solid vs air,
+        matching vanilla's approach where density > 0 = solid.
+        This creates natural 3D terrain features (cliffs, overhangs,
+        varied surface) by replacing the flat height-map fill.
         """
-        DENSITY_MARGIN = 8  # Sample density within this range of surface
+        DENSITY_MARGIN = 24  # Sample density within this range of surface
 
         for lx in range(16):
             for lz in range(16):
@@ -2608,23 +2585,28 @@ class VanillaTerrainGenerator:
                 climate = climate_map[lz][lx]
                 si = surface_h - MIN_Y
 
-                # Only apply density near the surface for 3D shaping
-                # This creates cliffs and overhangs near the surface
+                # Apply density near the surface for 3D shaping
                 bottom_yi = max(5, si - DENSITY_MARGIN)
-                top_yi = min(WORLD_HEIGHT, si + DENSITY_MARGIN // 2)
+                top_yi = min(WORLD_HEIGHT, si + DENSITY_MARGIN)
 
                 for yi in range(bottom_yi, top_yi):
                     wy = MIN_Y + yi
                     density = self._density.compute_base_density(
                         float(wx), float(wy), float(wz), climate)
 
-                    # Only carve if density is significantly negative
-                    # This ensures only the most obvious carving happens
-                    if density < -0.3:
+                    # density > 0 = solid, density <= 0 = air
+                    if density <= 0:
                         if wy <= SEA_LEVEL and surface_h <= SEA_LEVEL:
                             blocks[yi][lz][lx] = WATER
                         else:
                             blocks[yi][lz][lx] = AIR
+                    else:
+                        # Ensure solid below density surface
+                        if blocks[yi][lz][lx] == AIR:
+                            if wy < 0:
+                                blocks[yi][lz][lx] = DEEPSLATE
+                            else:
+                                blocks[yi][lz][lx] = STONE
 
     def _place_decorations(self, blocks, height_map, biome_map, base_x, base_z):
         """Place trees, flowers, and other surface decorations."""
