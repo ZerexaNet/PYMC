@@ -22,7 +22,7 @@ import logging
 
 from protocol.data_types import (
     write_varint, write_double, write_short,
-    write_uuid, write_angle, write_boolean,
+    write_uuid, write_angle, write_boolean, write_ubyte, write_string,
 )
 from network.connection import Connection
 
@@ -81,6 +81,30 @@ async def _send_generic_entity_spawn(conn: Connection, entity):
     payload.extend(write_short(_encode_entity_velocity_component(entity.vy)))
     payload.extend(write_short(_encode_entity_velocity_component(entity.vz)))
     await conn.send_packet(0x01, bytes(payload))
+
+    # Send entity metadata (health bar for mobs)
+    if entity.kind == "mob":
+        meta = bytearray()
+        meta.extend(write_varint(entity.entity_id))
+        # Index 0: Entity flags (Byte)
+        meta.extend(write_ubyte(0))   # index
+        meta.extend(write_varint(0))  # type = Byte
+        meta.extend(write_ubyte(0))   # flags = 0
+        # Index 2: Custom name (Optional<ChatComponent>)
+        import json as _json
+        mob_name = entity.metadata.get("mob_type", "mob")
+        display_name = {"translate": f"entity.minecraft.{mob_name}"}
+        meta.extend(write_ubyte(2))   # index
+        meta.extend(write_varint(5))  # type = Optional<ChatComponent>
+        meta.extend(write_boolean(True))  # has custom name
+        meta.extend(write_string(_json.dumps(display_name)))
+        # Index 3: Custom name visible (Boolean)
+        meta.extend(write_ubyte(3))   # index
+        meta.extend(write_varint(7))  # type = Boolean
+        meta.extend(write_boolean(False))
+        # Terminator
+        meta.extend(write_ubyte(0xFF))
+        await conn.send_packet(0x58, bytes(meta))
 
 
 def build_entity_teleport_payload(entity) -> bytes:
