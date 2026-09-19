@@ -80,14 +80,19 @@ async def _send_chunk_data(conn: Connection, chunk_x: int, chunk_z: int):
 
     # --- 光照数据 ---
     all_bits = (1 << 26) - 1
-    payload.extend(write_varint(1))  # BitSet 长度
-    payload.extend(write_long(all_bits))
+    # Sky Light bitmask: all 26 sections have sky light
     payload.extend(write_varint(1))
     payload.extend(write_long(all_bits))
+    # Block Light bitmask: no block light sections
     payload.extend(write_varint(0))
+    # Empty Sky Light bitmask: no empty sky sections
     payload.extend(write_varint(0))
+    # Empty Block Light bitmask: all 26 sections are empty
+    payload.extend(write_varint(1))
+    payload.extend(write_long(all_bits))
 
     # Sky Light Arrays
+    # Sky Light Arrays: all 26 sections fully lit
     sky_light_section = bytes([0xFF] * 2048)
     light_section_count = 26
     payload.extend(write_varint(light_section_count))
@@ -95,12 +100,8 @@ async def _send_chunk_data(conn: Connection, chunk_x: int, chunk_z: int):
         payload.extend(write_varint(2048))
         payload.extend(sky_light_section)
 
-    # Block Light Arrays
-    block_light_section = bytes([0x00] * 2048)
-    payload.extend(write_varint(light_section_count))
-    for _ in range(light_section_count):
-        payload.extend(write_varint(2048))
-        payload.extend(block_light_section)
+    # Block Light Arrays: no block light sections (empty)
+    payload.extend(write_varint(0))
 
     await conn.send_packet(0x27, bytes(payload))
 
@@ -136,13 +137,18 @@ async def _send_chunk_data_terrain(conn: Connection, chunk_x: int, chunk_z: int,
 
     # --- 光照数据 ---
     all_bits = (1 << 26) - 1
+    # Sky Light bitmask
     payload.extend(write_varint(1))
     payload.extend(write_long(all_bits))
+    # Block Light bitmask
+    payload.extend(write_varint(0))
+    # Empty Sky Light bitmask
+    payload.extend(write_varint(0))
+    # Empty Block Light bitmask
     payload.extend(write_varint(1))
     payload.extend(write_long(all_bits))
-    payload.extend(write_varint(0))
-    payload.extend(write_varint(0))
 
+    # Sky Light Arrays
     sky_light_section = bytes([0xFF] * 2048)
     light_section_count = 26
     payload.extend(write_varint(light_section_count))
@@ -150,11 +156,8 @@ async def _send_chunk_data_terrain(conn: Connection, chunk_x: int, chunk_z: int,
         payload.extend(write_varint(2048))
         payload.extend(sky_light_section)
 
-    block_light_section = bytes([0x00] * 2048)
-    payload.extend(write_varint(light_section_count))
-    for _ in range(light_section_count):
-        payload.extend(write_varint(2048))
-        payload.extend(block_light_section)
+    # Block Light Arrays: none
+    payload.extend(write_varint(0))
 
     await conn.send_packet(0x27, bytes(payload))
 
@@ -246,14 +249,18 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
     sky_mask, block_mask, empty_sky_mask, empty_block_mask, sky_arrays, block_arrays = (
         _build_chunk_light_data(chunk_blocks)
     )
-    payload.extend(write_varint(1))
-    payload.extend(write_long(sky_mask))
-    payload.extend(write_varint(1))
-    payload.extend(write_long(block_mask))
-    payload.extend(write_varint(1))
-    payload.extend(write_long(empty_sky_mask))
-    payload.extend(write_varint(1))
-    payload.extend(write_long(empty_block_mask))
+    def _write_bitset(mask: int):
+        """Write a BitSet: VarInt(0) if mask==0, else VarInt(1)+Long(mask)."""
+        if mask:
+            payload.extend(write_varint(1))
+            payload.extend(write_long(mask))
+        else:
+            payload.extend(write_varint(0))
+
+    _write_bitset(sky_mask)
+    _write_bitset(block_mask)
+    _write_bitset(empty_sky_mask)
+    _write_bitset(empty_block_mask)
 
     payload.extend(write_varint(len(sky_arrays)))
     for sky_light_section in sky_arrays:
@@ -345,6 +352,23 @@ async def _send_deferred_chunks(conn: Connection, server, chunk_coords, total_co
     )
 
 
+async def _unload_distant_chunks(conn: Connection, desired_coords: set, server):
+    """卸载玩家视距外的区块，防止客户端内存溢出导致不渲染新方块。"""
+    chunks_to_unload = [coord for coord in conn.loaded_chunks if coord not in desired_coords]
+    if not chunks_to_unload:
+        return
+
+    unload_pid = 0x21  # Unload Chunk (1.21.1)
+    for cx, cz in chunks_to_unload:
+        if not conn.alive:
+            break
+        payload = bytearray()
+        payload.extend(write_int(cx))
+        payload.extend(write_int(cz))
+        await conn.send_packet(unload_pid, bytes(payload))
+    conn.loaded_chunks.intersection_update(desired_coords)
+
+
 async def _stream_chunks_around_player(conn: Connection, server):
     """在玩家跨区块移动时，继续补发新进入视距的区块。"""
     while conn.alive:
@@ -358,12 +382,15 @@ async def _stream_chunks_around_player(conn: Connection, server):
         await _send_center_chunk(conn, center_cx, center_cz)
 
         desired_coords = set(_sorted_chunk_coords(center_cx, center_cz, server.view_distance))
+
+        # Unload chunks that are now outside view distance
+        await _unload_distant_chunks(conn, desired_coords, server)
+
         missing_coords = [
             coord for coord in _sorted_chunk_coords(center_cx, center_cz, server.view_distance)
             if coord not in conn.loaded_chunks
         ]
         if not missing_coords:
-            conn.loaded_chunks.intersection_update(desired_coords)
             continue
 
         loop = asyncio.get_event_loop()
@@ -382,7 +409,6 @@ async def _stream_chunks_around_player(conn: Connection, server):
 
         await _send_chunk_results_streamed(conn, chunk_results)
         conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
-        conn.loaded_chunks.intersection_update(desired_coords)
 
         logger.info(
             f"已向 {conn.username} 动态补发新区块 {len(chunk_results)} 个 "
