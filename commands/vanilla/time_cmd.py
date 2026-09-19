@@ -24,6 +24,11 @@ def register(manager):
                 await ctx.reply(f"[PyMC] 无效时间值: {args[1]}")
                 return FAILURE
             ctx.server.world_time = value
+            ctx.server._time_manager.time = value
+            # Sync to all players
+            from handlers.play.join import _send_time_update
+            for player in ctx.server.get_online_players():
+                await _send_time_update(player, ctx.server)
             await ctx.reply(f"[PyMC] 世界时间已设置为 {value}")
             return SUCCESS
 
@@ -34,6 +39,11 @@ def register(manager):
                 await ctx.reply(f"[PyMC] 无效时间值: {args[1]}")
                 return FAILURE
             ctx.server.world_time += value
+            ctx.server._time_manager.time = ctx.server.world_time
+            # Sync to all players
+            from handlers.play.join import _send_time_update
+            for player in ctx.server.get_online_players():
+                await _send_time_update(player, ctx.server)
             await ctx.reply(f"[PyMC] 世界时间已变更为 {ctx.server.world_time}")
             return SUCCESS
 
