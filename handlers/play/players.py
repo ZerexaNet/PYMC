@@ -38,8 +38,8 @@ logger = logging.getLogger("PyMC.玩家")
 
 # --- 1.21.1 (协议 767) 客户端包 ID ---
 SPAWN_ENTITY_PID = 0x01
-SET_ENTITY_DATA_PID = 0x57
-ROTATE_HEAD_PID = 0x47
+SET_ENTITY_DATA_PID = 0x58   # entity_metadata (NOT 0x57 — that was entity_velocity!)
+ROTATE_HEAD_PID = 0x48      # entity_head_rotation (NOT 0x47 — that was respawn!)
 
 # minecraft:player 实体类型 ID (1.21.1 注册表)
 PLAYER_ENTITY_TYPE = 128

@@ -211,7 +211,19 @@ async def send_join_game(conn: Connection, server):
     from world.inventory import send_inventory_sync
     await send_inventory_sync(conn)
 
-    # --- 7. 通知其他玩家 ---
+    # --- 7. Tab list header/footer ---
+    import json as _json
+    from protocol.packet_map import get_clientbound_packet
+    tab_header = _json.dumps({"text": "\u00a7bPyMC Server"}, ensure_ascii=False)
+    tab_footer = _json.dumps({"text": "\u00a77Welcome to PyMC!"}, ensure_ascii=False)
+    tab_pid = get_clientbound_packet(conn.protocol_version, "playerlist_header")
+    if tab_pid is not None:
+        tab_payload = bytearray()
+        tab_payload.extend(write_string(tab_header))
+        tab_payload.extend(write_string(tab_footer))
+        await conn.send_packet(tab_pid, bytes(tab_payload))
+
+    # --- 8. 通知其他玩家 ---
     await _broadcast_player_join(conn, server)
     await _send_visible_entities_to_player(conn, server)
 
@@ -456,22 +468,18 @@ async def _damage_player(conn: Connection, amount: float, reason: str, server):
         await send_system_message(conn, f"[PyMC] 你受到了 {amount:.1f} 点{reason}伤害")
         return
 
-    await send_system_message(conn, "[PyMC] 你死亡了，已返回出生点")
-    respawn_x, respawn_y, respawn_z = _resolve_player_respawn_location(conn, server)
-    conn.x = float(respawn_x) + 0.5
-    conn.y = float(respawn_y)
-    conn.z = float(respawn_z) + 0.5
-    conn.fall_start_y = conn.y
-    conn.health = 20.0
-    conn.food = 20
-    conn.saturation = 5.0
-    conn.air_supply = 300
-    conn.fire_ticks = 0
-    conn.freeze_ticks = 0
-    conn.damage_cooldown_ticks = 0
-    conn.last_damage_reason = ""
-    await _send_synchronize_position(conn)
-    await _send_update_health(conn)
+    # Send death screen with message
+    import json as _json
+    from protocol.packet_map import get_clientbound_packet as _gcp
+    death_msg = _json.dumps({"text": f"你被 {reason} 杀死了"}, ensure_ascii=False)
+    dp = bytearray()
+    dp.extend(write_varint(conn.entity_id))
+    dp.extend(write_varint(0))
+    dp.extend(write_string(death_msg))
+    dpid = _gcp(conn.protocol_version, "death_combat_event")
+    if dpid is not None:
+        await conn.send_packet(dpid, bytes(dp))
+    conn._dead = True
 
 
 async def _update_player_motion_state(conn: Connection, new_y: float, new_on_ground: bool, server):

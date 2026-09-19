@@ -222,6 +222,16 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
                       server):
     """分发 Play 阶段的客户端数据包。"""
 
+    # Handle respawn: if player is dead, only accept confirm_teleportation
+    # In 1.21.1, the client sends Client Status (action=0) to respawn.
+    # We treat any packet while dead as a respawn request.
+    if getattr(conn, '_dead', False):
+        if packet_id == 0x00:  # Confirm Teleportation
+            _handle_confirm_teleportation(conn, payload)
+        else:
+            await _handle_respawn(conn, server)
+        return
+
     if _is_serverbound_packet(conn, packet_id, "confirm_teleportation", 0x00):
         # Confirm Teleportation
         _handle_confirm_teleportation(conn, payload)
@@ -326,6 +336,58 @@ def _handle_close_container(conn: Connection, payload: bytes):
     conn._open_window_id = None
     conn._open_container_pos = None
     conn._open_container_type = None
+
+
+async def _handle_respawn(conn: Connection, server):
+    """Handle player respawn after death."""
+    from protocol.data_types import (
+        write_varint, write_long, write_byte, write_ubyte,
+        write_boolean, write_identifier,
+    )
+    from handlers.play.join import (
+        _send_synchronize_position, _send_update_health,
+        _send_set_experience, _send_time_update,
+    )
+    from handlers.play.spawn import _resolve_player_respawn_location
+    from handlers.play.chat import send_system_message
+    from protocol.packet_map import get_clientbound_packet
+
+    respawn_x, respawn_y, respawn_z = _resolve_player_respawn_location(conn, server)
+    conn.x = float(respawn_x) + 0.5
+    conn.y = float(respawn_y)
+    conn.z = float(respawn_z) + 0.5
+    conn.fall_start_y = conn.y
+    conn.health = 20.0
+    conn.food = 20
+    conn.saturation = 5.0
+    conn.air_supply = 300
+    conn.fire_ticks = 0
+    conn.freeze_ticks = 0
+    conn.damage_cooldown_ticks = 0
+    conn.last_damage_reason = ""
+    conn._dead = False
+
+    # Send Respawn packet (client needs this to exit death screen)
+    respawn_pid = get_clientbound_packet(conn.protocol_version, "respawn")
+    if respawn_pid is not None:
+        payload = bytearray()
+        payload.extend(write_varint(0))  # Dimension type (overworld)
+        payload.extend(write_identifier("minecraft:overworld"))
+        payload.extend(write_long(0))  # Hashed seed
+        gamemode_map = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
+        payload.extend(write_ubyte(gamemode_map.get(conn.gamemode, 1)))
+        payload.extend(write_byte(-1))  # Previous gamemode
+        payload.extend(write_boolean(False))  # Is debug
+        payload.extend(write_boolean(False))  # Is flat
+        payload.extend(write_boolean(False))  # Has death location
+        payload.extend(write_varint(0))  # Portal cooldown
+        await conn.send_packet(respawn_pid, bytes(payload))
+
+    await _send_synchronize_position(conn)
+    await _send_update_health(conn)
+    await _send_set_experience(conn)
+    await _send_time_update(conn, server)
+    await send_system_message(conn, "[PyMC] 你已重生")
 
 
 async def _handle_creative_inventory_action(conn: Connection, payload: bytes, server):
