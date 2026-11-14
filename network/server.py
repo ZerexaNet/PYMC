@@ -525,8 +525,9 @@ class MinecraftServer:
         except Exception as e:
             logger.debug(f"hook_server_start failed: {e}")
 
-        async with self._server:
-            await self._stop_event.wait()
+        # 注意: 不能用 ``async with self._server`` —— 3.12+ 的 wait_closed()
+        # 会一直等到所有玩家连接关闭, /stop 就永远停不下来。
+        await self._stop_event.wait()
 
     async def wait_until_ready(self):
         """等待服务器完成启动 (控制台命令在此之前排队)。"""
@@ -1322,7 +1323,11 @@ class MinecraftServer:
         for entity in list(self.entity_manager.list_entities()):
             if entity.kind in {"orb", "item"}:
                 for player in players:
-                    if entity.distance_squared_to(player.x, player.y, player.z) > 2.25:
+                    # 原版拾取范围: 玩家碰撞箱水平外扩 1 格、垂直外扩 0.5 格
+                    if (abs(entity.x - player.x) > 1.425 or abs(entity.z - player.z) > 1.425
+                            or not (-0.75 <= entity.y - player.y <= 2.3)):
+                        continue
+                    if getattr(player, "_dead", False) or getattr(player, "gamemode", "") == "spectator":
                         continue
                     if entity.kind == "item" and getattr(entity, "pickup_delay", 0) > 0:
                         continue

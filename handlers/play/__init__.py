@@ -203,19 +203,8 @@ def _is_serverbound_packet(conn: Connection, packet_id: int,
 
 def _player_window_slot_to_inventory(slot: int) -> int | None:
     """Translate protocol window-0 slots to PlayerInventory indices."""
-    if slot == 0:       # crafting output
-        return 45
-    if 1 <= slot <= 4:  # 2x2 crafting input
-        return 40 + slot
-    if 5 <= slot <= 8:  # helmet, chest, legs, boots
-        return 44 - slot
-    if 9 <= slot <= 35:  # main inventory
-        return slot
-    if 36 <= slot <= 44:  # hotbar
-        return slot - 36
-    if slot == 45:      # offhand
-        return 40
-    return None
+    from world.inventory import window_slot_to_inventory
+    return window_slot_to_inventory(slot)
 
 
 _REVERSE_MAPS: dict[int, dict[int, str]] = {}

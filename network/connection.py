@@ -127,7 +127,7 @@ class Connection:
             self.writer.write(frame)
             await self.writer.drain()
         except (ConnectionError, OSError) as e:
-            logger.warning(f"发送数据包失败 [{self.address}]: {e}")
+            logger.debug(f"发送数据包失败 [{self.address}]: {e}")
             self.alive = False
 
     def enable_encryption(self, shared_secret: bytes):

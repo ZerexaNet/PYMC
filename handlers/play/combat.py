@@ -71,13 +71,46 @@ def get_attack_damage(conn: Connection) -> float:
     return 1.0
 
 
+async def _broadcast_entity_hurt(server, entity_id: int, x: float, z: float,
+                                 attacker: Connection | None = None,
+                                 damage_type: str = "minecraft:player_attack",
+                                 dead: bool = False):
+    """Damage Event (+ 死亡时 Entity Event 3): 受击变红、音效和死亡动画。"""
+    from protocol.data_types import write_varint, write_boolean, write_int, write_byte
+    from protocol.gamedata import registry_index
+    from protocol.packet_map import get_clientbound_packet
+    type_id = registry_index("minecraft:damage_type").get(damage_type, 0)
+    cause = (attacker.entity_id + 1) if attacker is not None else 0
+    payload = (write_varint(entity_id) + write_varint(type_id) + write_varint(cause)
+               + write_varint(cause) + write_boolean(False))
+    for player in server.get_online_players():
+        if player.protocol_version != 767:
+            continue
+        if entity_id not in player.tracked_entities and entity_id not in player.tracked_players:
+            continue
+        pid = get_clientbound_packet(player.protocol_version, "damage_event")
+        if pid is not None:
+            await player.send_packet(pid, payload)
+        if dead:
+            spid = get_clientbound_packet(player.protocol_version, "entity_status")
+            if spid is not None:
+                await player.send_packet(spid, write_int(entity_id) + write_byte(3))
+
+
+def _knockback(attacker: Connection, strength: float = 0.4) -> tuple[float, float, float]:
+    yaw = math.radians(attacker.yaw)
+    return (-math.sin(yaw) * strength, 0.36, math.cos(yaw) * strength)
+
+
 async def _handle_interact(conn: Connection, payload: bytes, server):
-    """处理 Interact 包中的攻击动作。"""
+    """处理 Interact 包中的攻击动作 (攻击生物 / PvP)。"""
     parsed = parse_interact(payload)
     if parsed is None:
         return
     entity_id, action_type = parsed
     if action_type != INTERACT_TYPE_ATTACK:
+        return
+    if conn.gamemode == "spectator":
         return
 
     # 攻击冷却
@@ -87,6 +120,33 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
         return
     conn._last_attack_time = now
 
+    # --- PvP ---
+    victim = next((p for p in server.get_online_players()
+                   if p.entity_id == entity_id and p is not conn), None)
+    if victim is not None:
+        if not server.config.get("pvp", True):
+            return
+        if victim.gamemode in ("creative", "spectator") or getattr(victim, "_dead", False):
+            return
+        dx, dy, dz = victim.x - conn.x, victim.y - conn.y, victim.z - conn.z
+        if dx * dx + dy * dy + dz * dz > ATTACK_RANGE_SQUARED:
+            return
+        from handlers.play.join import _damage_player
+        victim.damage_cooldown_ticks = 0
+        await _damage_player(victim, get_attack_damage(conn), f"player:{conn.username}", server)
+        # 击退: Set Entity Velocity 发给被攻击的玩家本人
+        from protocol.data_types import write_varint, write_short
+        from protocol.packet_map import get_clientbound_packet
+        vx, vy, vz = _knockback(conn)
+        pid = get_clientbound_packet(victim.protocol_version, "entity_velocity")
+        if pid is not None and not getattr(victim, "_dead", False):
+            await victim.send_packet(pid, write_varint(victim.entity_id) + b"".join(
+                write_short(max(-32768, min(32767, int(v * 8000)))) for v in (vx, vy, vz)))
+        if conn.gamemode in ("survival", "adventure"):
+            from world.item_properties import damage_held_item
+            await damage_held_item(conn, server)
+        return
+
     entity = server.entity_manager.get_entity(entity_id)
     if entity is None or entity.kind != "mob":
         return
@@ -95,16 +155,17 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
 
     damage = get_attack_damage(conn)
     killed = damage_mob(server, entity, damage, source=conn)
+    await _broadcast_entity_hurt(server, entity.entity_id, entity.x, entity.z,
+                                 attacker=conn, dead=killed)
+    if not killed:
+        vx, vy, vz = _knockback(conn)
+        entity.vx, entity.vy, entity.vz = vx, vy, vz
+        entity.on_ground = False
 
     # 生存/冒险模式下消耗武器耐久
     if conn.gamemode in ("survival", "adventure"):
         from world.item_properties import damage_held_item
         await damage_held_item(conn, server)
-
-    if killed:
-        from handlers.play.chat import send_system_message
-        mob_name = entity.metadata.get("mob_type", "生物")
-        await send_system_message(conn, f"[PyMC] 你击杀了 {mob_name}")
 
 
 def damage_mob(server, entity, amount: float, source=None) -> bool:

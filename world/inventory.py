@@ -335,24 +335,26 @@ class PlayerInventory:
         if item.is_empty:
             return 0
         remaining = item.count
-        # First try to stack with existing items
-        for i in range(self.TOTAL_SLOTS):
-            if i == 41:
-                continue  # Skip crafting result
-            slot = self.slots[i]
-            if slot and slot.item_id == item.item_id and slot.count < slot.max_stack_size:
-                space = slot.max_stack_size - slot.count
-                add = min(space, remaining)
-                slot.count += add
-                remaining -= add
-                if remaining <= 0:
-                    self.state_id += 1
-                    return 0
-        # Then try empty slots (hotbar last for convenience)
-        for i in list(range(9, 36)) + list(range(0, 9)) + [40]:
-            if self.slots[i] is None or (self.slots[i] is not None and self.slots[i].is_empty):
-                add = min(item.max_stack_size, remaining)
-                self.slots[i] = ItemStack(item.item_id, add, item.damage, dict(item.nbt) if item.nbt else {})
+        max_stack = item.max_stack_size
+        # 原版顺序: 先堆叠到已有的同类物品 (手持 -> 副手 -> 快捷栏 -> 背包),
+        # 再放入空槽位 (快捷栏 0-8 -> 背包 9-35)。合成格/护甲栏不参与。
+        storage = list(range(0, 36))
+        if max_stack > 1:
+            for i in [40] + storage:
+                slot = self.slots[i]
+                if (slot and not slot.is_empty and slot.can_stack_with(item)
+                        and slot.count < max_stack):
+                    add = min(max_stack - slot.count, remaining)
+                    slot.count += add
+                    remaining -= add
+                    if remaining <= 0:
+                        self.state_id += 1
+                        return 0
+        for i in storage:
+            if self.slots[i] is None or self.slots[i].is_empty:
+                add = min(max_stack, remaining)
+                self.slots[i] = ItemStack(item.item_id, add, item.damage,
+                                          dict(item.nbt) if item.nbt else {})
                 remaining -= add
                 if remaining <= 0:
                     self.state_id += 1
@@ -660,7 +662,7 @@ def build_set_container_content_payload(
     Sends complete container contents.
     """
     payload = bytearray()
-    payload.extend(write_varint(window_id))     # Window ID (VarInt in 1.21.1+)
+    payload.append(window_id & 0xFF)            # Window ID (unsigned byte in 1.21.1)
     payload.extend(write_varint(state_id))      # State ID
     payload.extend(write_varint(len(slots)))    # Slot count
 
@@ -684,9 +686,9 @@ def build_set_slot_payload(
     Updates a single inventory slot.
     """
     payload = bytearray()
-    payload.extend(write_varint(window_id))     # Window ID
+    payload.append(window_id & 0xFF)            # Window ID (signed byte; -2 = player inventory)
     payload.extend(write_varint(state_id))      # State ID
-    payload.extend(write_varint(slot))           # Slot index (VarInt in 1.21.1+)
+    payload.extend(write_short(slot))           # Slot index (short in 1.21.1)
     payload.extend(encode_slot_entry(item))      # Slot data
     return bytes(payload)
 
@@ -748,10 +750,38 @@ def build_open_screen_payload(
 # Inventory sync functions
 # --------------------------------------------------
 
+def window_slot_to_inventory(slot: int) -> int | None:
+    """Player window (id 0) slot -> PlayerInventory index."""
+    if slot == 0:        # crafting output
+        return 45
+    if 1 <= slot <= 4:   # 2x2 crafting input
+        return 40 + slot
+    if 5 <= slot <= 8:   # helmet, chestplate, leggings, boots
+        return 44 - slot
+    if 9 <= slot <= 35:  # main inventory
+        return slot
+    if 36 <= slot <= 44:  # hotbar
+        return slot - 36
+    if slot == 45:       # offhand
+        return 40
+    return None
+
+
+PLAYER_WINDOW_SLOTS = 46
+
+
+def player_window_slots(inv) -> list:
+    """PlayerInventory contents in the client's window-0 slot order."""
+    return [inv.slots[window_slot_to_inventory(w)] for w in range(PLAYER_WINDOW_SLOTS)]
+
+
 async def send_inventory_sync(conn):
     """
-    Send full inventory sync to the client.
-    Uses Set Container Content packet (0x11 in 1.21.1).
+    Send the full player inventory (Set Container Content, window 0).
+
+    The client's inventory window has its own slot order (crafting 0-4, armor
+    5-8, main 9-35, hotbar 36-44, offhand 45), which differs from
+    PlayerInventory's storage order, so slots are remapped here.
     """
     inv = getattr(conn, 'inventory_obj', None)
     if inv is None:
@@ -759,50 +789,38 @@ async def send_inventory_sync(conn):
 
     from protocol.packet_map import get_clientbound_packet
 
-    # Build complete slot list (46 slots)
-    slot_list: list[ItemStack | None] = []
-    for i in range(PlayerInventory.TOTAL_SLOTS):
-        slot_list.append(inv.slots[i] if i < len(inv.slots) else None)
-
     payload = build_set_container_content_payload(
-        window_id=PlayerInventory.WINDOW_PLAYER if hasattr(PlayerInventory, 'WINDOW_PLAYER') else 0,
+        window_id=0,
         state_id=getattr(conn, 'inventory_state_id', 0),
-        slots=slot_list,
+        slots=player_window_slots(inv),
         carried_item=inv.carried_item,
     )
 
-    from protocol.packet_map import get_clientbound_packet
     pid = get_clientbound_packet(conn.protocol_version, "window_items")
-    if pid is not None:
-        await conn.send_packet(pid, payload)
-    else:
-        # Fallback: use 1.21.1 native packet ID (0x13 = window_items)
-        await conn.send_packet(0x13, payload)
+    await conn.send_packet(pid if pid is not None else 0x13, payload)
 
 
 async def send_slot_update(conn, slot: int):
     """
-    Send a single slot update to the client.
-    Uses Set Slot packet (0x15 in 1.21.1).
+    Update one PlayerInventory slot on the client (Set Slot).
+
+    Uses window id -2, which addresses the player inventory by storage index
+    (0-8 hotbar, 9-35 main, 36-39 armor, 40 offhand) regardless of which
+    window is currently open.
     """
     inv = getattr(conn, 'inventory_obj', None)
     if inv is None:
         return
 
-    item = inv.get_slot(slot)
     payload = build_set_slot_payload(
-        window_id=0,  # Player inventory
+        window_id=-2,
         state_id=getattr(conn, 'inventory_state_id', 0),
         slot=slot,
-        item=item,
+        item=inv.get_slot(slot),
     )
-    # Set Slot is 0x15 in 1.21.1 (was incorrectly hardcoded as 0x12 which is close_window)
     from protocol.packet_map import get_clientbound_packet
     set_slot_pid = get_clientbound_packet(conn.protocol_version, "set_slot")
-    if set_slot_pid is not None:
-        await conn.send_packet(set_slot_pid, payload)
-    else:
-        await conn.send_packet(0x15, payload)
+    await conn.send_packet(set_slot_pid if set_slot_pid is not None else 0x15, payload)
 
 
 async def send_hotbar_update(conn):
