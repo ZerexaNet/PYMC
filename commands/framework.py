@@ -17,6 +17,8 @@ Result codes:
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import math
 from dataclasses import dataclass, field
@@ -29,6 +31,49 @@ logger = logging.getLogger("PyMC.命令")
 SUCCESS = 1
 FAILURE = 0
 ERROR = -1
+
+
+# ------------------------------------------------------------------
+# Console output (server console / RCON)
+# ------------------------------------------------------------------
+
+_console_capture: contextvars.ContextVar = contextvars.ContextVar(
+    "pymc_console_capture", default=None)
+_console_source: contextvars.ContextVar = contextvars.ContextVar(
+    "pymc_console_source", default="Server")
+
+
+def console_source_name() -> str:
+    """Display name of the non-player command source ("Server" or "Rcon")."""
+    return _console_source.get()
+
+
+def console_output(message) -> None:
+    """Print command feedback for a non-player source.
+
+    On the server console this is a normal log line; while an RCON command
+    runs the text is captured and returned to the RCON client instead.
+    """
+    from protocol.text import plain_text
+    text = plain_text(message)
+    captured = _console_capture.get()
+    if captured is not None:
+        captured.append(text)
+    else:
+        logging.getLogger("minecraft.server").info(text)
+
+
+@contextlib.contextmanager
+def capture_console_output(source: str = "Rcon"):
+    """Collect console feedback produced inside the ``with`` block."""
+    lines: list[str] = []
+    capture_token = _console_capture.set(lines)
+    source_token = _console_source.set(source)
+    try:
+        yield lines
+    finally:
+        _console_capture.reset(capture_token)
+        _console_source.reset(source_token)
 
 
 @dataclass
@@ -96,17 +141,69 @@ class CommandContext:
 
     # ---- Messaging ----
 
-    async def reply(self, text: str):
-        """Send a reply to the command sender."""
+    async def reply(self, text):
+        """Send a reply (string or text component) to the command sender."""
         from handlers.play.chat import send_system_message
         if self.sender is not None:
             await send_system_message(self.sender, text)
         else:
-            logger.info(text)
+            console_output(text)
 
-    async def broadcast(self, text: str):
+    async def broadcast(self, text):
         """Broadcast a message to all online players."""
         self.server.broadcast_system_message(text)
+
+    @property
+    def source_component(self) -> dict:
+        """Text component naming the command source (player name or "Server")."""
+        if self.sender is not None:
+            from protocol.text import player_name
+            return player_name(self.sender)
+        return {"text": console_source_name()}
+
+    async def success(self, message, broadcast_to_ops: bool = True):
+        """
+        Vanilla ``sendSuccess``: feedback to the source, plus (optionally) the
+        gray italic ``[Source: message]`` notification to other operators and
+        the console log line.
+        """
+        from protocol.text import to_component, plain_text
+        component = to_component(message)
+        gamerules = getattr(self.server, "gamerules", {})
+        if self.sender is None:
+            console_output(component)
+        elif gamerules.get("sendCommandFeedback", True):
+            await self.reply(component)
+        if not broadcast_to_ops:
+            return
+
+        admin = {"translate": "chat.type.admin",
+                 "with": [self.source_component, component],
+                 "color": "gray", "italic": True}
+        config = getattr(self.server, "config", {})
+        if self.sender is None:
+            key = ("broadcast-rcon-to-ops" if console_source_name() == "Rcon"
+                   else "broadcast-console-to-ops")
+            notify_ops = bool(config.get(key, True))
+        else:
+            notify_ops = True
+            if gamerules.get("logAdminCommands", True):
+                logging.getLogger("minecraft.server").info(plain_text(admin))
+        if notify_ops and gamerules.get("sendCommandFeedback", True):
+            from handlers.play.chat import send_system_message
+            permissions = self.server.permissions
+            for player in self.server.get_online_players():
+                if player is self.sender or not permissions.is_op(player.username):
+                    continue
+                await send_system_message(player, admin)
+
+    async def fail(self, message) -> int:
+        """Vanilla ``sendFailure``: a red error message; returns FAILURE."""
+        from protocol.text import to_component
+        component = dict(to_component(message))
+        component.setdefault("color", "red")
+        await self.reply(component)
+        return FAILURE
 
     # ---- Permission ----
 
@@ -247,7 +344,7 @@ class Command:
                 return await self._execute_func(context)
             except Exception as e:
                 logger.error(f"Command /{self.name} execution error: {e}", exc_info=True)
-                await context.reply(f"\u00a7cCommand error: {e}")
+                await context.fail({"translate": "command.failed"})
                 return ERROR
         logger.warning(f"Command /{self.name} has no execute handler")
         return FAILURE

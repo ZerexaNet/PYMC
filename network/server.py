@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from typing import Optional
 from config import save_config
-from admin.permissions import PermissionManager
+from admin.permissions import PermissionManager, UserCache
 from admin.web import WebAdminServer
 from .connection import Connection, ConnectionState
 from handlers.handshake import handle_handshake
@@ -19,6 +19,7 @@ from handlers.login import handle_login
 from handlers.configuration import handle_configuration
 from handlers.play import handle_play
 from world.storage import WorldStorage
+from world.level_data import LevelData, SessionLock, SessionLockError
 from world.terrain import TerrainGenerator
 from world.terrain_native import NativeTerrainGenerator, _find_native_binary
 from world.chunk import build_chunk_column_from_terrain, build_heightmap_from_terrain
@@ -37,6 +38,9 @@ from .managers.metrics import ServerMetrics
 from .managers.protocol import PacketCache, PacketBatcher
 
 logger = logging.getLogger("PyMC.服务器")
+mc_logger = logging.getLogger("minecraft.server")
+
+MINECRAFT_VERSION = "1.21.1"
 
 
 def parse_vanilla_seed(seed_value) -> int:
@@ -77,27 +81,16 @@ class MinecraftServer:
     def __init__(self, config: dict, config_path: str = "server.properties"):
         self.config = config
         self.config_path = config_path
-        self.host = config.get("server-ip", "0.0.0.0")
+        self.host = str(config.get("server-ip", "") or "")
         self.port = config.get("server-port", 25565)
-        self.motd = config.get("motd", "PyMC - Python Minecraft 服务器")
+        self.motd = config.get("motd", "A Minecraft Server")
         self.max_players = config.get("max-players", 20)
         self.online_mode = config.get("online-mode", False)
         self.compression_threshold = config.get("network-compression-threshold", 256)
-        self.view_distance = config.get("view-distance", 10)
+        self.view_distance = max(2, min(32, int(config.get("view-distance", 10))))
+        self.simulation_distance = max(
+            2, min(self.view_distance, int(config.get("simulation-distance", 10))))
         self.autosave_enabled = True
-        # 使用 TimeManager 管理世界时间和天气
-        self._time_manager = TimeManager(initial_time=1000)
-        self._gamerule_manager = GameruleManager()
-
-        # 向后兼容属性
-        self.world_time = 1000
-        self.weather = "clear"
-        self.gamerules = self._gamerule_manager
-        self.spawn_position = (
-            int(config.get("level-spawn-x", 0)),
-            int(config.get("level-spawn-y", 100)),
-            int(config.get("level-spawn-z", 0)),
-        )
         self.chunk_generation_multithreading = config.get(
             "chunk-generation-multithreading", False
         )
@@ -107,11 +100,58 @@ class MinecraftServer:
         )
         self.join_immediate_radius = max(0, int(config.get("join-immediate-radius", 2)))
 
-        # 世界存储
-        world_name = config.get("level-name", "world")
-        self.world_storage = WorldStorage(world_name)
-        self.permissions = PermissionManager(config.get("permissions-file", "permissions.json"))
+        # 世界存储: <universe>/<level-name>/
+        world_name = str(config.get("level-name", "world") or "world")
+        universe = str(config.get("universe", "") or "")
+        self.level_name = world_name
+        world_path = os.path.join(universe, world_name) if universe else world_name
+        self.world_storage = WorldStorage(world_path)
+        self.session_lock = SessionLock(self.world_storage.world_dir)
+
+        # level.dat: 出生点、世界时间、天气、游戏规则、种子
+        self.level_data = LevelData.load(self.world_storage.world_dir)
+        self.level_data.level_name = world_name
+        self.seed = self._resolve_seed()
+        self.level_data.seed = self.seed
+
+        self._time_manager = TimeManager(initial_time=0)
+        self._gamerule_manager = GameruleManager(self.level_data.gamerules or None)
+        if self.level_data.existed:
+            self._time_manager.apply_level_data(self.level_data)
+            if self.level_data.difficulty:
+                config["difficulty"] = self.level_data.difficulty
+        self.gamerules = self._gamerule_manager
+
+        if self.level_data.spawn is not None:
+            self.spawn_position = tuple(int(v) for v in self.level_data.spawn)
+            self._spawn_resolved = True
+        else:
+            # 旧版本 PyMC 把出生点写在 server.properties 里
+            self.spawn_position = (
+                int(config.get("level-spawn-x", 0)),
+                int(config.get("level-spawn-y", 100)),
+                int(config.get("level-spawn-z", 0)),
+            )
+            self._spawn_resolved = False
+
+        # 权限 / OP / 封禁 / 白名单 (原版 JSON 文件) 与玩家名缓存
+        permissions_file = config.get("permissions-file", "permissions.json")
+        base_dir = os.path.dirname(permissions_file)
+        self.usercache = UserCache(os.path.join(base_dir, "usercache.json"))
+        self.permissions = PermissionManager(
+            permissions_file,
+            default_op_level=int(config.get("op-permission-level", 4)),
+            usercache=self.usercache,
+        )
+        whitelist = self.permissions.data["whitelist"]
+        if whitelist.get("enabled") and not config.get("white-list", False):
+            config["white-list"] = True      # 迁移旧 permissions.json 的开关
+            save_config(config, config_path)
+        whitelist["enabled"] = bool(config.get("white-list", False))
+        self.permissions.on_whitelist_toggle = self._on_whitelist_toggle
+
         self.web_admin: WebAdminServer | None = None
+        self.rcon = None
         self.loop: asyncio.AbstractEventLoop | None = None
 
         # 在线玩家列表
@@ -120,7 +160,11 @@ class MinecraftServer:
 
         # 服务器状态
         self.running = False
+        self.accepting_players = False
         self.start_time = 0
+        self._stopped = False
+        self._stop_event: asyncio.Event | None = None
+        self._ready_event = asyncio.Event()
         self._server: Optional[asyncio.Server] = None
         self._tick_task: Optional[asyncio.Task] = None
         self.terrain_generator = None
@@ -155,6 +199,72 @@ class MinecraftServer:
 
         # 命令框架
         self.command_manager = None  # Initialized in main.py
+
+    # ------------------------------------------------------------------
+    # 世界时间 / 天气 (委托给 TimeManager, 保证 /time /weather 修改持久生效)
+    # ------------------------------------------------------------------
+
+    @property
+    def world_time(self) -> int:
+        return self._time_manager.time
+
+    @world_time.setter
+    def world_time(self, value: int):
+        self._time_manager.set_time(int(value))
+
+    @property
+    def weather(self) -> str:
+        return self._time_manager.weather
+
+    @weather.setter
+    def weather(self, value: str):
+        self._time_manager.weather = value
+
+    def _resolve_seed(self) -> int:
+        """
+        世界种子的来源优先级 (与原版一致: 已有世界以 level.dat 为准):
+          1. level.dat 中记录的种子
+          2. server.properties 的 level-seed
+          3. 旧存档 (有区域文件但没有 level.dat): 沿用旧行为 0
+          4. 全新世界: 随机种子
+        """
+        if self.level_data.existed:
+            return int(self.level_data.seed)
+        configured = str(self.config.get("level-seed", "") or "").strip()
+        if configured:
+            return parse_vanilla_seed(configured)
+        region_dir = self.world_storage.region_dir
+        try:
+            has_regions = any(region_dir.iterdir())
+        except OSError:
+            has_regions = False
+        if has_regions:
+            return 0
+        import random
+        return random.SystemRandom().randint(-(1 << 63), (1 << 63) - 1)
+
+    def _on_whitelist_toggle(self, enabled: bool):
+        self.config["white-list"] = bool(enabled)
+        save_config(self.config, self.config_path)
+
+    def save_level_data(self):
+        """把世界元数据写入 level.dat。"""
+        level = self.level_data
+        level.level_name = self.level_name
+        level.seed = self.seed
+        level.spawn = tuple(int(v) for v in self.spawn_position)
+        level.difficulty = str(self.config.get("difficulty", "easy")).lower()
+        level.gamemode = str(self.config.get("gamemode", "survival")).lower()
+        level.hardcore = bool(self.config.get("hardcore", False))
+        level.gamerules = {
+            name: (str(value).lower() if isinstance(value, bool) else str(value))
+            for name, value in self.gamerules.all_rules().items()
+        }
+        self._time_manager.write_level_data(level)
+        try:
+            level.save(self.world_storage.world_dir)
+        except OSError as e:
+            mc_logger.error(f"Failed to save level.dat: {e}")
 
     def get_next_entity_id(self) -> int:
         """获取下一个可用的实体 ID。"""
@@ -195,8 +305,12 @@ class MinecraftServer:
             if conn != exclude:
                 asyncio.ensure_future(conn.send_packet(packet_id, payload))
 
-    def broadcast_system_message(self, text: str, exclude: Connection = None):
-        """向所有在线玩家广播系统聊天消息。"""
+    def broadcast_system_message(self, text, exclude: Connection = None,
+                                 log: bool = False):
+        """向所有在线玩家广播系统聊天消息 (字符串或文本组件)。"""
+        if log:
+            from protocol.text import plain_text
+            logging.getLogger("minecraft.server").info(plain_text(text))
         for conn in self.get_online_players():
             if conn != exclude and conn.version_handler is not None:
                 asyncio.ensure_future(conn.version_handler.send_system_chat(conn, text))
@@ -253,6 +367,8 @@ class MinecraftServer:
             "air_supply": conn.air_supply,
             "fire_ticks": conn.fire_ticks,
             "freeze_ticks": conn.freeze_ticks,
+            "flying": bool(getattr(conn, "flying", False)),
+            "selected_slot": int(getattr(conn, "selected_hotbar_slot", 0)),
             "personal_spawn": list(conn.personal_spawn) if conn.personal_spawn is not None else None,
         }
 
@@ -268,41 +384,80 @@ class MinecraftServer:
             self.save_player_state(conn)
 
     async def start(self):
-        """启动服务器。"""
+        """
+        启动服务器并一直运行到 stop() 被调用。
+
+        控制台输出顺序与原版专用服务端一致:
+        Default game type -> Starting Minecraft server on -> Preparing level
+        -> Preparing spawn area -> Done (N s)! For help, type "help"
+        """
         if self.online_mode:
-            raise RuntimeError(
-                "online-mode=true is not supported yet: encryption and Mojang "
-                "session authentication are not implemented"
-            )
+            from network import encryption
+            if not encryption.available():
+                raise RuntimeError(
+                    "online-mode=true requires the 'cryptography' package "
+                    "(pip install cryptography), or set online-mode=false"
+                )
         self.running = True
+        self._stopped = False
         self.start_time = time.time()
         self.loop = asyncio.get_running_loop()
+        self._stop_event = asyncio.Event()
+
+        gamemode = str(self.config.get("gamemode", "survival")).upper()
+        mc_logger.info(f"Default game type: {gamemode}")
+
+        if self.online_mode:
+            from network import encryption
+            mc_logger.info("Generating keypair")
+            self.keypair = encryption.ServerKeyPair()
+
+        # --- 绑定端口 (与原版一样在加载世界之前) ---
+        bind_host = self.host or None
+        shown_host = self.host or "*"
+        mc_logger.info(f"Starting Minecraft server on {shown_host}:{self.port}")
+        try:
+            self._server = await asyncio.start_server(
+                self._handle_client, bind_host, self.port
+            )
+        except OSError as e:
+            mc_logger.warning("**** FAILED TO BIND TO PORT!")
+            mc_logger.warning(f"The exception was: {e}")
+            mc_logger.warning("Perhaps a server is already running on that port?")
+            self.running = False
+            raise RuntimeError(f"Failed to bind to port {self.port}") from e
+
+        if not self.online_mode:
+            mc_logger.warning("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!")
+            mc_logger.warning("The server will make no attempt to authenticate usernames. Beware.")
+            mc_logger.warning(
+                "While this makes the game possible to play without internet access, "
+                "it also opens up the ability for hackers to connect with any username they choose.")
+            mc_logger.warning('To change this, set "online-mode" to "true" in the server.properties file.')
+
+        # --- 加载世界 ---
+        mc_logger.info(f'Preparing level "{self.level_name}"')
+        try:
+            self.session_lock.acquire()
+        except SessionLockError as e:
+            self.running = False
+            self._server.close()
+            raise RuntimeError(str(e)) from e
 
         # 初始化世界存储 (Anvil -> Linear 自动转换)
         self.world_storage.initialize()
         container_manager.load(str(self.world_storage.world_dir))
         self._initialize_terrain_generator()
         await self._pregenerate_spawn_area()
-
-        self._server = await asyncio.start_server(
-            self._handle_client,
-            self.host,
-            self.port
-        )
+        self.save_level_data()
 
         # 初始化红石引擎
         if self.config.get("redstone-enabled", True):
             self.redstone_engine = RedstoneEngine(self)
-            logger.info("红石引擎已初始化")
-        else:
-            logger.info("红石引擎已禁用 (redstone-enabled=false)")
 
         # 初始化流体系统
         if self.config.get("fluid-flow-enabled", True):
             self.fluid_system = FluidSystem(self)
-            logger.info("流体系统已初始化")
-        else:
-            logger.info("流体系统已禁用 (fluid-flow-enabled=false)")
 
         # 初始化网络优化器
         self.network_optimizer = PlayerNetworkOptimizer(self)
@@ -313,22 +468,18 @@ class MinecraftServer:
             from commands import CommandManager, register_all_vanilla_commands
             self.command_manager = CommandManager(self)
             register_all_vanilla_commands(self.command_manager)
-            cmd_count = len(self.command_manager.commands)
-            logger.info(f"命令框架已初始化: {cmd_count} 个命令已注册")
 
         # Mod 管理器集成 (如果 main.py 没有提前初始化)
         if self.mod_manager is None:
             from mods.bridge import init_mod_system
             mods_dir = self.config.get("mods-directory", "mods")
             init_mod_system(self, mods_dir)
-            logger.info(f"Mod 管理器已初始化: {self.mod_manager.mod_count} 个 Mod 已启用")
 
         # 插件管理器集成 (如果 main.py 没有提前初始化)
         if self.plugin_manager is None:
             from plugins.bridge import init_plugin_system
             plugins_dir = self.config.get("plugins-directory", "plugins")
             init_plugin_system(self, plugins_dir)
-            logger.info(f"插件管理器已初始化: {self.plugin_manager.plugin_count} 个插件已启用")
 
         # 启动游戏循环 (20 TPS)
         self._tick_task = asyncio.create_task(self._game_loop())
@@ -346,33 +497,54 @@ class MinecraftServer:
                 logger.error(f"启动 Web 管理台失败: {e}")
                 self.web_admin = None
 
-        addr = self._server.sockets[0].getsockname()
-        logger.info(f"服务器已启动，监听 {addr[0]}:{addr[1]}")
-        logger.info(f"游戏版本: 1.21.1 | 协议版本: 767 | 多版本支持: 1.8-1.21")
-        logger.info(f"支持协议版本: {self.config.get('min-protocol-version', 47)} - {self.config.get('max-protocol-version', 770)}")
-        logger.info(f"最大玩家数: {self.max_players}")
-        logger.info(f"在线模式: {'开启' if self.online_mode else '关闭 (离线模式)'}")
-        logger.info(f"数据包压缩阈值: {self.compression_threshold} 字节")
-        if self.should_use_multithreaded_generation():
-            logger.info(f"区块生成模式: 多线程 ({self.chunk_generation_workers} 线程)")
-        else:
-            mode = "单线程"
-            if self._use_native_terrain:
-                mode = f"原生生成器内部并行 ({max(2, os.cpu_count() or 2)} 线程)"
-            logger.info(f"区块生成模式: {mode}")
+        if self.config.get("enable-rcon", False):
+            from network.rcon import RconServer
+            password = str(self.config.get("rcon.password", "") or "")
+            if not password:
+                mc_logger.warning("No rcon password set in server.properties, rcon disabled!")
+            else:
+                self.rcon = RconServer(self, self.host or "0.0.0.0",
+                                       int(self.config.get("rcon.port", 25575)), password)
+                await self.rcon.start()
 
+        logger.debug(
+            f"协议 767 (原生) | 兼容协议 {self.config.get('min-protocol-version', 47)}-"
+            f"{self.config.get('max-protocol-version', 770)} | 压缩阈值 "
+            f"{self.compression_threshold} | 地形引擎 "
+            f"{'C++ 原生' if self._use_native_terrain else 'Python'}"
+        )
+
+        self.accepting_players = True
+        self._ready_event.set()
         startup_time = time.time() - self.start_time
-        logger.info(f"启动完成，用时 {startup_time:.1f}s")
+        mc_logger.info(f'Done ({startup_time:.3f}s)! For help, type "help"')
+
+        from mods.bridge import hook_server_start
+        try:
+            hook_server_start(self)
+        except Exception as e:
+            logger.debug(f"hook_server_start failed: {e}")
 
         async with self._server:
-            await self._server.serve_forever()
+            await self._stop_event.wait()
+
+    async def wait_until_ready(self):
+        """等待服务器完成启动 (控制台命令在此之前排队)。"""
+        await self._ready_event.wait()
+
+    def request_stop(self):
+        """请求停止服务器 (/stop、Ctrl+C、SIGTERM、RCON 均走这里)。"""
+        if self._stop_event is not None and not self._stop_event.is_set():
+            mc_logger.info("Stopping the server")
+            self._stop_event.set()
+        self.accepting_players = False
 
     def _initialize_terrain_generator(self):
         """初始化地形生成器，并计算出生点高度。"""
         if self.terrain_generator is not None:
             return
 
-        seed = parse_vanilla_seed(self.config.get("level-seed", 0))
+        seed = int(getattr(self, "seed", parse_vanilla_seed(self.config.get("level-seed", 0))))
 
         # 与 world.terrain_native 共用跨平台查找逻辑，避免选中仓库中
         # 已提交的其它平台二进制（例如 macOS 上误选 Linux ELF）。
@@ -390,22 +562,24 @@ class MinecraftServer:
         if native_gen.available:
             self.terrain_generator = native_gen
             self._use_native_terrain = True
-            logger.info(f"使用 C++ 原生地形生成器 (种子: {seed})")
+            logger.debug(f"使用 C++ 原生地形生成器 (种子: {seed})")
         elif use_vanilla:
             try:
                 self.terrain_generator = VanillaTerrainGenerator(seed)
                 self._use_native_terrain = False
-                logger.info(f"使用 Vanilla 地形生成器 (种子: {seed})")
+                logger.info("Native terrain generator unavailable, using the (slow) Python generator")
             except Exception as e:
                 logger.warning(f"Vanilla 地形生成器初始化失败: {e}，回退到基础生成器")
                 self.terrain_generator = TerrainGenerator(seed)
                 self._use_native_terrain = False
-                logger.info(f"使用纯 Python 地形生成器 (种子: {seed})")
+                logger.debug(f"使用纯 Python 地形生成器 (种子: {seed})")
         else:
             self.terrain_generator = TerrainGenerator(seed)
             self._use_native_terrain = False
-            logger.info(f"使用纯 Python 地形生成器 (种子: {seed})")
+            logger.debug(f"使用纯 Python 地形生成器 (种子: {seed})")
 
+        if getattr(self, "_spawn_resolved", False):
+            return  # 出生点来自 level.dat, 不重新计算
         spawn_x, _, spawn_z = self.spawn_position
         if self._use_native_terrain:
             _, hmap = self.terrain_generator.generate_chunk_with_heightmap(
@@ -419,15 +593,13 @@ class MinecraftServer:
     def save_runtime_config(self):
         """将运行时配置写回 server.properties。"""
         self.config["difficulty"] = self.config.get("difficulty", "normal")
-        self.config["gamemode"] = self.config.get("gamemode", "creative")
+        self.config["gamemode"] = self.config.get("gamemode", "survival")
         self.config["chunk-generation-multithreading"] = self.chunk_generation_multithreading
         self.config["chunk-generation-workers"] = self.config.get("chunk-generation-workers", 0)
         self.config["join-immediate-radius"] = self.join_immediate_radius
         self.config["level-name"] = self.config.get("level-name", "world")
-        self.config["level-spawn-x"] = int(self.spawn_position[0])
-        self.config["level-spawn-y"] = int(self.spawn_position[1])
-        self.config["level-spawn-z"] = int(self.spawn_position[2])
         save_config(self.config, self.config_path)
+        self.save_level_data()   # 出生点保存在 level.dat
 
     def should_use_multithreaded_generation(self) -> bool:
         """是否启用 Python 侧多线程区块生成。"""
@@ -613,49 +785,107 @@ class MinecraftServer:
         return loaded, generated
 
     async def _pregenerate_spawn_area(self):
-        """服务器启动时预生成出生点周围的少量关键区块，确保玩家能进服。
-        
-        只预生成 join_immediate_radius 范围内的区块（默认 2 = 5x5 = 25 个），
-        而不是完整视距范围。其余区块在玩家加入后按需流式加载。
-        这样纯 Python 地形生成器也能在几秒内完成。
         """
+        服务器启动时准备出生点周围的区块, 并解析出安全的世界出生点。
+
+        只准备 join_immediate_radius 范围内的区块 (默认 5x5), 其余区块在玩家
+        加入后按需流式加载。进度按原版格式输出 (Preparing spawn area: N%)。
+        """
+        mc_logger.info("Preparing start region for dimension minecraft:overworld")
         spawn_x, _, spawn_z = self.spawn_position
         center_cx = int(spawn_x) >> 4
         center_cz = int(spawn_z) >> 4
-        
-        # 只预生成小范围，确保玩家加入时有地面可站
+
         pregen_radius = min(self.join_immediate_radius, 3)  # 最多 7x7 = 49 个
         chunk_coords = [
             (cx, cz)
             for cx in range(center_cx - pregen_radius, center_cx + pregen_radius + 1)
             for cz in range(center_cz - pregen_radius, center_cz + pregen_radius + 1)
         ]
-
-        logger.info(
-            f"正在预生成出生点核心区块 {len(chunk_coords)} 个 "
-            f"(中心={center_cx},{center_cz} 半径={pregen_radius})..."
-        )
+        total = len(chunk_coords)
+        progress = {"done": 0}
 
         def _generate_spawn_chunks():
-            loaded, generated = self.pregenerate_chunks(chunk_coords)
-            return loaded, generated
+            # 分小批生成, 以便汇报进度
+            batch = max(1, total // 8)
+            for index in range(0, total, batch):
+                if not self.running:
+                    break
+                self.pregenerate_chunks(chunk_coords[index:index + batch])
+                progress["done"] = min(total, index + batch)
 
         start = time.time()
-        loaded, generated = await asyncio.get_running_loop().run_in_executor(
-            None, _generate_spawn_chunks
-        )
-        logger.info(
-            f"出生点核心区块预生成完成: 已缓存 {loaded} 个, 新生成 {generated} 个, "
-            f"耗时 {time.time() - start:.1f}s"
-        )
+        future = asyncio.get_running_loop().run_in_executor(None, _generate_spawn_chunks)
+        worker_log = logging.getLogger("minecraft.worldgen")
+        last_report = 0.0
+        while not future.done():
+            await asyncio.wait([future], timeout=0.25)
+            now = time.time()
+            if not future.done() and now - last_report >= 0.5:
+                last_report = now
+                worker_log.info(f"Preparing spawn area: {progress['done'] * 100 // total}%")
+        await future
+        mc_logger.info(f"Time elapsed: {int((time.time() - start) * 1000)} ms")
+
+        if not getattr(self, "_spawn_resolved", False):
+            # 首次创建世界: 在出生点附近寻找安全的落脚点并写入 level.dat
+            from handlers.play.spawn import _resolve_spawn_location
+            try:
+                resolved = await asyncio.get_running_loop().run_in_executor(
+                    None, _resolve_spawn_location, self, int(spawn_x), int(spawn_z))
+                self.spawn_position = tuple(int(v) for v in resolved)
+            except Exception as e:
+                logger.warning(f"无法解析安全出生点, 使用地表高度: {e}")
+            self._spawn_resolved = True
 
     async def stop(self):
-        """停止服务器。"""
-        logger.info("正在关闭服务器...")
+        """停止服务器: 踢出玩家、保存玩家与世界、释放资源 (可重复调用)。"""
+        if self._stopped:
+            return
+        self._stopped = True
+        was_running = self.running
         self.running = False
+        self.accepting_players = False
+        self._ready_event.set()   # 释放仍在等待启动完成的控制台
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if not was_running:
+            return
 
-        self.save_all_player_states()
-        container_manager.save(str(self.world_storage.world_dir))
+        mc_logger.info("Stopping server")
+
+        from mods.bridge import hook_server_stop
+        try:
+            hook_server_stop(self)
+        except Exception as e:
+            logger.debug(f"hook_server_stop failed: {e}")
+
+        if self.rcon is not None:
+            await self.rcon.stop()
+            self.rcon = None
+
+        # 停止 TCP 监听, 不再接受新连接
+        if self._server:
+            self._server.close()
+
+        mc_logger.info("Saving players")
+        from protocol.text import translate
+        for conn in list(self.connections):
+            if conn.state == ConnectionState.PLAY and conn.username:
+                self.save_player_state(conn)
+            await conn.disconnect(translate("multiplayer.disconnect.server_shutdown"), log=False)
+        # 让各连接的收尾逻辑 (离开消息等) 先跑完
+        await asyncio.sleep(0)
+        self.connections.clear()
+
+        # 停止游戏循环
+        if self._tick_task:
+            self._tick_task.cancel()
+            try:
+                await self._tick_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._tick_task = None
 
         # 停止 Watchdog
         if self.watchdog_manager is not None:
@@ -680,16 +910,20 @@ class MinecraftServer:
             self.network_optimizer = None
 
         # 保存世界数据
-        logger.info("正在保存世界数据...")
+        mc_logger.info("Saving worlds")
+        mc_logger.info(
+            f"Saving chunks for level 'ServerLevel[{self.level_name}]'/minecraft:overworld")
+        container_manager.save(str(self.world_storage.world_dir))
+        self.save_level_data()
         self.world_storage.close()
-        logger.info("世界数据已保存")
+        mc_logger.info(f"ThreadedAnvilChunkStorage ({self.level_name}): All chunks are saved")
 
         if self.web_admin:
             self.web_admin.stop()
             self.web_admin = None
 
         if self._chunk_executor:
-            self._chunk_executor.shutdown(wait=False, cancel_futures=False)
+            self._chunk_executor.shutdown(wait=False, cancel_futures=True)
             self._chunk_executor = None
 
         if self.terrain_generator is not None and hasattr(self.terrain_generator, "shutdown"):
@@ -697,21 +931,7 @@ class MinecraftServer:
             self.terrain_generator = None
 
         self.entity_manager.shutdown()
-
-        # 断开所有连接
-        for conn in list(self.connections):
-            await conn.disconnect("服务器关闭")
-        self.connections.clear()
-
-        # 停止游戏循环
-        if self._tick_task:
-            self._tick_task.cancel()
-
-        # 停止 TCP 监听
-        if self._server:
-            self._server.close()
-
-        logger.info("服务器已关闭")
+        self.session_lock.release()
 
     async def _handle_client(self, reader: asyncio.StreamReader,
                              writer: asyncio.StreamWriter):
@@ -726,8 +946,10 @@ class MinecraftServer:
                 except asyncio.IncompleteReadError:
                     # 客户端断开连接
                     break
+                except (ConnectionError, OSError):
+                    break
                 except ValueError as e:
-                    logger.warning(f"数据包读取错误 [{conn.address}]: {e}")
+                    logger.debug(f"数据包读取错误 [{conn.address}]: {e}")
                     break
 
                 # 根据连接状态分发数据包
@@ -744,9 +966,9 @@ class MinecraftServer:
                         await handle_play(conn, packet_id, payload, self)
                 except Exception as e:
                     logger.error(f"处理数据包异常 [{conn.address}] "
-                                 f"状态={conn.state.name} ID=0x{packet_id:02X}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                                 f"状态={conn.state.name} ID=0x{packet_id:02X}: {e}",
+                                 exc_info=True)
+                    await conn.disconnect({"translate": "multiplayer.disconnect.generic"})
                     break
         finally:
             # 清理连接
@@ -754,14 +976,26 @@ class MinecraftServer:
             if conn in self.connections:
                 self.connections.remove(conn)
 
-            # 如果玩家已登录，通知其他玩家
+            # 已进入游戏的玩家: 保存、广播离开消息、通知其他客户端
             if conn.username and conn.state == ConnectionState.PLAY:
-                self.save_player_state(conn)
-                # Plugin hook: fire PlayerQuitEvent
-                from mods.bridge import hook_player_quit
-                hook_player_quit(self, conn)
-                logger.info(f"玩家 {conn.username} 离开了游戏")
-                await self._handle_player_leave(conn)
+                reason = conn.disconnect_reason or "Disconnected"
+                mc_logger.info(f"{conn.username} lost connection: {reason}")
+                if conn.joined:
+                    conn.joined = False
+                    self.save_player_state(conn)
+                    from mods.bridge import hook_player_quit
+                    hook_player_quit(self, conn)
+                    from protocol.text import translate, player_name
+                    self.broadcast_system_message(
+                        translate("multiplayer.player.left", player_name(conn), color="yellow"),
+                        exclude=conn, log=True,
+                    )
+                    await self._handle_player_leave(conn)
+            elif conn.username and conn.state in (ConnectionState.LOGIN,
+                                                  ConnectionState.CONFIGURATION):
+                reason = conn.disconnect_reason or "Disconnected"
+                logging.getLogger("minecraft.auth").debug(
+                    f"{conn.username} ({conn.address}) lost connection: {reason}")
 
             try:
                 writer.close()
@@ -793,108 +1027,146 @@ class MinecraftServer:
     async def _game_loop(self):
         """
         服务器主游戏循环。
-        目标: 20 TPS (每 tick 50ms)。
+        目标: 20 TPS (每 tick 50ms)。落后过多时与原版一样输出
+        "Can't keep up!" 警告并跳过积压的 tick。
         """
         tick_interval = 0.05  # 50ms per tick
         tick_count = 0
-        keepalive_interval = 200  # 每 200 tick (10秒) 发一次心跳
+        keepalive_interval = 300  # 每 300 tick (15秒) 发一次心跳 (与原版一致)
         world_flush_interval = 200  # 每 10 秒尝试落盘一次脏区块
         autosave_interval = 6000  # 每 6000 tick (5分钟) 自动保存
+        next_tick = time.monotonic()
+        last_overload_warning = 0.0
 
         while self.running:
-            tick_start = time.time()
             tick_count += 1
+            try:
+                await self._run_tick(tick_count, keepalive_interval,
+                                     world_flush_interval, autosave_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Exception in server tick loop: {e}", exc_info=True)
 
-            # 使用 TimeManager 推进时间
-            self._time_manager.do_daylight_cycle = self.gamerules.get("doDaylightCycle", True)
-            self._time_manager.do_weather_cycle = self.gamerules.get("doWeatherCycle", True)
-            old_weather = self.weather
-            old_time = self.world_time
-            self._time_manager.tick()
-            self.world_time = self._time_manager.time
-            self.weather = self._time_manager.weather
+            # 固定步长调度: 落后时追赶, 落后超过 2 秒则放弃积压的 tick
+            next_tick += tick_interval
+            now = time.monotonic()
+            behind = now - next_tick
+            if behind > 2.0:
+                if now - last_overload_warning >= 15.0:
+                    last_overload_warning = now
+                    mc_logger.warning(
+                        f"Can't keep up! Is the server overloaded? Running "
+                        f"{int(behind * 1000)}ms or {int(behind / tick_interval)} ticks behind")
+                next_tick = now
+            await asyncio.sleep(max(0.0, next_tick - now))
 
-            # Plugin hooks + client sync: weather/time change
-            if self.weather != old_weather:
-                from handlers.play.weather import broadcast_weather_change
-                await broadcast_weather_change(self, old_weather, self.weather)
-                from plugins.bridge import hook_weather_change
-                hook_weather_change(self, old_weather, self.weather)
-            if self.world_time != old_time and tick_count % 200 == 0:
-                from plugins.bridge import hook_time_change
-                hook_time_change(self, old_time, self.world_time)
+    async def _run_tick(self, tick_count: int, keepalive_interval: int,
+                        world_flush_interval: int, autosave_interval: int):
+        """执行一个游戏刻。"""
+        # 使用 TimeManager 推进时间
+        self._time_manager.do_daylight_cycle = self.gamerules.get("doDaylightCycle", True)
+        self._time_manager.do_weather_cycle = self.gamerules.get("doWeatherCycle", True)
+        old_weather = self.weather
+        old_time = self.world_time
+        self._time_manager.tick()
 
-            # 更新指标
-            self.metrics.tick()
+        # Plugin hooks + client sync: weather/time change
+        if self.weather != old_weather:
+            from handlers.play.weather import broadcast_weather_change
+            await broadcast_weather_change(self, old_weather, self.weather)
+            from plugins.bridge import hook_weather_change
+            hook_weather_change(self, old_weather, self.weather)
+        if self.world_time != old_time and tick_count % 200 == 0:
+            from plugins.bridge import hook_time_change
+            hook_time_change(self, old_time, self.world_time)
 
-            # 执行调度任务
-            await self.scheduler.tick()
+        # 更新指标
+        self.metrics.tick()
 
-            # Plugin/mod tick hook
-            from plugins.bridge import hook_server_tick
-            hook_server_tick(self)
-            if self.mod_manager is not None:
-                from mods.bridge import hook_tick
-                hook_tick(self)
+        # 执行调度任务
+        await self.scheduler.tick()
 
-            # Process active furnace-like containers.
-            from world.block_behavior import container_manager
-            container_manager.tick_furnaces(self)
+        # Plugin/mod tick hook
+        from plugins.bridge import hook_server_tick
+        hook_server_tick(self)
+        if self.mod_manager is not None:
+            from mods.bridge import hook_tick
+            hook_tick(self)
 
-            # 发送 KeepAlive 心跳
-            if tick_count % keepalive_interval == 0:
-                await self._send_keepalive()
+        # Process active furnace-like containers.
+        from world.block_behavior import container_manager
+        container_manager.tick_furnaces(self)
 
-            # 自动保存世界数据
-            if self.autosave_enabled and tick_count % autosave_interval == 0:
-                self.save_all_player_states()
+        # 发送 KeepAlive 心跳
+        if tick_count % keepalive_interval == 0:
+            await self._send_keepalive()
+
+        # 自动保存世界数据 (原版同样静默进行)
+        if self.autosave_enabled and tick_count % autosave_interval == 0:
+            self.save_all_player_states()
+            self.world_storage.flush()
+            container_manager.save(str(self.world_storage.world_dir))
+            self.save_level_data()
+
+        if self.autosave_enabled and tick_count % world_flush_interval == 0:
+            if self.world_storage.has_dirty_regions():
                 self.world_storage.flush()
-                container_manager.save(str(self.world_storage.world_dir))
 
-            if self.autosave_enabled and tick_count % world_flush_interval == 0:
-                if self.world_storage.has_dirty_regions():
-                    self.world_storage.flush()
+        # 清理无效连接
+        self.connections = [c for c in self.connections if c.alive]
 
-            # 清理无效连接
-            self.connections = [c for c in self.connections if c.alive]
+        # 基础玩家生存规则
+        await self._tick_players(tick_count)
+        self.entity_manager.tick()
+        if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
+            self.entity_manager.spawn_natural_mobs()
+        await self._tick_entity_interactions()
+        if tick_count % 10 == 0:
+            await self._tick_entity_sync()
 
-            # 基础玩家生存规则
-            await self._tick_players(tick_count)
-            self.entity_manager.tick()
-            if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
-                self.entity_manager.spawn_natural_mobs()
-            await self._tick_entity_interactions()
-            if tick_count % 10 == 0:
-                await self._tick_entity_sync()
+        # Redstone tick (every 2 game ticks = 0.1s)
+        if tick_count % 2 == 0:
+            await self._tick_redstone()
 
-            # Redstone tick (every 2 game ticks = 0.1s)
-            if tick_count % 2 == 0:
-                await self._tick_redstone()
+        # 雷暴落雷 (每 5 秒一次判定)
+        if tick_count % 100 == 0:
+            await self._tick_lightning()
 
-            # 雷暴落雷 (每 5 秒一次判定)
-            if tick_count % 100 == 0:
-                await self._tick_lightning()
+        # Fluid system tick
+        if self.fluid_system is not None:
+            await self._tick_fluids(tick_count)
 
-            # Fluid system tick
-            if self.fluid_system is not None:
-                await self._tick_fluids(tick_count)
+        # Watchdog heartbeat (every second = every 20 ticks)
+        if self.watchdog_manager is not None and tick_count % 20 == 0:
+            await self.watchdog_manager.send_heartbeat()
 
-            # Watchdog heartbeat (every second = every 20 ticks)
-            if self.watchdog_manager is not None and tick_count % 20 == 0:
-                await self.watchdog_manager.send_heartbeat()
+        # Network optimizer flush
+        if self.network_optimizer is not None:
+            await self.network_optimizer.flush_all()
 
-            # Network optimizer flush
-            if self.network_optimizer is not None:
-                await self.network_optimizer.flush_all()
+        # Tab 列表延迟 (每 30 秒刷新一次)
+        if tick_count % 600 == 0:
+            await self._broadcast_latency()
 
-            # 定期输出服务器指标
-            if self.metrics.should_report():
-                logger.info(self.metrics.report())
+        # 定期输出服务器指标 (仅调试)
+        if self.metrics.should_report():
+            report = self.metrics.report()
+            logger.debug(report)
 
-            # 计算 tick 用时，补偿延迟
-            elapsed = time.time() - tick_start
-            sleep_time = max(0, tick_interval - elapsed)
-            await asyncio.sleep(sleep_time)
+    async def _broadcast_latency(self):
+        """Player Info Update (Update Latency): 刷新 Tab 列表里的信号格。"""
+        from handlers.play.chat import build_player_info_update, INFO_LATENCY
+        from protocol.packet_map import get_clientbound_packet
+        players = self.get_online_players()
+        for player in players:
+            info = build_player_info_update(player, INFO_LATENCY)
+            for other in players:
+                if other.protocol_version < 761:
+                    continue
+                pid = get_clientbound_packet(other.protocol_version, "player_info")
+                if pid is not None:
+                    await other.send_packet(pid, info)
 
     async def _tick_lightning(self):
         """雷暴天气时在随机玩家附近落雷, 伤害落点附近的生物和玩家。"""
@@ -913,7 +1185,7 @@ class MinecraftServer:
         bolt = self.entity_manager.create_lightning(lx, ly, lz)
         from handlers.play import broadcast_entity_spawn
         await broadcast_entity_spawn(self, bolt)
-        logger.info(
+        logger.debug(
             f"闪电击中 ({lx:.1f}, {ly:.1f}, {lz:.1f}) "
             f"附近玩家 {target_player.username}"
         )
@@ -999,7 +1271,7 @@ class MinecraftServer:
         for conn in self.get_online_players():
             if (conn.keepalive_pending
                     and time.monotonic() - conn.keepalive_sent_at > 30.0):
-                await conn.disconnect("KeepAlive timeout")
+                await conn.disconnect({"translate": "disconnect.timeout"})
                 continue
             conn.keepalive_id = keepalive_id
             conn.keepalive_pending = True
@@ -1010,17 +1282,29 @@ class MinecraftServer:
                 await conn.send_packet(pid, payload)
 
     async def _tick_players(self, tick_count: int):
-        """处理最基础的玩家伤害与时间同步。"""
+        """处理最基础的玩家伤害、挂机超时与时间同步。"""
         from handlers.play import _damage_player, _send_time_update, _tick_damage_effects
 
+        idle_minutes = int(self.config.get("player-idle-timeout", 0) or 0)
+        now = time.monotonic()
+
         for conn in self.get_online_players():
-            if conn.y < -80:
-                await _damage_player(conn, 20.0, "虚空", self)
+            if not conn.joined:
+                continue
+            if getattr(conn, "_dead", False):
+                continue
+            if conn.y < -128:
+                await _damage_player(conn, 4.0, "虚空", self)
 
             await _tick_damage_effects(conn, self, tick_count)
 
-            if tick_count % 40 == 0:
+            if tick_count % 20 == 0:
                 await _send_time_update(conn, self)
+
+            if (idle_minutes > 0 and tick_count % 20 == 0 and conn.last_active
+                    and now - conn.last_active > idle_minutes * 60
+                    and not self.permissions.is_op(conn.username)):
+                await conn.disconnect({"translate": "multiplayer.disconnect.idling"})
 
     async def _tick_entity_interactions(self):
         """处理实体与玩家的基础交互：拾取、经验、近战伤害。"""
@@ -1068,9 +1352,6 @@ class MinecraftServer:
                             entity.count = leftover
                             entity.metadata["count"] = leftover
                         await send_inventory_sync(player)
-                        await send_system_message(
-                            player, f"[PyMC] 拾取 {item_name} x{accepted}"
-                        )
                     break
 
             if entity.kind == "mob" and entity.metadata.get("category") == "hostile":

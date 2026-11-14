@@ -141,7 +141,7 @@ def damage_mob(server, entity, amount: float, source=None) -> bool:
             entity.x, entity.y + 0.3, entity.z, xp)
 
     server.entity_manager.remove_entity(entity.entity_id)
-    logger.info(
+    logger.debug(
         f"生物 {entity.metadata.get('mob_type', '?')} (id={entity.entity_id}) "
         f"被击杀, 掉落已生成"
     )

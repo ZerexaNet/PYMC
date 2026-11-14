@@ -9,8 +9,10 @@ from protocol.packet_map import get_clientbound_packet
 class PlayDispatchTests(unittest.TestCase):
     def test_native_packet_ids_are_used_for_native_protocol(self):
         conn = SimpleNamespace(protocol_version=767)
-        self.assertTrue(_is_serverbound_packet(conn, 0x1A, "keep_alive", 0x1A))
-        self.assertTrue(_is_serverbound_packet(conn, 0x0C, "click_container", 0x0C))
+        self.assertTrue(_is_serverbound_packet(conn, 0x18, "keep_alive", 0x18))
+        self.assertTrue(_is_serverbound_packet(conn, 0x0E, "click_container", 0x0E))
+        # 0x1A is Set Player Position in 1.21.1, never Keep Alive.
+        self.assertFalse(_is_serverbound_packet(conn, 0x1A, "keep_alive", 0x18))
 
     def test_native_packet_ids_do_not_leak_into_old_protocols(self):
         conn = SimpleNamespace(protocol_version=47)

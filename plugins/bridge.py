@@ -897,14 +897,14 @@ def init_plugin_system(server, plugins_dir: str = "plugins") -> 'PluginManager':
 
     # Discover and load plugins
     discovered = pm.discover_plugins(plugins_dir)
-    logger.info(f"Discovered {len(discovered)} plugins in {plugins_dir}")
+    logger.debug(f"Discovered {len(discovered)} plugins in {plugins_dir}")
 
     loaded = pm.load_all()
-    logger.info(f"Loaded {loaded} plugins")
+    logger.debug(f"Loaded {loaded} plugins")
 
     pm.enable_all()
     enabled = pm.plugin_count
-    logger.info(f"Enabled {enabled} plugins")
+    logger.debug(f"Enabled {enabled} plugins")
 
     # Register plugin commands into CommandManager
     register_plugin_commands(server)
@@ -963,4 +963,4 @@ def shutdown_plugin_system(server):
                 cm.unregister(cmd_name)
                 logger.debug(f"Unregistered plugin command: /{cmd_name}")
 
-    logger.info("Plugin system shut down")
+    logger.debug("Plugin system shut down")

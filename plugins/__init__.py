@@ -446,7 +446,7 @@ class PluginManager:
 
         search_path = Path(search_dir)
         if not search_path.is_dir():
-            logger.warning(f"Plugins directory does not exist: {search_dir}")
+            logger.debug(f"Plugins directory does not exist: {search_dir}")
             return []
 
         discovered = []
@@ -601,7 +601,7 @@ class PluginManager:
         """Disable all plugins in reverse load order."""
         for plugin_id in reversed(self._load_order):
             self.disable_plugin(plugin_id)
-        logger.info("All plugins shut down")
+        logger.debug("All plugins shut down")
 
     # --- Event System ---
 

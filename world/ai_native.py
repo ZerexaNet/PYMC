@@ -131,7 +131,7 @@ class NativeMobAiEngine:
             if not self.available and not self._redownload_attempted:
                 self._try_redownload_after_crash()
         else:
-            logger.info("未找到 mob_ai 原生 AI，将使用 Python AI 回退")
+            logger.debug("未找到 mob_ai 原生 AI，将使用 Python AI 回退")
 
     def _try_redownload_after_crash(self) -> None:
         """子进程启动崩溃后，自动从 GitHub Release 重新下载二进制。"""
@@ -211,7 +211,7 @@ class NativeMobAiEngine:
                 self._process = None
                 self._disabled = True
                 return
-            logger.info("原生 AI 子进程已启动 (PID: %s)", self._process.pid)
+            logger.debug("原生 AI 子进程已启动 (PID: %s)", self._process.pid)
         except Exception as e:
             logger.warning("启动原生 AI 失败: %s", e)
             self._process = None

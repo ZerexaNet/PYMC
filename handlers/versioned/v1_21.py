@@ -50,7 +50,7 @@ class VersionHandlerV1_21(VersionHandler):
         payload.extend(write_int(conn.entity_id))
 
         # Is Hardcore (Boolean)
-        payload.extend(write_boolean(False))
+        payload.extend(write_boolean(bool(server.config.get("hardcore", False))))
 
         # Dimension Count + Dimension Names
         dimension_names = [
@@ -69,16 +69,16 @@ class VersionHandlerV1_21(VersionHandler):
         payload.extend(write_varint(server.view_distance))
 
         # Simulation Distance (VarInt)
-        payload.extend(write_varint(server.view_distance))
+        payload.extend(write_varint(int(getattr(server, "simulation_distance", server.view_distance))))
 
         # Reduced Debug Info (Boolean)
-        payload.extend(write_boolean(False))
+        payload.extend(write_boolean(bool(server.gamerules.get("reducedDebugInfo", False))))
 
         # Enable Respawn Screen (Boolean)
-        payload.extend(write_boolean(True))
+        payload.extend(write_boolean(not server.gamerules.get("doImmediateRespawn", False)))
 
         # Do Limited Crafting (Boolean)
-        payload.extend(write_boolean(False))
+        payload.extend(write_boolean(bool(server.gamerules.get("doLimitedCrafting", False))))
 
         # Dimension Type (VarInt - registry index)
         payload.extend(write_varint(0))  # 0 = overworld
@@ -87,11 +87,12 @@ class VersionHandlerV1_21(VersionHandler):
         payload.extend(write_identifier("minecraft:overworld"))
 
         # Hashed Seed (Long)
-        payload.extend(write_long(0))
+        from handlers.play.join import hashed_seed
+        payload.extend(write_long(hashed_seed(server)))
 
-        # Game Mode (Unsigned Byte)
+        # Game Mode (Unsigned Byte) — 玩家自己的游戏模式, 而不是服务器默认值
         gamemode_map = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
-        payload.extend(write_ubyte(gamemode_map.get(server.config.get("gamemode", "creative"), 1)))
+        payload.extend(write_ubyte(gamemode_map.get(getattr(conn, "gamemode", "survival"), 0)))
 
         # Previous Game Mode (Byte)
         payload.extend(write_byte(-1))

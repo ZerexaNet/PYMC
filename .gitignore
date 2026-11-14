@@ -21,3 +21,17 @@ native/pymc_native_server
 native/pymc_native_server.exe
 native/libpymc_native.so
 native/pymc_native.dll
+
+# 服务端运行时文件 (原版布局)
+/logs/
+/ops.json
+/whitelist.json
+/banned-players.json
+/banned-ips.json
+/usercache.json
+/server-icon.png
+/world/level.dat
+/world/level.dat_old
+/world/level.dat_new
+/world/session.lock
+/world/containers.json

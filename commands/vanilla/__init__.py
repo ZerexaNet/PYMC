@@ -97,3 +97,8 @@ def register_all(manager):
     # entities, group, perm, defaultgamemode, and duplicates of some
     # commands from consolidated modules for backward compatibility)
     register_default(manager)
+
+    # Vanilla-faithful core commands (registered last: they override the
+    # simplified versions above with real vanilla behaviour and feedback).
+    from commands.vanilla.essentials import register as register_essentials
+    register_essentials(manager)
