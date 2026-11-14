@@ -93,7 +93,7 @@ class GameruleManager:
         if name not in self._rules:
             return False
         self._rules[name] = self._coerce(name, value)
-        logger.info(f"游戏规则 {name} 已设置为 {self._rules[name]}")
+        logger.debug(f"游戏规则 {name} 已设置为 {self._rules[name]}")
         return True
 
     def has(self, name: str) -> bool:

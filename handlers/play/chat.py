@@ -65,53 +65,67 @@ ALL_VANILLA_COMMAND_NAMES = sorted({
 })
 
 
-def build_system_message_payload(message: str | dict) -> bytes:
-    """构建 1.21.1 system_chat 负载。"""
-    if isinstance(message, dict):
-        component = message
-    else:
-        component = {"text": message, "color": "gray"}
-
+def build_system_message_payload(message: str | dict, overlay: bool = False,
+                                 protocol_version: int = 767) -> bytes:
+    """构建 system_chat 负载 (文本组件 + overlay 标志)。"""
+    from protocol.text import encode_component
     payload = bytearray()
-    payload.extend(encode_nbt(component, with_type=True))
-    payload.extend(write_boolean(False))  # overlay
+    payload.extend(encode_component(message, protocol_version))
+    payload.extend(write_boolean(overlay))
     return bytes(payload)
 
 
-async def send_system_message(conn: Connection, text: str):
-    """发送系统聊天消息给单个玩家，使用版本兼容的方式。"""
+async def send_system_message(conn: Connection, text, overlay: bool = False):
+    """发送系统聊天消息给单个玩家 (字符串或文本组件)。"""
     if conn.version_handler is not None:
-        await conn.version_handler.send_system_chat(conn, text)
+        await conn.version_handler.send_system_chat(conn, text, overlay)
     else:
-        # Fallback for native version
-        await conn.send_packet(0x6C, build_system_message_payload(text))
+        from protocol.packet_map import get_clientbound_packet
+        pid = get_clientbound_packet(conn.protocol_version, "system_chat") or 0x6C
+        await conn.send_packet(
+            pid, build_system_message_payload(text, overlay, conn.protocol_version))
+
+
+async def send_action_bar(conn: Connection, text):
+    """在动作栏 (物品栏上方) 显示一条消息。"""
+    await send_system_message(conn, text, overlay=True)
+
+
+MAX_CHAT_LENGTH = 256
+
+
+def _is_legal_chat(message: str) -> bool:
+    return all(ch != "\u00a7" and ord(ch) >= 32 and ch != "\x7f" for ch in message)
 
 
 async def _handle_chat_message(conn: Connection, payload: bytes, server):
     """
-    处理 Chat Message (0x07)。
-    在 1.21.1 中，聊天消息使用签名系统，但离线模式下我们简化处理。
+    处理 Chat Message。
+
+    离线模式下忽略签名字段，按原版 ``chat.type.text`` 格式 (``<名字> 消息``)
+    广播给所有玩家，并在控制台输出 ``<名字> 消息``。
     """
     from protocol.data_types import read_string
-    offset = 0
-    message, offset = read_string(payload, offset)
+    from protocol.text import player_name, translate
+    message, _ = read_string(payload, 0)
+    message = message.strip()
+    if not message:
+        return
+    if len(message) > MAX_CHAT_LENGTH or not _is_legal_chat(message):
+        await conn.disconnect(translate("multiplayer.disconnect.illegal_characters"))
+        return
+    if message.startswith("/"):
+        await execute_server_command(server, message[1:], source_conn=conn)
+        return
 
     # Plugin hook: allow plugins to cancel or modify chat
     from mods.bridge import hook_player_chat
     if not hook_player_chat(server, conn, message):
         return  # Cancelled by a plugin
 
-    logger.info(f"<{conn.username}> {message}")
-
-    chat_component = {
-        "translate": "chat.type.text",
-        "with": [
-            {"text": conn.username, "color": "yellow"},
-            {"text": message}
-        ]
-    }
-    # Use version-aware broadcast for chat messages
-    server.broadcast_system_message(json.dumps(chat_component, ensure_ascii=False))
+    logging.getLogger("minecraft.chat").info(f"<{conn.username}> {message}")
+    server.broadcast_system_message(
+        translate("chat.type.text", player_name(conn), {"text": message}))
 
 
 async def _handle_chat_command(conn: Connection, payload: bytes, server):
@@ -125,33 +139,59 @@ async def _handle_chat_command(conn: Connection, payload: bytes, server):
     if not hook_player_command(server, conn, command):
         return  # Cancelled by a plugin
 
-    logger.info(f"{conn.username} 执行命令: /{command}")
+    logging.getLogger("minecraft.command").info(
+        f"{conn.username} issued server command: /{command}")
     await execute_server_command(server, command, source_conn=conn)
 
 
-def build_player_info_update(conn: Connection) -> bytes:
+GAMEMODE_IDS = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
+
+# Player Info Update action bits (1.19.3+)
+INFO_ADD_PLAYER = 0x01
+INFO_INIT_CHAT = 0x02
+INFO_GAMEMODE = 0x04
+INFO_LISTED = 0x08
+INFO_LATENCY = 0x10
+INFO_DISPLAY_NAME = 0x20
+
+
+def _player_latency(conn: Connection) -> int:
+    rtt = getattr(conn, "keepalive_rtt_ms", None)
+    return int(rtt) if rtt is not None else 0
+
+
+def build_player_info_update(conn: Connection, actions: int | None = None) -> bytes:
     """
-    构建 Player Info Update 数据包负载 (0x3E)。
-    Action: Add Player + Listed
+    构建 Player Info Update 数据包负载。
+
+    默认动作: Add Player + Update Game Mode + Update Listed + Update Latency，
+    与原版服务端在玩家加入时发送的内容一致 (Tab 列表显示延迟和游戏模式)。
     """
+    if actions is None:
+        actions = INFO_ADD_PLAYER | INFO_GAMEMODE | INFO_LISTED | INFO_LATENCY
+
     payload = bytearray()
-
-    # Actions BitSet: 0x01 (Add Player) | 0x08 (Update Listed)
-    actions = 0x01 | 0x08
     payload.append(actions)
-
-    # 玩家数量
-    payload.extend(write_varint(1))
-
-    # 玩家 UUID
+    payload.extend(write_varint(1))          # 玩家数量
     payload.extend(write_uuid(conn.uuid))
 
-    # --- Action: Add Player ---
-    payload.extend(write_string(conn.username))  # 名称
-    payload.extend(write_varint(0))              # 属性数量 = 0
-
-    # --- Action: Update Listed ---
-    payload.extend(write_boolean(True))          # 是否在列表中
+    if actions & INFO_ADD_PLAYER:
+        payload.extend(write_string(conn.username))
+        properties = getattr(conn, "profile_properties", None) or []
+        payload.extend(write_varint(len(properties)))
+        for prop in properties:
+            payload.extend(write_string(prop.get("name", "")))
+            payload.extend(write_string(prop.get("value", "")))
+            signature = prop.get("signature")
+            payload.extend(write_boolean(signature is not None))
+            if signature is not None:
+                payload.extend(write_string(signature))
+    if actions & INFO_GAMEMODE:
+        payload.extend(write_varint(GAMEMODE_IDS.get(getattr(conn, "gamemode", "survival"), 0)))
+    if actions & INFO_LISTED:
+        payload.extend(write_boolean(True))
+    if actions & INFO_LATENCY:
+        payload.extend(write_varint(_player_latency(conn)))
 
     return bytes(payload)
 

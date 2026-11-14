@@ -94,8 +94,27 @@ class Connection:
         self.keepalive_sent_at: float = 0.0
         self.keepalive_rtt_ms: float | None = None
         self.teleport_id: int = 0
+        self.disconnect_reason: str = ""
+        self._cipher = None                 # StreamCipher (online-mode)
+        self.verify_token: bytes = b""
+        self.profile_properties: list[dict] = []   # 皮肤等 (online-mode)
+        self.joined: bool = False           # 已完成进服流程 (已广播加入消息)
 
-        logger.info(f"新连接来自 {self.address}")
+        # 客户端设置 (Client Information)
+        self.locale: str = "en_us"
+        self.client_view_distance: int = 0
+        self.skin_parts: int = 0x7F
+        self.main_hand: int = 1
+        self.client_brand: str = ""
+        self.allow_server_listing: bool = True
+
+        # 实体姿态标志 (潜行/疾跑), 用于同步给其他玩家
+        self.sneaking: bool = False
+        self.sprinting: bool = False
+        self.flying: bool = False
+        self.last_active: float = 0.0
+
+        logger.debug(f"新连接来自 {self.address}")
 
     async def send_packet(self, packet_id: int, payload: bytes = b''):
         """发送数据包给客户端。"""
@@ -103,27 +122,68 @@ class Connection:
             return
         try:
             frame = pack_packet(packet_id, payload, self.compression_threshold)
+            if self._cipher is not None:
+                frame = self._cipher.encrypt(frame)
             self.writer.write(frame)
             await self.writer.drain()
         except (ConnectionError, OSError) as e:
             logger.warning(f"发送数据包失败 [{self.address}]: {e}")
             self.alive = False
 
+    def enable_encryption(self, shared_secret: bytes):
+        """启用 AES/CFB8 加密 (此后收发的所有字节都加密)。"""
+        from network.encryption import DecryptingReader, StreamCipher
+        self._cipher = StreamCipher(shared_secret)
+        self.reader = DecryptingReader(self.reader, self._cipher)
+
     async def read_packet(self) -> tuple[int, bytes]:
         """读取一个数据包。返回 (数据包ID, 负载)。"""
         return await read_packet_async(self.reader, self.compression_threshold)
 
-    async def disconnect(self, reason: str = ""):
-        """断开连接。"""
+    async def disconnect(self, reason="", log: bool = True):
+        """
+        断开连接。
+
+        登录/配置/游戏阶段会先发送对应状态的 Disconnect 数据包，
+        客户端才能显示断开原因 (而不是 "Connection lost")。
+        ``reason`` 可以是字符串或文本组件 dict。
+        """
         if not self.alive:
             return
+        from protocol.text import plain_text
+        reason_text = plain_text(reason) if reason else ""
+        if reason:
+            try:
+                await self._send_disconnect_packet(reason)
+            except Exception as e:  # pragma: no cover - best effort
+                logger.debug(f"发送 Disconnect 数据包失败 [{self.address}]: {e}")
         self.alive = False
-        logger.info(f"断开连接 [{self.address}] {self.username or ''}: {reason}")
+        self.disconnect_reason = reason_text
+        if log and self.state in (ConnectionState.LOGIN, ConnectionState.CONFIGURATION,
+                                  ConnectionState.PLAY):
+            who = self.username or self.address
+            logger.info(f"Disconnecting {who} ({self.address}): {reason_text}")
         try:
             self.writer.close()
             await self.writer.wait_closed()
         except Exception:
             pass
+
+    async def _send_disconnect_packet(self, reason):
+        """按当前协议状态发送 Disconnect 数据包。"""
+        from protocol.text import component_to_json, encode_component
+        from protocol.data_types import write_string
+        if self.state == ConnectionState.LOGIN:
+            # Login Disconnect 始终是 JSON 文本组件
+            await self.send_packet(0x00, write_string(component_to_json(reason)))
+        elif self.state == ConnectionState.CONFIGURATION:
+            pid = 0x02 if self.protocol_version >= 766 else 0x01
+            await self.send_packet(pid, encode_component(reason, self.protocol_version))
+        elif self.state == ConnectionState.PLAY:
+            from protocol.packet_map import get_clientbound_packet
+            pid = get_clientbound_packet(self.protocol_version, "disconnect")
+            if pid is not None:
+                await self.send_packet(pid, encode_component(reason, self.protocol_version))
 
     def generate_offline_uuid(self) -> uuid.UUID:
         """根据用户名生成离线模式 UUID。"""

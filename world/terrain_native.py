@@ -234,7 +234,7 @@ class NativeTerrainGenerator:
         self._redownload_attempted = False
 
         if self._binary_path:
-            logger.info(f"找到原生地形生成器: {self._binary_path}")
+            logger.debug(f"找到原生地形生成器: {self._binary_path}")
             self._start_process()
             # 启动后如果立即崩溃，可能是本地二进制版本不对（如缺 DLL），
             # 尝试从 GitHub Release 重新下载最新版替换
@@ -306,7 +306,7 @@ class NativeTerrainGenerator:
                 )
                 self._process = None
                 return
-            logger.info(f"原生地形生成器子进程已启动 (PID: {self._process.pid})")
+            logger.debug(f"原生地形生成器子进程已启动 (PID: {self._process.pid})")
         except Exception as e:
             logger.error(f"启动原生地形生成器失败: {e}")
             self._process = None
@@ -595,7 +595,7 @@ class NativeTerrainGenerator:
                     except Exception:
                         pass
             self._process = None
-            logger.info("原生地形生成器子进程已关闭")
+            logger.debug("原生地形生成器子进程已关闭")
 
     def __del__(self):
         self.shutdown()

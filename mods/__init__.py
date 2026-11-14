@@ -298,7 +298,7 @@ class ModManager:
 
         search_path = Path(search_dir)
         if not search_path.is_dir():
-            logger.warning(f"Mods directory does not exist: {search_dir}")
+            logger.debug(f"Mods directory does not exist: {search_dir}")
             return []
 
         discovered = []
@@ -453,7 +453,7 @@ class ModManager:
                     instance.state = ModState.UNLOADED
                 except Exception as e:
                     logger.exception(f"Error unloading mod {mod_id}: {e}")
-        logger.info("All mods shut down")
+        logger.debug("All mods shut down")
 
     # --- Event Dispatch ---
 

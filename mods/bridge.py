@@ -419,16 +419,16 @@ def init_mod_system(server, mods_dir: str = "mods") -> ModManager:
 
     # 2. Discover
     discovered = mm.discover_mods(mods_dir)
-    logger.info(f"Discovered {len(discovered)} mod(s) in {mods_dir}")
+    logger.debug(f"Discovered {len(discovered)} mod(s) in {mods_dir}")
 
     # 3. Load
     loaded = mm.load_all()
-    logger.info(f"Loaded {loaded} mod(s)")
+    logger.debug(f"Loaded {loaded} mod(s)")
 
     # 4. Enable
     mm.enable_all()
     enabled = mm.mod_count
-    logger.info(f"Enabled {enabled} mod(s)")
+    logger.debug(f"Enabled {enabled} mod(s)")
 
     # 6. Fire SERVER_START to mods + plugins
     hook_server_start(server)
@@ -454,4 +454,4 @@ def shutdown_mod_system(server):
     # 2. Disable all mods (shutdown_all also calls on_unload)
     mm.shutdown_all()
 
-    logger.info("Mod system shut down")
+    logger.debug("Mod system shut down")

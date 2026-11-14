@@ -346,7 +346,7 @@ async def _send_deferred_chunks(conn: Connection, server, chunk_coords, total_co
     chunk_results = await loop.run_in_executor(None, _generate_deferred)
     await _send_chunk_results_streamed(conn, chunk_results)
     conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
-    logger.info(
+    logger.debug(
         f"已向 {conn.username} 补发远距离区块 {len(chunk_results)} 个 "
         f"(总计 {total_count} 个, 用时 {time.time() - start:.1f}s)"
     )
@@ -395,7 +395,7 @@ async def _stream_chunks_around_player(conn: Connection, server):
 
         loop = asyncio.get_event_loop()
         start = time.time()
-        logger.info(
+        logger.debug(
             f"玩家 {conn.username} 进入新区块中心 {center_cx},{center_cz}，"
             f"正在补发 {len(missing_coords)} 个新区块..."
         )
@@ -410,7 +410,7 @@ async def _stream_chunks_around_player(conn: Connection, server):
         await _send_chunk_results_streamed(conn, chunk_results)
         conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
 
-        logger.info(
+        logger.debug(
             f"已向 {conn.username} 动态补发新区块 {len(chunk_results)} 个 "
             f"(中心={center_cx},{center_cz}, 用时 {time.time() - start:.1f}s)"
         )

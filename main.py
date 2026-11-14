@@ -6,182 +6,179 @@
 """
 PyMC: Python 实现的 Minecraft Java 版服务端，关键路径使用 C++ 原生组件加速。
 
-支持版本: 1.8 - 1.21+ (多版本协议兼容)
-功能:
-  - 离线模式登录
-  - 类原版 384 高度主世界生成 (C++ 原生优先，Python 回退)
-  - 玩家移动同步
-  - 聊天消息
-  - 基础命令 (/help, /list, /tp, /gamemode, /stop)
-  - 数据包压缩
-  - KeepAlive 心跳
-  - 多版本协议兼容 (1.8.9 - 1.21.4)
+启动方式与原版服务端一致:
+
+    python main.py [--nogui] [--port 25565] [--world world]
+
+工作目录下会生成原版风格的文件:
+  server.properties, ops.json, whitelist.json, banned-players.json,
+  banned-ips.json, usercache.json, logs/latest.log, <level-name>/level.dat ...
 """
 
+import argparse
 import asyncio
+import concurrent.futures
 import logging
+import os
 import signal
 import sys
-import os
 
 # 确保模块搜索路径正确
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import load_config
-from network.server import MinecraftServer
+from serverlog import setup_logging
+from network.server import MinecraftServer, MINECRAFT_VERSION
 from handlers.play import execute_server_command
 from commands import CommandManager, register_all_vanilla_commands
-from watchdog import WatchdogManager, PlayerNetworkOptimizer
-from plugins.bridge import init_plugin_system, shutdown_plugin_system
+from watchdog import WatchdogManager
+from plugins.bridge import init_plugin_system
 
 
-def setup_logging():
-    """配置日志系统。"""
-    # 创建根日志记录器
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-
-    # 控制台处理器
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-
-    # 日志格式
-    formatter = logging.Formatter(
-        '[%(asctime)s] [%(name)s/%(levelname)s] %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
-
-    # 文件处理器 (可选)
-    try:
-        file_handler = logging.FileHandler('pymc.log', encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-    except Exception:
-        pass  # 如果无法创建日志文件则跳过
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="pymc", description=f"PyMC - Minecraft {MINECRAFT_VERSION} server")
+    parser.add_argument("--nogui", action="store_true",
+                        help="accepted for compatibility with vanilla start scripts")
+    parser.add_argument("--port", type=int, default=None, help="override server-port")
+    parser.add_argument("--world", "--level-name", dest="world", default=None,
+                        help="override level-name")
+    parser.add_argument("--universe", default=None,
+                        help="directory that contains the world folder")
+    parser.add_argument("--config", default="server.properties",
+                        help="path to server.properties")
+    args, _unknown = parser.parse_known_args(argv)
+    return args
 
 
-def print_banner():
-    """打印启动横幅。"""
-    banner = r"""
-  ____        __  __  ____
- |  _ \ _   _|  \/  |/ ___|
- | |_) | | | | |\/| | |
- |  __/| |_| | |  | | |___
- |_|    \__, |_|  |_|\____|
-        |___/
-    """
-    print(banner)
-    print("  Python Minecraft 服务端 - 多版本支持")
-    print("  协议版本: 47-770 (1.8.9 - 1.21.4)")
-    print("=" * 50)
-    print()
-
-
-async def main():
+async def main(argv=None) -> int:
     """主入口函数。"""
-    print_banner()
-    setup_logging()
+    args = parse_args(argv)
 
-    logger = logging.getLogger("PyMC")
-    logger.info("正在启动 PyMC 服务器...")
+    config_path = args.config
+    first_run = not os.path.exists(config_path)
+    # 先用 INFO 级别初始化日志, 读到配置后再按 debug 开关调整
+    setup_logging(debug=False)
+    logger = logging.getLogger("minecraft.server")
 
-    # 加载配置
-    config_path = "server.properties"
+    logger.info(f"Starting minecraft server version {MINECRAFT_VERSION}")
+    logger.info("Loading properties")
+    if first_run:
+        logger.warning(f"{config_path} does not exist")
+        logger.info(f"Generating new properties file")
     config = load_config(config_path)
-    logger.info(f"服务器地址: {config['server-ip']}:{config['server-port']}")
+    if args.port is not None:
+        config["server-port"] = args.port
+    if args.world is not None:
+        config["level-name"] = args.world
+    if args.universe is not None:
+        config["universe"] = args.universe
+    if config.get("debug", False):
+        for handler in logging.getLogger().handlers:
+            handler.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(4, (os.cpu_count() or 2) + 2), thread_name_prefix="Worker-Main"))
 
     # 创建服务器实例
-    server = MinecraftServer(config, config_path=config_path)
+    try:
+        server = MinecraftServer(config, config_path=config_path)
+    except Exception as e:
+        logger.error(f"Failed to start the minecraft server: {e}")
+        return 1
 
     # 初始化命令框架
     server.command_manager = CommandManager(server)
     register_all_vanilla_commands(server.command_manager)
-    cmd_count = len(server.command_manager.commands)
-    logger.info(f"命令框架已初始化: {cmd_count} 个命令已注册")
 
     # 初始化插件系统 (自动发现、加载、启用并注册命令)
     plugins_dir = config.get("plugins-directory", "plugins")
     init_plugin_system(server, plugins_dir)
-    logger.info(f"插件系统已初始化: {server.plugin_manager.plugin_count} 个插件已启用")
 
     # 初始化 Watchdog (如果配置启用)
     server.watchdog_manager = None
     if config.get("watchdog-enabled", False):
         server.watchdog_manager = WatchdogManager(server)
         await server.watchdog_manager.start()
-        logger.info("Watchdog 双进程保护已启动")
 
-    console_task = None
-
-    # 注册信号处理 (优雅关闭)
-    loop = asyncio.get_event_loop()
-
+    # 注册信号处理 (优雅关闭): Ctrl+C / SIGTERM 等同于控制台输入 stop
     def handle_shutdown():
-        logger.info("收到关闭信号，正在停止服务器...")
-        asyncio.ensure_future(server.stop())
+        if server.running:
+            server.request_stop()
 
-    # Windows 下信号处理
     if sys.platform == 'win32':
-        # Windows 不支持 SIGTERM 信号
-        signal.signal(signal.SIGINT, lambda s, f: handle_shutdown())
+        signal.signal(signal.SIGINT, lambda s, f: loop.call_soon_threadsafe(handle_shutdown))
     else:
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, handle_shutdown)
 
-    # 启动服务器
+    console_task = asyncio.create_task(console_input_loop(server))
+    exit_code = 0
     try:
-        console_task = asyncio.create_task(console_input_loop(server))
         await server.start()
-    except KeyboardInterrupt:
-        logger.info("检测到键盘中断...")
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
-        logger.error(f"服务器异常: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Failed to start the minecraft server: {e}", exc_info=True)
+        exit_code = 1
     finally:
-        if console_task:
-            console_task.cancel()
+        console_task.cancel()
         await server.stop()
+    return exit_code
 
 
 async def console_input_loop(server: MinecraftServer):
-    """后台读取服务端控制台命令。"""
-    logger = logging.getLogger("PyMC.控制台")
-    await asyncio.sleep(0)
-    logger.info("控制台已就绪，可输入 help 查看命令")
+    """
+    后台读取服务端控制台命令 (带不带前导 "/" 均可, 与原版控制台一致)。
+    标准输入关闭 (nohup / systemd / Docker 无 TTY) 时静默退出, 服务器继续运行。
+    """
+    logger = logging.getLogger("minecraft.console")
+    loop = asyncio.get_running_loop()
+    reader = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="Console")
 
     while True:
         try:
-            line = await asyncio.to_thread(sys.stdin.readline)
+            line = await loop.run_in_executor(reader, sys.stdin.readline)
         except (asyncio.CancelledError, RuntimeError):
+            reader.shutdown(wait=False, cancel_futures=True)
             raise
         except Exception as e:
-            logger.warning(f"读取控制台输入失败: {e}")
+            logger.debug(f"Console input unavailable: {e}")
             return
 
         if line == "":
-            await asyncio.sleep(0.1)
-            if not server.running:
-                return
-            continue
+            # EOF: 没有可用的控制台
+            reader.shutdown(wait=False)
+            return
 
         command = line.strip()
+        if command.startswith("/"):
+            command = command[1:]
         if not command:
             continue
+        # 启动完成前输入的命令排队等待 (与原版控制台一致)
+        await server.wait_until_ready()
+        if not server.running:
+            return
 
-        await execute_server_command(server, command)
+        try:
+            await execute_server_command(server, command)
+        except Exception as e:
+            logger.error(f"Unexpected exception while executing '{command}': {e}", exc_info=True)
+
+
+def run() -> None:
+    try:
+        code = asyncio.run(main())
+    except KeyboardInterrupt:
+        code = 0
+    # 控制台读取线程可能仍阻塞在 stdin 上; 不等待它, 直接退出
+    logging.shutdown()
+    sys.stdout.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n服务器已停止。")
-    except Exception as e:
-        print(f"启动失败: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    run()

@@ -74,28 +74,33 @@ class VersionHandler:
             await conn.send_packet(pid, write_long(keep_alive_id))
 
     async def send_system_chat(self, conn, text, overlay=False):
-        """Send a system chat message in this version's format."""
-        import json
-        from protocol.data_types import write_string, write_boolean
+        """Send a system chat message in this version's format.
+
+        ``text`` may be a plain string or a text component (dict / JSON).
+        1.20.3+ clients receive NBT, older clients a JSON string.
+        """
+        from protocol.data_types import write_boolean, write_byte, write_varint
+        from protocol.text import encode_component
         pid = self.get_packet_id("system_chat")
         if pid is None:
-            # Fall back to old chat message format
+            # Pre-1.19: legacy Chat Message (JSON + position byte)
             pid = self.get_packet_id("chat_message")
             if pid is None:
                 return
-            # Old chat format: JSON Chat + position byte
-            chat_json = json.dumps({"text": text}, ensure_ascii=False)
             payload = bytearray()
-            payload.extend(write_string(chat_json))
-            payload.extend(write_byte(0 if not overlay else 2))  # 0=chat, 1=system, 2=action bar
+            payload.extend(encode_component(text, self.PROTOCOL_VERSION))
+            payload.extend(write_byte(0 if not overlay else 2))  # 0=chat, 2=action bar
+            if self.PROTOCOL_VERSION >= 735:
+                payload.extend(bytes(16))  # 1.16+: sender UUID
             await conn.send_packet(pid, bytes(payload))
             return
 
-        # 1.19+ system chat format
-        chat_json = json.dumps({"text": text}, ensure_ascii=False)
         payload = bytearray()
-        payload.extend(write_string(chat_json))
-        payload.extend(write_boolean(overlay))
+        payload.extend(encode_component(text, self.PROTOCOL_VERSION))
+        if self.PROTOCOL_VERSION == 759:
+            payload.extend(write_varint(2 if overlay else 1))  # 1.19: chat type id
+        else:
+            payload.extend(write_boolean(overlay))
         await conn.send_packet(pid, bytes(payload))
 
     async def send_synchronize_position(self, conn):
@@ -193,14 +198,16 @@ class VersionHandler:
             payload.extend(write_float(0.0))
             await conn.send_packet(pid, bytes(payload))
 
-    async def send_update_time(self, conn, world_time):
-        """Send Update Time packet."""
+    async def send_update_time(self, conn, world_age, day_time=None):
+        """Send Update Time packet (world age + time of day)."""
         from protocol.data_types import write_long
+        if day_time is None:
+            day_time = world_age
         pid = self.get_packet_id("update_time")
         if pid is not None:
             payload = bytearray()
-            payload.extend(write_long(world_time))
-            payload.extend(write_long(world_time))  # time of day
+            payload.extend(write_long(int(world_age)))
+            payload.extend(write_long(int(day_time)))
             await conn.send_packet(pid, bytes(payload))
 
     async def send_set_center_chunk(self, conn, chunk_x, chunk_z):

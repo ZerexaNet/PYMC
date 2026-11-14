@@ -26,6 +26,10 @@ async def handle_login(conn: Connection, packet_id: int, payload: bytes,
         # Login Start
         await _handle_login_start(conn, payload, server)
 
+    elif packet_id == 0x01:
+        # Encryption Response (online-mode)
+        await _handle_encryption_response(conn, payload, server)
+
     elif packet_id == 0x03:
         # Login Acknowledged - 客户端确认登录成功，进入配置阶段
         # Only for 1.20.2+ (configuration phase)
@@ -33,6 +37,11 @@ async def handle_login(conn: Connection, packet_id: int, payload: bytes,
 
     else:
         logger.debug(f"登录阶段忽略数据包: 0x{packet_id:02X}")
+
+
+def _is_valid_username(username: str) -> bool:
+    return 1 <= len(username) <= 16 and all(
+        ch.isascii() and (ch.isalnum() or ch == "_") for ch in username)
 
 
 async def _handle_login_start(conn: Connection, payload: bytes, server):
@@ -55,9 +64,23 @@ async def _handle_login_start(conn: Connection, payload: bytes, server):
         except (ValueError, IndexError):
             player_uuid = None
 
+    from protocol.text import translate
+    from protocol.versions import NATIVE_PROTOCOL_VERSION, get_version_name
+    auth_log = logging.getLogger("minecraft.auth")
+
+    # 原版: 用户名必须是 1-16 位的 [A-Za-z0-9_]
+    if not _is_valid_username(username):
+        conn.username = ""
+        await _send_disconnect_login(conn, translate("multiplayer.disconnect.invalid_player_data"))
+        return
+
     conn.username = username
-    logger.info(f"玩家 {username} 正在登录... (来自 {conn.address}, "
-                f"版本 {conn.mc_version}, 协议 {conn.protocol_version})")
+    logger.debug(f"玩家 {username} 正在登录... (来自 {conn.address}, "
+                 f"版本 {conn.mc_version}, 协议 {conn.protocol_version})")
+
+    if not getattr(server, "accepting_players", True):
+        await _send_disconnect_login(conn, {"text": "Server is still starting! Please wait before reconnecting."})
+        return
 
     # Check if this protocol version is allowed by server config
     min_version = int(server.config.get("min-protocol-version", 47))
@@ -69,26 +92,113 @@ async def _handle_login_start(conn: Connection, payload: bytes, server):
     )
     if (not is_supported(conn.protocol_version)
             or conn.protocol_version not in allowed_versions):
-        logger.info(f"拒绝玩家 {username}: 协议版本 {conn.protocol_version} "
-                    f"不在允许范围 [{min_version}, {max_version}]")
-        await _send_disconnect_login(conn, f"Your protocol version ({conn.protocol_version}) is not supported.")
+        native_name = get_version_name(NATIVE_PROTOCOL_VERSION)
+        key = ("multiplayer.disconnect.outdated_client"
+               if conn.protocol_version < NATIVE_PROTOCOL_VERSION
+               else "multiplayer.disconnect.incompatible")
+        auth_log.info(f"Disconnecting {username} ({conn.address}): "
+                      f"unsupported protocol version {conn.protocol_version}")
+        await conn.disconnect(translate(key, native_name), log=False)
         return
 
-    ip = conn.address.split(":", 1)[0]
-    deny_reason = server.permissions.check_login_allowed(username, ip)
-    if deny_reason:
-        logger.info(f"拒绝玩家 {username} 登录: {deny_reason}")
+    ip = conn.address.rsplit(":", 1)[0]
+    deny_reason = server.permissions.check_login(username, ip)
+    if deny_reason is None and len(server.get_online_players()) >= int(server.max_players) \
+            and not server.permissions.is_op(username):
+        deny_reason = translate("multiplayer.disconnect.server_full")
+    if deny_reason is not None:
+        from protocol.text import plain_text
+        auth_log.info(f"Disconnecting {username} ({conn.address}): {plain_text(deny_reason)}")
+        await conn.disconnect(deny_reason, log=False)
+        return
+
+    # 同名玩家已在线: 与原版一样踢掉旧连接
+    existing = server.find_player(username)
+    if existing is not None and existing is not conn:
+        await existing.disconnect(translate("multiplayer.disconnect.duplicate_login"))
+
+    if server.online_mode:
+        # 正版验证: 发送 Encryption Request, 等待 Encryption Response
+        await _send_encryption_request(conn, server)
+        return
+
+    # 离线模式: 根据用户名生成 UUID (与原版一致)
+    conn.uuid = conn.generate_offline_uuid()
+    await _complete_login(conn, server)
+
+
+async def _send_encryption_request(conn: Connection, server):
+    """Encryption Request (0x01): server id + RSA 公钥 + verify token。"""
+    import os
+    conn.verify_token = os.urandom(4)
+    public_key = server.keypair.public_der
+    payload = bytearray()
+    payload.extend(write_string(""))                 # server id (空)
+    payload.extend(write_varint(len(public_key)))
+    payload.extend(public_key)
+    payload.extend(write_varint(len(conn.verify_token)))
+    payload.extend(conn.verify_token)
+    if conn.protocol_version >= 766:
+        payload.extend(write_boolean(True))          # should authenticate
+    await conn.send_packet(0x01, bytes(payload))
+
+
+async def _handle_encryption_response(conn: Connection, payload: bytes, server):
+    """Encryption Response (0x01): 启用加密并向会话服务器验证玩家身份。"""
+    from network import encryption
+    from protocol.text import translate
+    auth_log = logging.getLogger("minecraft.auth")
+
+    if not server.online_mode or not conn.verify_token or not conn.username:
+        await conn.disconnect(translate("multiplayer.disconnect.unexpected_query_response"))
+        return
+    try:
+        offset = 0
+        length, offset = read_varint(payload, offset)
+        encrypted_secret = payload[offset:offset + length]
+        offset += length
+        length, offset = read_varint(payload, offset)
+        encrypted_token = payload[offset:offset + length]
+        shared_secret = server.keypair.decrypt(encrypted_secret)
+        token = server.keypair.decrypt(encrypted_token)
+    except Exception:
+        await conn.disconnect(translate("multiplayer.disconnect.invalid_public_key_signature"))
+        return
+    if token != conn.verify_token or len(shared_secret) != 16:
+        await conn.disconnect(translate("multiplayer.disconnect.invalid_public_key_signature"))
+        return
+    conn.verify_token = b""
+    conn.enable_encryption(shared_secret)
+
+    server_hash = encryption.server_id_hash("", shared_secret, server.keypair.public_der)
+    try:
+        profile = await encryption.has_joined(conn.username, server_hash)
+    except Exception as e:
+        auth_log.error(f"Couldn't verify username because servers are unavailable: {e}")
+        await conn.disconnect(translate("multiplayer.disconnect.authservers_down"))
+        return
+    if not profile or not profile.get("id"):
+        auth_log.error(f"Username '{conn.username}' tried to join with an invalid session")
+        await conn.disconnect(translate("multiplayer.disconnect.unverified_username"))
+        return
+
+    conn.uuid = uuid.UUID(profile["id"])
+    conn.username = profile.get("name", conn.username)
+    conn.profile_properties = list(profile.get("properties", []))
+
+    # 验证后的真实名字再做一次封禁/白名单检查
+    ip = conn.address.rsplit(":", 1)[0]
+    deny_reason = server.permissions.check_login(conn.username, ip)
+    if deny_reason is not None:
         await conn.disconnect(deny_reason)
         return
+    await _complete_login(conn, server)
 
-    # 离线模式: 根据用户名生成 UUID
-    if not server.online_mode:
-        conn.uuid = conn.generate_offline_uuid()
-    else:
-        if player_uuid is not None:
-            conn.uuid = player_uuid
-        else:
-            conn.uuid = conn.generate_offline_uuid()
+
+async def _complete_login(conn: Connection, server):
+    """分配实体 ID、启用压缩并发送 Login Success。"""
+    username = conn.username
+    auth_log = logging.getLogger("minecraft.auth")
 
     # 分配实体 ID
     conn.entity_id = server.get_next_entity_id()
@@ -97,11 +207,10 @@ async def _handle_login_start(conn: Connection, payload: bytes, server):
     if server.compression_threshold >= 0:
         await _send_set_compression(conn, server.compression_threshold)
         conn.compression_threshold = server.compression_threshold
-        logger.info(f"已为 {username} 启用压缩 (阈值: {server.compression_threshold} 字节)")
 
     # 发送 Login Success
     await _send_login_success(conn)
-    logger.info(f"玩家 {username} 登录成功 (UUID: {conn.uuid}, 实体ID: {conn.entity_id})")
+    auth_log.info(f"UUID of player {username} is {conn.uuid}")
 
     # Handle post-login transition based on version
     if has_configuration_phase(conn.protocol_version):
@@ -111,7 +220,6 @@ async def _handle_login_start(conn: Connection, payload: bytes, server):
     else:
         # Pre-1.20.2: Go directly to play phase
         conn.state = ConnectionState.PLAY
-        logger.info(f"玩家 {username} 直接进入游戏阶段 (无配置阶段)")
 
         # Send join game directly
         from handlers.play import send_join_game
@@ -146,7 +254,16 @@ async def _send_login_success(conn: Connection):
     payload.extend(write_string(conn.username))
 
     if conn.protocol_version >= 761:
-        payload.extend(write_varint(0))  # Empty profile properties
+        # Profile properties (online-mode 下包含带签名的皮肤 textures)
+        properties = getattr(conn, "profile_properties", None) or []
+        payload.extend(write_varint(len(properties)))
+        for prop in properties:
+            payload.extend(write_string(prop.get("name", "")))
+            payload.extend(write_string(prop.get("value", "")))
+            signature = prop.get("signature")
+            payload.extend(write_boolean(signature is not None))
+            if signature is not None:
+                payload.extend(write_string(signature))
 
     if conn.protocol_version == 767:
         payload.extend(write_boolean(True))
@@ -154,12 +271,8 @@ async def _send_login_success(conn: Connection):
     await conn.send_packet(0x02, bytes(payload))
 
 
-async def _send_disconnect_login(conn: Connection, reason: str):
-    """Send a Login Disconnect packet (0x00)."""
-    import json
-    chat_json = json.dumps({"text": reason}, ensure_ascii=False)
-    payload = write_string(chat_json)
-    await conn.send_packet(0x00, payload)
+async def _send_disconnect_login(conn: Connection, reason):
+    """Send a Login Disconnect packet (0x00) and close the connection."""
     await conn.disconnect(reason)
 
 
@@ -175,7 +288,7 @@ async def _handle_login_acknowledged(conn: Connection, server):
         return
 
     conn.state = ConnectionState.CONFIGURATION
-    logger.info(f"玩家 {conn.username} 进入配置阶段")
+    logger.debug(f"玩家 {conn.username} 进入配置阶段")
 
     # 发送配置阶段所需的数据包
     from handlers.configuration import send_configuration_packets
