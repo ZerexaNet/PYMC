@@ -936,6 +936,10 @@ class WorldStorage:
         self.region_dir = self.world_dir / "region"
         self.playerdata_dir = self.world_dir / "playerdata"
 
+        # 已解码区块的 LRU 缓存
+        self._decoded: OrderedDict = OrderedDict()
+        self._decoded_lock = threading.Lock()
+
         # LRU 缓存
         self._cache = LRUCache(max_cached_regions, max_memory_mb)
         self._cache.set_flush_callback(self._flush_region_impl)
@@ -1016,6 +1020,29 @@ class WorldStorage:
             return None
         return region.get_chunk(index)
 
+    # ---- 已解码区块缓存 ----
+    #
+    # 游戏刻里的方块查询 (伤害判定、生物物理、红石、流体) 每刻要读很多次
+    # 方块。每次都从序列化字节反序列化整个 16x384x16 区块需要几十毫秒, 会把
+    # TPS 拖垮, 所以把解码后的数组按 LRU 缓存起来。缓存中的数组是共享对象:
+    # 修改后必须调用 save_generated_chunk() 写回 (世界编辑代码都是这么做的)。
+
+    DECODED_CACHE_SIZE = 192
+
+    def _decoded_cache_get(self, key):
+        with self._decoded_lock:
+            entry = self._decoded.get(key)
+            if entry is not None:
+                self._decoded.move_to_end(key)
+            return entry
+
+    def _decoded_cache_put(self, key, blocks, biomes):
+        with self._decoded_lock:
+            self._decoded[key] = (blocks, biomes)
+            self._decoded.move_to_end(key)
+            while len(self._decoded) > self.DECODED_CACHE_SIZE:
+                self._decoded.popitem(last=False)
+
     def load_generated_chunk(self, cx: int, cz: int):
         """
         加载区块方块数组。
@@ -1023,10 +1050,11 @@ class WorldStorage:
         返回:
             [y][z][x] 方块数组，或 None（不存在 / 无法解析）
         """
-        raw = self.load_chunk(cx, cz)
-        if raw is None:
-            return None
-        return deserialize_chunk(raw)
+        entry = self._decoded_cache_get((cx, cz))
+        if entry is not None:
+            return entry[0]
+        loaded = self.load_generated_chunk_with_biomes(cx, cz)
+        return loaded[0] if loaded is not None else None
 
     def load_generated_chunk_with_biomes(self, cx: int, cz: int):
         """
@@ -1035,10 +1063,17 @@ class WorldStorage:
         返回:
             (blocks, biomes) 或 None
         """
+        entry = self._decoded_cache_get((cx, cz))
+        if entry is not None:
+            return entry
         raw = self.load_chunk(cx, cz)
         if raw is None:
             return None
-        return deserialize_chunk_with_biomes(raw)
+        decoded = deserialize_chunk_with_biomes(raw)
+        if decoded is None or decoded[0] is None:
+            return None
+        self._decoded_cache_put((cx, cz), decoded[0], decoded[1])
+        return decoded
 
     def save_chunk(self, cx: int, cz: int, nbt_data: bytes):
         """
@@ -1055,6 +1090,11 @@ class WorldStorage:
 
     def save_generated_chunk(self, cx: int, cz: int, chunk_blocks, chunk_biomes=None):
         """保存区块方块数组到 Linear V2 区域文件（内容为原版 Chunk NBT）。"""
+        if chunk_biomes is None:
+            previous = self._decoded_cache_get((cx, cz))
+            if previous is not None:
+                chunk_biomes = previous[1]
+        self._decoded_cache_put((cx, cz), chunk_blocks, chunk_biomes)
         self.save_chunk(
             cx,
             cz,

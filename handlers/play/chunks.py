@@ -18,6 +18,7 @@
 
 import asyncio
 import logging
+import math
 import time
 
 from protocol.data_types import (
@@ -209,22 +210,15 @@ def _build_chunk_light_data(chunk_blocks: list[list[list[int]]]) -> tuple[int, i
     return sky_mask, block_mask, empty_sky_mask, empty_block_mask, sky_arrays, block_arrays
 
 
-async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
-                                motion_blocking: list[int], world_surface: list[int],
-                                chunk_data: bytes, chunk_blocks: list[list[list[int]]]):
+def build_native_chunk_payload(chunk_x: int, chunk_z: int,
+                               motion_blocking: list[int], world_surface: list[int],
+                               chunk_data: bytes, chunk_blocks: list[list[list[int]]]) -> bytes:
     """
-    发送已预生成的区块数据包。
-    区块生成和编码已在线程池中完成，此处仅组装协议数据包并发送。
-    使用版本处理器来发送正确的格式。
-    """
-    if conn.version_handler is not None and conn.protocol_version < 767:
-        # For older versions, we may need to re-encode the chunk data
-        await _send_versioned_chunk(conn, chunk_x, chunk_z,
-                                     motion_blocking, world_surface,
-                                     chunk_data, chunk_blocks)
-        return
+    组装 1.21.1 的 Chunk Data and Update Light 负载。
 
-    # Native 1.21.1 chunk data format
+    光照计算是纯 Python 的重活, 调用方应在工作线程里执行本函数,
+    不要放在事件循环 (游戏刻) 上。
+    """
     payload = bytearray()
 
     # Chunk X, Z (Int)
@@ -249,6 +243,7 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
     sky_mask, block_mask, empty_sky_mask, empty_block_mask, sky_arrays, block_arrays = (
         _build_chunk_light_data(chunk_blocks)
     )
+
     def _write_bitset(mask: int):
         """Write a BitSet: VarInt(0) if mask==0, else VarInt(1)+Long(mask)."""
         if mask:
@@ -272,9 +267,32 @@ async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
         payload.extend(write_varint(2048))
         payload.extend(block_light_section)
 
+    return bytes(payload)
+
+
+async def _send_prebuilt_chunk(conn: Connection, chunk_x: int, chunk_z: int,
+                                motion_blocking: list[int], world_surface: list[int],
+                                chunk_data: bytes, chunk_blocks: list[list[list[int]]],
+                                payload: bytes | None = None):
+    """
+    发送已预生成的区块数据包。
+    ``payload`` 为预先在线程池中组装好的负载; 未提供时在线程池中现算。
+    """
+    if conn.version_handler is not None and conn.protocol_version < 767:
+        # For older versions, we may need to re-encode the chunk data
+        await _send_versioned_chunk(conn, chunk_x, chunk_z,
+                                     motion_blocking, world_surface,
+                                     chunk_data, chunk_blocks)
+        return
+
+    if payload is None:
+        payload = await asyncio.get_running_loop().run_in_executor(
+            None, build_native_chunk_payload, chunk_x, chunk_z,
+            motion_blocking, world_surface, chunk_data, chunk_blocks)
+
     chunk_pid = conn.version_handler.get_packet_id("chunk_data") if conn.version_handler else 0x27
     if chunk_pid is not None:
-        await conn.send_packet(chunk_pid, bytes(payload))
+        await conn.send_packet(chunk_pid, payload)
 
 
 async def _send_versioned_chunk(conn: Connection, chunk_x: int, chunk_z: int,
@@ -304,18 +322,30 @@ async def _send_versioned_chunk(conn: Connection, chunk_x: int, chunk_z: int,
 
 
 async def _send_chunk_batch(conn: Connection, chunk_results):
-    """发送一批区块。"""
+    """发送一批区块 (Chunk Batch Start / 区块... / Chunk Batch Finished)。"""
     if not chunk_results or not conn.alive:
         return
 
-    await conn.send_packet(0x0D, b'')
-    for cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks in chunk_results:
+    native = not (conn.version_handler is not None and conn.protocol_version < 767)
+    payloads = None
+    if native:
+        # 光照 + 负载组装放到工作线程, 避免阻塞游戏刻
+        def _build_all():
+            return [build_native_chunk_payload(*record) for record in chunk_results]
+        payloads = await asyncio.get_running_loop().run_in_executor(None, _build_all)
+        if not conn.alive:
+            return
+        await conn.send_packet(0x0D, b'')
+
+    for index, (cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks) in enumerate(chunk_results):
         if not conn.alive:
             break
         await _send_prebuilt_chunk(
-            conn, cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks
+            conn, cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks,
+            payload=payloads[index] if payloads is not None else None,
         )
-    await conn.send_packet(0x0C, write_varint(len(chunk_results)))
+    if native:
+        await conn.send_packet(0x0C, write_varint(len(chunk_results)))
 
 
 async def _send_chunk_results_streamed(conn: Connection, chunk_results,
@@ -372,8 +402,8 @@ async def _unload_distant_chunks(conn: Connection, desired_coords: set, server):
 async def _stream_chunks_around_player(conn: Connection, server):
     """在玩家跨区块移动时，继续补发新进入视距的区块。"""
     while conn.alive:
-        center_cx = int(conn.x) >> 4
-        center_cz = int(conn.z) >> 4
+        center_cx = math.floor(conn.x) >> 4
+        center_cz = math.floor(conn.z) >> 4
         if conn.chunk_center == (center_cx, center_cz):
             return
 
@@ -381,13 +411,15 @@ async def _stream_chunks_around_player(conn: Connection, server):
         from handlers.play.join import _send_center_chunk
         await _send_center_chunk(conn, center_cx, center_cz)
 
-        desired_coords = set(_sorted_chunk_coords(center_cx, center_cz, server.view_distance))
+        from handlers.play.join import effective_view_distance
+        view_distance = effective_view_distance(conn, server)
+        desired_coords = set(_sorted_chunk_coords(center_cx, center_cz, view_distance))
 
         # Unload chunks that are now outside view distance
         await _unload_distant_chunks(conn, desired_coords, server)
 
         missing_coords = [
-            coord for coord in _sorted_chunk_coords(center_cx, center_cz, server.view_distance)
+            coord for coord in _sorted_chunk_coords(center_cx, center_cz, view_distance)
             if coord not in conn.loaded_chunks
         ]
         if not missing_coords:

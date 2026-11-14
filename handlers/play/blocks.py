@@ -205,21 +205,7 @@ def _get_held_item_for_placement(conn: Connection) -> tuple[int, str | None]:
             if block_state is not None:
                 return (block_state, held.item_id)
 
-    # Fallback to hotbar mapping for creative mode without inventory
-    block_state = HOTBAR_PLACEABLES[conn.selected_hotbar_slot % len(HOTBAR_PLACEABLES)]
-    # Map back to item name
-    _STATE_TO_ITEM = {
-        STONE: "minecraft:stone",
-        GRASS_BLOCK: "minecraft:grass_block",
-        DIRT: "minecraft:dirt",
-        COBBLESTONE: "minecraft:cobblestone",
-        OAK_PLANKS: "minecraft:oak_planks",
-        GLASS: "minecraft:glass",
-        SAND: "minecraft:sand",
-        OAK_LOG: "minecraft:oak_log",
-        TORCH: "minecraft:torch",
-    }
-    return (block_state, _STATE_TO_ITEM.get(block_state))
+    return (0, None)
 
 
 def _consume_placement_item(conn: Connection, item_name: str | None):
@@ -253,36 +239,47 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
     status, offset = read_varint(payload, offset)
     (x, y, z), offset = read_position(payload, offset)
     _, offset = read_byte(payload, offset)  # face
-    _, offset = read_varint(payload, offset)  # sequence
+    sequence, offset = read_varint(payload, offset)
 
-    # status 0 = started digging, 1 = cancelled, 2 = finished, 3 = drop item stack
-    if status == 3:
-        # Drop item stack from inventory
-        _drop_held_item(conn, server)
+    # status: 0 = started digging, 1 = cancelled, 2 = finished,
+    #         3 = drop item stack, 4 = drop item, 5 = release use item, 6 = swap hands
+    if status in (3, 4):
+        _drop_held_item(conn, server, whole_stack=(status == 3))
         return
-
-    if status == 1:
-        # Cancelled digging - no action
+    if status == 6:
+        await _swap_hands(conn, server)
         return
-
-    if status != 2:
+    if status not in (0, 2):
+        if status == 1:
+            await _acknowledge_block_change(conn, sequence)
         return
 
     current = _get_block_at(server, x, y, z)
-    if current is None or current == AIR:
+    block_name, _ = STATE_ID_TO_BLOCK.get(current or 0, ("minecraft:air", {}))
+    hardness = get_block_hardness(block_name)
+
+    # 创造模式和瞬间破坏的方块 (硬度 0: 花草、火把等) 只会收到 "开始挖掘";
+    # 其余方块在 "完成挖掘" 时破坏。
+    instant = conn.gamemode == "creative" or hardness == 0
+    should_break = (status == 2) or (status == 0 and instant)
+
+    if (not should_break or current is None or current == AIR
+            or conn.gamemode in ("adventure", "spectator")
+            or not _within_reach(conn, x, y, z)
+            or _is_spawn_protected(conn, server, x, z)
+            or (hardness < 0 and conn.gamemode != "creative")):
+        if status == 2 and current is not None:
+            # 拒绝破坏: 把真实方块发回去纠正客户端的预测
+            await _send_block_change(conn, x, y, z, current)
+        await _acknowledge_block_change(conn, sequence)
         return
 
     # Plugin hook: allow plugins to cancel block break
     from mods.bridge import hook_block_break
     if not hook_block_break(server, conn, x, y, z, current):
+        await _send_block_change(conn, x, y, z, current)
+        await _acknowledge_block_change(conn, sequence)
         return  # Cancelled by a plugin
-
-    # Check block hardness - unbreakable blocks can't be mined
-    block_name, _ = STATE_ID_TO_BLOCK.get(current, ("minecraft:air", {}))
-    hardness = get_block_hardness(block_name)
-    if hardness < 0:
-        # Unbreakable block (bedrock, etc.)
-        return
 
     # Check if we should drop the container's contents
     container = container_manager.get_container(x, y, z)
@@ -304,8 +301,11 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
     # Remove the block from the world
     changed_chunks = set_world_block(server, x, y, z, AIR)
     if not changed_chunks:
+        await _acknowledge_block_change(conn, sequence)
         return
     await _broadcast_block_change(server, x, y, z, AIR)
+    await _acknowledge_block_change(conn, sequence)
+    await _broadcast_block_break_effect(server, conn, x, y, z, current)
 
     # 生存/冒险模式下消耗工具耐久
     if conn.gamemode in ("survival", "adventure"):
@@ -360,21 +360,78 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
                 entity.vz = ((z * 438289 + x * 193496) % 100 - 50) / 2500.0
                 await broadcast_entity_spawn(server, entity)
 
-        # Damage tool on use
-        if tool_item is not None and not tool_item.is_empty:
-            tool_type = tool_item.get_tool_type()
-            if tool_type is not None:
-                tool_item.damage += 1
-                max_damage = _get_tool_max_damage(tool_item.item_id)
-                if max_damage > 0 and tool_item.damage >= max_damage:
-                    inv.set_slot(conn.selected_hotbar_slot, None)
-                    conn.inventory_state_id = getattr(conn, 'inventory_state_id', 0) + 1
+
+REACH_DISTANCE_SQ = 7.0 * 7.0   # 原版服务端允许的交互距离 (略大于客户端的 4.5/5)
 
 
-def _drop_held_item(conn: Connection, server):
-    """Drop the currently held item (Q key press)."""
-    from world.inventory import ItemStack
+def _within_reach(conn: Connection, x: int, y: int, z: int) -> bool:
+    dx = conn.x - (x + 0.5)
+    dy = (conn.y + 1.5) - (y + 0.5)
+    dz = conn.z - (z + 0.5)
+    return dx * dx + dy * dy + dz * dz <= REACH_DISTANCE_SQ
 
+
+def _is_spawn_protected(conn: Connection, server, x: int, z: int) -> bool:
+    """spawn-protection: 出生点周围只有 OP 能改动方块 (没有任何 OP 时不生效)。"""
+    radius = int(getattr(server, "config", {}).get("spawn-protection", 0) or 0)
+    permissions = getattr(server, "permissions", None)
+    if radius <= 0 or permissions is None or not permissions.data.get("ops"):
+        return False
+    if permissions.is_op(conn.username):
+        return False
+    spawn_x, _, spawn_z = server.spawn_position
+    return max(abs(x - spawn_x), abs(z - spawn_z)) <= radius
+
+
+async def _acknowledge_block_change(conn: Connection, sequence: int):
+    """
+    Acknowledge Block Change: 客户端在收到与其操作序号对应的确认之前,
+    会一直保留自己预测的方块状态 (1.19+)。
+    """
+    from protocol.packet_map import get_clientbound_packet
+    if conn.protocol_version < 759:
+        return
+    pid = get_clientbound_packet(conn.protocol_version, "acknowledge_player_digging")
+    if pid is not None:
+        await conn.send_packet(pid, write_varint(sequence))
+
+
+async def _broadcast_block_break_effect(server, breaker: Connection,
+                                        x: int, y: int, z: int, block_state: int):
+    """World Event 2001: 其他玩家看到/听到方块破坏的粒子和音效。"""
+    from protocol.packet_map import get_clientbound_packet
+    from protocol.data_types import write_int, write_boolean
+    payload = (write_int(2001) + write_position(x, y, z)
+               + write_int(int(block_state)) + write_boolean(False))
+    for other in server.get_online_players():
+        if other is breaker or other.protocol_version != 767:
+            continue
+        if (x >> 4, z >> 4) not in other.loaded_chunks:
+            continue
+        pid = get_clientbound_packet(other.protocol_version, "world_event")
+        if pid is not None:
+            await other.send_packet(pid, payload)
+
+
+async def _swap_hands(conn: Connection, server):
+    """F 键: 交换主手与副手物品。"""
+    inv = getattr(conn, 'inventory_obj', None)
+    if inv is None:
+        return
+    slot = conn.selected_hotbar_slot
+    main, off = inv.get_slot(slot), inv.get_slot(40)
+    inv.set_slot(slot, off)
+    inv.set_slot(40, main)
+    conn.inventory_state_id += 1
+    from world.inventory import send_slot_update
+    await send_slot_update(conn, slot)
+    await send_slot_update(conn, 40)
+    from handlers.play.players import broadcast_player_equipment
+    await broadcast_player_equipment(server, conn)
+
+
+def _drop_held_item(conn: Connection, server, whole_stack: bool = True):
+    """Drop the held item (Q = one item, Ctrl+Q = the whole stack)."""
     inv = getattr(conn, 'inventory_obj', None)
     if inv is None:
         return
@@ -382,31 +439,37 @@ def _drop_held_item(conn: Connection, server):
     held = inv.get_held_item_from_slot(conn.selected_hotbar_slot)
     if held is None or held.is_empty:
         return
+    if conn.gamemode == "spectator":
+        return
 
-    if conn.gamemode in ("creative", "spectator"):
-        return  # Don't drop in creative for now
-
-    # Schedule the drop as an async task
     import asyncio
+    import math
     from handlers.play.entities import broadcast_entity_spawn
+
+    count = held.count if whole_stack else 1
 
     async def _do_drop():
         entity = server.entity_manager.create_item(
-            conn.x, conn.y + 0.5, conn.z,
-            item_name=held.item_id, count=held.count
+            conn.x, conn.y + 1.3, conn.z,
+            item_name=held.item_id, count=count
         )
-        # Throw the item slightly forward
-        import math
-        rad = math.radians(conn.yaw)
-        entity.vx = -math.sin(rad) * 0.3
-        entity.vy = 0.2
-        entity.vz = math.cos(rad) * 0.3
-        entity.pickup_delay = 20  # Can't pick up immediately
+        # 朝视线方向抛出
+        yaw = math.radians(conn.yaw)
+        pitch = math.radians(conn.pitch)
+        entity.vx = -math.sin(yaw) * math.cos(pitch) * 0.3
+        entity.vy = -math.sin(pitch) * 0.3 + 0.1
+        entity.vz = math.cos(yaw) * math.cos(pitch) * 0.3
+        entity.pickup_delay = 40  # 原版: 丢出的物品 2 秒内不能拾取
         await broadcast_entity_spawn(server, entity)
 
-        # Remove from inventory
-        inv.set_slot(conn.selected_hotbar_slot, None)
+        held.count -= count
+        if held.count <= 0:
+            inv.set_slot(conn.selected_hotbar_slot, None)
         conn.inventory_state_id = getattr(conn, 'inventory_state_id', 0) + 1
+        from world.inventory import send_slot_update
+        await send_slot_update(conn, conn.selected_hotbar_slot)
+        from handlers.play.players import broadcast_player_equipment
+        await broadcast_player_equipment(server, conn)
 
     asyncio.create_task(_do_drop())
 
@@ -437,6 +500,44 @@ def _get_tool_max_damage(item_id: str) -> int:
     return _DURABILITY.get(item_id, 0)
 
 
+def _is_replaceable(block_state: int) -> bool:
+    """空气、流体和花草等可被直接替换的方块。"""
+    if block_state == AIR:
+        return True
+    from world.chunk_io import STATE_ID_TO_BLOCK
+    name, _ = STATE_ID_TO_BLOCK.get(block_state, ("minecraft:stone", {}))
+    return name in _REPLACEABLE_BLOCKS
+
+
+_REPLACEABLE_BLOCKS = frozenset({
+    "minecraft:air", "minecraft:cave_air", "minecraft:void_air",
+    "minecraft:water", "minecraft:lava", "minecraft:short_grass", "minecraft:tall_grass",
+    "minecraft:fern", "minecraft:large_fern", "minecraft:dead_bush", "minecraft:seagrass",
+    "minecraft:tall_seagrass", "minecraft:snow", "minecraft:fire", "minecraft:vine",
+})
+
+_NON_SOLID_HINTS = ("torch", "flower", "sapling", "button", "lever", "sign", "rail",
+                    "redstone_wire", "carpet", "pressure_plate", "ladder", "vine",
+                    "tulip", "dandelion", "poppy", "mushroom", "banner", "tripwire",
+                    "repeater", "comparator", "short_grass", "fern", "dead_bush")
+
+
+def _collides_with_player(server, x: int, y: int, z: int, block_state: int) -> bool:
+    """实心方块不能放在玩家身体所在的位置。"""
+    from world.chunk_io import STATE_ID_TO_BLOCK
+    name, _ = STATE_ID_TO_BLOCK.get(block_state, ("minecraft:stone", {}))
+    if any(hint in name for hint in _NON_SOLID_HINTS):
+        return False
+    for player in server.get_online_players():
+        if player.gamemode == "spectator" or getattr(player, "_dead", False):
+            continue
+        if (player.x + 0.3 > x and player.x - 0.3 < x + 1
+                and player.z + 0.3 > z and player.z - 0.3 < z + 1
+                and player.y + 1.8 > y and player.y < y + 1):
+            return True
+    return False
+
+
 async def _handle_block_place(conn: Connection, payload: bytes, server):
     """处理方块放置和方块交互。集成物品栏和方块行为系统。"""
     from world.block_behavior import (
@@ -453,8 +554,26 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
     _, offset = read_float(payload, offset)  # cursorY
     _, offset = read_float(payload, offset)  # cursorZ
     _, offset = read_boolean(payload, offset)  # insideBlock
-    _, offset = read_boolean(payload, offset)  # worldBorderHit
-    _, offset = read_varint(payload, offset)  # sequence
+    if conn.protocol_version >= 768:
+        _, offset = read_boolean(payload, offset)  # worldBorderHit (1.21.2+)
+    sequence, offset = read_varint(payload, offset)
+
+    try:
+        await _use_item_on(conn, server, hand, target_x, target_y, target_z, face)
+    finally:
+        await _acknowledge_block_change(conn, sequence)
+
+
+async def _use_item_on(conn: Connection, server, hand: int,
+                       target_x: int, target_y: int, target_z: int, face: int):
+    """Use Item On 的实际逻辑: 方块交互优先, 其次放置手持方块。"""
+    from world.block_behavior import (
+        get_block_behavior, get_block_name_from_state, container_manager,
+    )
+    from world.chunk_io import STATE_ID_TO_BLOCK
+
+    if conn.gamemode == "spectator" or not _within_reach(conn, target_x, target_y, target_z):
+        return
 
     # Get the target block
     target_block = _get_block_at(server, target_x, target_y, target_z)
@@ -478,8 +597,10 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
                 return
 
     # 2. Check block behavior (chest, crafting table, door, etc.)
+    #    潜行时跳过交互, 直接放置方块 (原版行为)
     behavior = get_block_behavior(target_name)
-    if behavior is not None and behavior.is_interactive():
+    if (behavior is not None and behavior.is_interactive()
+            and not getattr(conn, "sneaking", False)):
         try:
             action_taken = await behavior.on_use(
                 conn, server, target_x, target_y, target_z, face, hand
@@ -498,14 +619,26 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
     if place_y < -64 or place_y >= 320:
         return
 
-    existing = _get_block_at(server, place_x, place_y, place_z)
-    if existing is None or existing != AIR:
-        return
-
     # Get the block to place from the player's held item
     block_state, item_name = _get_held_item_for_placement(conn)
-    if block_state == 0:
+    if block_state == 0 or hand != 0:
         return  # Nothing to place
+
+    async def _reject():
+        """拒绝放置: 纠正客户端预测的方块, 并把被扣掉的物品同步回去。"""
+        real = _get_block_at(server, place_x, place_y, place_z)
+        if real is not None:
+            await _send_block_change(conn, place_x, place_y, place_z, real)
+        from world.inventory import send_slot_update
+        await send_slot_update(conn, conn.selected_hotbar_slot)
+
+    existing = _get_block_at(server, place_x, place_y, place_z)
+    if (existing is None or not _is_replaceable(existing)
+            or conn.gamemode == "adventure"
+            or _is_spawn_protected(conn, server, place_x, place_z)
+            or _collides_with_player(server, place_x, place_y, place_z, block_state)):
+        await _reject()
+        return
 
     # Call block behavior on_place if available
     placed_name, _ = STATE_ID_TO_BLOCK.get(block_state, ("minecraft:air", {}))
@@ -524,16 +657,18 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
     # Plugin hook: allow plugins to cancel block placement
     from mods.bridge import hook_block_place
     if not hook_block_place(server, conn, place_x, place_y, place_z, block_state):
+        await _reject()
         return  # Cancelled by a plugin
 
     changed_chunks = set_world_block(server, place_x, place_y, place_z, block_state)
     if not changed_chunks:
+        await _reject()
         return
     await _broadcast_block_change(server, place_x, place_y, place_z, block_state)
 
     # Notify redstone engine of block change
     if server.redstone_engine:
-        server.redstone_engine.on_block_change(place_x, place_y, place_z, AIR, block_state)
+        server.redstone_engine.on_block_change(place_x, place_y, place_z, existing, block_state)
 
     # Notify fluid system
     if hasattr(server, 'fluid_system') and server.fluid_system:
@@ -566,3 +701,5 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
         if inv is not None:
             from world.inventory import send_slot_update
             await send_slot_update(conn, conn.selected_hotbar_slot)
+            from handlers.play.players import broadcast_player_equipment
+            await broadcast_player_equipment(server, conn)

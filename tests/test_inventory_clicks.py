@@ -100,15 +100,17 @@ class InventoryClickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conn.inventory_obj.get_slot(0).count, 2)
         self.assertEqual(conn.inventory_obj.carried_item.count, 3)
 
-    async def test_stale_click_does_not_mutate_inventory(self):
+    async def test_stale_click_is_applied_then_fully_resynced(self):
+        # Vanilla processes a click even when its state id is stale and then
+        # sends the full container state to correct the client.
         conn = self.make_connection()
         conn.inventory_obj.set_slot(0, ItemStack("minecraft:stone", 5))
 
         await _handle_click_container(conn, click_payload(36, state_id=9), None)
 
-        self.assertEqual(conn.inventory_obj.get_slot(0).count, 5)
-        self.assertIsNone(conn.inventory_obj.carried_item)
-        self.assertEqual(len(conn.sent_packets), 1)
+        self.assertIsNone(conn.inventory_obj.get_slot(0))
+        self.assertEqual(conn.inventory_obj.carried_item.count, 5)
+        self.assertEqual(conn.sent_packets[-1][0], 0x13)
 
 
 class ItemPickupTests(unittest.IsolatedAsyncioTestCase):

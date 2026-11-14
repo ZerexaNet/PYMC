@@ -442,12 +442,8 @@ async def handle_container_click(conn, payload: bytes, server, player_slot_mappe
     if window_id != 0 and _open_container(conn, window_id) is None:
         return
 
-    if state_id != conn.inventory_state_id:
-        if window_id == 0:
-            await send_inventory_sync(conn)
-        else:
-            await _sync_open_container(conn, window_id)
-        return
+    # 与原版一致: 状态序号不一致时仍然处理点击, 之后发送完整状态纠正客户端
+    # (本函数结尾总是发送完整同步)。
 
     changed_count, offset = read_varint(payload, offset)
     if changed_count < 0 or changed_count > 128:
