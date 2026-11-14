@@ -111,6 +111,7 @@ echo.
     --include-data-files=native/terrain_gen.exe=terrain_gen.exe ^
     --include-data-files=native/mob_ai.exe=mob_ai.exe ^
     --include-data-files=world/blocks.json=world/blocks.json ^
+    --include-data-dir=protocol/data=protocol/data ^
     --follow-imports ^
     --assume-yes-for-downloads ^
     --windows-console-mode=force ^

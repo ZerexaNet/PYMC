@@ -64,8 +64,12 @@ class StreamCipher:
     """AES-128/CFB8 in both directions, IV = shared secret."""
 
     def __init__(self, shared_secret: bytes):
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        cipher = Cipher(algorithms.AES(shared_secret), modes.CFB8(shared_secret))
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+        try:   # cryptography >= 43 moved CFB8 to the "decrepit" namespace
+            from cryptography.hazmat.decrepit.ciphers.modes import CFB8
+        except ImportError:
+            from cryptography.hazmat.primitives.ciphers.modes import CFB8
+        cipher = Cipher(algorithms.AES(shared_secret), CFB8(shared_secret))
         self._encryptor = cipher.encryptor()
         self._decryptor = cipher.decryptor()
 

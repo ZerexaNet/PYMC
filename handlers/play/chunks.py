@@ -165,49 +165,11 @@ async def _send_chunk_data_terrain(conn: Connection, chunk_x: int, chunk_z: int,
 
 def _build_chunk_light_data(chunk_blocks: list[list[list[int]]]) -> tuple[int, int, int, int, list[bytes], list[bytes]]:
     """
-    为 24 个世界 section + 上下边界构建简化版光照数据。
-    规则:
-      - 露天列保持 15 级天光
-      - 遇到第一个非空气/非流体方块后，下面不再有天光
-      - 方块光当前仍为 0
+    为 24 个世界 section + 上下边界构建光照数据 (天空光 + 方块光)。
+    实际计算见 world.lighting。
     """
-    section_count = 26  # 24 world sections + bottom/top boundary
-    section_bytes = [bytearray(2048) for _ in range(section_count)]
-
-    for z in range(16):
-        for x in range(16):
-            sky_open = True
-            for y_index in range(len(chunk_blocks) - 1, -1, -1):
-                block_id = chunk_blocks[y_index][z][x]
-                transparent = block_id in (AIR, WATER)
-                if sky_open and transparent:
-                    world_section = y_index // 16
-                    section_idx = world_section + 1
-                    local_y = y_index % 16
-                    nibble_index = (local_y * 16 * 16) + (z * 16) + x
-                    byte_index = nibble_index // 2
-                    shift = 0 if (nibble_index % 2) == 0 else 4
-                    section_bytes[section_idx][byte_index] |= 0xF << shift
-                elif not transparent:
-                    sky_open = False
-
-    # 顶部边界 section 作为天空光源，保持全亮；底部边界置空。
-    section_bytes[-1] = bytearray([0xFF] * 2048)
-
-    sky_mask = 0
-    empty_sky_mask = 0
-    sky_arrays: list[bytes] = []
-    for idx, data in enumerate(section_bytes):
-        if any(data):
-            sky_mask |= 1 << idx
-            sky_arrays.append(bytes(data))
-        else:
-            empty_sky_mask |= 1 << idx
-
-    block_mask = 0
-    empty_block_mask = (1 << section_count) - 1
-    block_arrays: list[bytes] = []
-    return sky_mask, block_mask, empty_sky_mask, empty_block_mask, sky_arrays, block_arrays
+    from world.lighting import build_light_sections
+    return build_light_sections(chunk_blocks)
 
 
 def build_native_chunk_payload(chunk_x: int, chunk_z: int,
