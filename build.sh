@@ -85,6 +85,7 @@ python3 -m nuitka \
     --include-data-files=native/pymc_native_server=pymc_native_server \
     --include-data-files=native/libpymc_native.so=libpymc_native.so \
     --include-data-files=world/blocks.json=world/blocks.json \
+    --include-data-dir=protocol/data=protocol/data \
     --follow-imports \
     --assume-yes-for-downloads \
     main.py
