@@ -351,6 +351,14 @@ class MinecraftServer:
         if not conn.username:
             return
 
+        # Items left in an open crafting table grid go back into the inventory
+        # (vanilla returns them when the menu closes, which logout also does).
+        inv = getattr(conn, 'inventory_obj', None)
+        if inv is not None and getattr(conn, '_crafting_grid', None):
+            from world.crafting_window import return_grid_items
+            return_grid_items(conn, -1, inv.add_item)
+            conn._crafting_grid = [None] * 9
+
         # 基础玩家状态
         player_data = {
             "username": conn.username,

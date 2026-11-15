@@ -476,7 +476,6 @@ BLOCK_DROPS: dict[str, list[tuple[str, int, int, bool]]] = {
     "minecraft:end_stone": [("minecraft:end_stone", 1, 1, True)],
 
     # Organic
-    "minecraft:oak_leaves": [("minecraft:oak_sapling", 1, 1, False)],  # 5% chance
     "minecraft:white_wool": [("minecraft:white_wool", 1, 1, False)],
     "minecraft:cactus": [("minecraft:cactus", 1, 1, False)],
 
@@ -511,11 +510,61 @@ BLOCK_DROPS: dict[str, list[tuple[str, int, int, bool]]] = {
 }
 
 
+# Vanilla leaves loot table: leaf type -> sapling-like drop (None: no sapling)
+LEAF_SAPLINGS: dict[str, str | None] = {
+    "minecraft:oak_leaves": "minecraft:oak_sapling",
+    "minecraft:spruce_leaves": "minecraft:spruce_sapling",
+    "minecraft:birch_leaves": "minecraft:birch_sapling",
+    "minecraft:jungle_leaves": "minecraft:jungle_sapling",
+    "minecraft:acacia_leaves": "minecraft:acacia_sapling",
+    "minecraft:dark_oak_leaves": "minecraft:dark_oak_sapling",
+    "minecraft:cherry_leaves": "minecraft:cherry_sapling",
+    "minecraft:azalea_leaves": "minecraft:azalea",
+    "minecraft:flowering_azalea_leaves": "minecraft:flowering_azalea",
+    "minecraft:mangrove_leaves": None,
+}
+# chance per Fortune level 0, 1, 2, 3 (4+ for sticks/apples), as in the loot tables
+_SAPLING_CHANCES = (1 / 20, 1 / 16, 1 / 12, 1 / 10)
+_JUNGLE_SAPLING_CHANCES = (1 / 40, 1 / 36, 1 / 32, 1 / 24)
+_STICK_CHANCES = (1 / 50, 1 / 45, 1 / 40, 1 / 30, 1 / 10)
+_APPLE_CHANCES = (1 / 200, 1 / 180, 1 / 160, 1 / 120, 1 / 40)
+
+
+def _enchantment(tool_item, name: str) -> int:
+    if tool_item is None:
+        return 0
+    from .item_properties import get_enchantment_level
+    return max(get_enchantment_level(tool_item, name),
+               get_enchantment_level(tool_item, "minecraft:" + name))
+
+
+def _leaf_drops(block_name: str, tool_item, rng=random) -> list[ItemStack]:
+    """Leaves: themselves with shears/Silk Touch, otherwise chance-based saplings, sticks, apples."""
+    tool_id = getattr(tool_item, "item_id", None) if tool_item is not None else None
+    if tool_id == "minecraft:shears" or _enchantment(tool_item, "silk_touch") > 0:
+        return [ItemStack(block_name, 1)]
+    fortune = min(_enchantment(tool_item, "fortune"), 4)
+    drops: list[ItemStack] = []
+    sapling = LEAF_SAPLINGS.get(block_name)
+    if sapling is not None:
+        chances = _JUNGLE_SAPLING_CHANCES if block_name == "minecraft:jungle_leaves" else _SAPLING_CHANCES
+        if rng.random() < chances[min(fortune, 3)]:
+            drops.append(ItemStack(sapling, 1))
+    if rng.random() < _STICK_CHANCES[fortune]:
+        drops.append(ItemStack("minecraft:stick", rng.randint(1, 2)))
+    if block_name in ("minecraft:oak_leaves", "minecraft:dark_oak_leaves"):
+        if rng.random() < _APPLE_CHANCES[fortune]:
+            drops.append(ItemStack("minecraft:apple", 1))
+    return drops
+
+
 def get_block_drops(block_name: str, tool_item: ItemStack | None = None) -> list[ItemStack]:
     """
     Get the items dropped when a block is broken.
     Returns a list of ItemStack objects.
     """
+    if block_name in LEAF_SAPLINGS:
+        return _leaf_drops(block_name, tool_item)
     drops = BLOCK_DROPS.get(block_name, [])
 
     if not drops:
@@ -905,11 +954,15 @@ class CraftingTableBehavior(BlockBehavior):
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
         from world.inventory import send_open_container
+        from world.inventory_interactions import _sync_open_container
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'crafting'
+        conn._crafting_grid = [None] * 9
 
         await send_open_container(conn, window_id, "minecraft:crafting", {"translate": "container.crafting"})
+        await _sync_open_container(conn, window_id)
         return True
 
     @staticmethod

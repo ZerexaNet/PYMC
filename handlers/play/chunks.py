@@ -354,22 +354,65 @@ async def _send_chunk_results_streamed(conn: Connection, chunk_results,
         await asyncio.sleep(0)
 
 
+PROGRESSIVE_BATCH_SIZE = 32
+
+
+async def _load_and_send_progressively(conn: Connection, server, chunk_coords,
+                                       still_wanted=None) -> int:
+    """
+    Generate/load and send chunks in small batches, nearest first, so the
+    client fills in its view ring by ring instead of waiting for the whole
+    view distance. ``still_wanted()`` returning False stops early (the player
+    moved on). Returns how many chunks were sent.
+    """
+    loop = asyncio.get_running_loop()
+    batches = [
+        chunk_coords[index:index + PROGRESSIVE_BATCH_SIZE]
+        for index in range(0, len(chunk_coords), PROGRESSIVE_BATCH_SIZE)
+    ]
+
+    def _start(batch):
+        batch = [coord for coord in batch if coord not in conn.loaded_chunks]
+        if not batch:
+            return None
+        return loop.run_in_executor(None, lambda: server.generate_chunk_results(batch)[0])
+
+    sent = 0
+    pending = _start(batches[0]) if batches else None
+    for next_index in range(1, len(batches) + 1):
+        current, pending = pending, None
+        if not conn.alive or (still_wanted is not None and not still_wanted()):
+            if current is not None:
+                await current  # let the worker finish its writes before returning
+            break
+        # pipeline: the next batch is generated while this one is sent
+        if next_index < len(batches):
+            pending = _start(batches[next_index])
+        if current is None:
+            continue
+        results = await current
+        if not conn.alive:
+            break
+        await _send_chunk_results_streamed(conn, results)
+        conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in results)
+        sent += len(results)
+    if pending is not None:
+        await pending
+    return sent
+
+
 async def _send_deferred_chunks(conn: Connection, server, chunk_coords, total_count: int):
-    """后台发送出生点外圈区块。"""
+    """后台发送出生点外圈区块 (由近到远分批生成并发送)。"""
     if not conn.alive or not chunk_coords:
         return
 
-    loop = asyncio.get_event_loop()
     start = time.time()
-
-    def _generate_deferred():
-        return server.generate_chunk_results(chunk_coords)[0]
-
-    chunk_results = await loop.run_in_executor(None, _generate_deferred)
-    await _send_chunk_results_streamed(conn, chunk_results)
-    conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
+    center = conn.chunk_center
+    sent = await _load_and_send_progressively(
+        conn, server, list(chunk_coords),
+        still_wanted=lambda: conn.chunk_center == center)
     logger.debug(
-        f"已向 {conn.username} 补发远距离区块 {len(chunk_results)} 个 "
+        f"已向 {conn.username} 补发远距离区块 {sent} 个 "
         f"(总计 {total_count} 个, 用时 {time.time() - start:.1f}s)"
     )
 
@@ -417,25 +460,22 @@ async def _stream_chunks_around_player(conn: Connection, server):
         if not missing_coords:
             continue
 
-        loop = asyncio.get_event_loop()
         start = time.time()
         logger.debug(
             f"玩家 {conn.username} 进入新区块中心 {center_cx},{center_cz}，"
             f"正在补发 {len(missing_coords)} 个新区块..."
         )
 
-        def _generate_missing():
-            return server.generate_chunk_results(missing_coords)[0]
-
-        chunk_results = await loop.run_in_executor(None, _generate_missing)
+        current = (center_cx, center_cz)
+        sent = await _load_and_send_progressively(
+            conn, server, missing_coords,
+            # moved into another chunk: stop and re-plan around the new center
+            still_wanted=lambda: (math.floor(conn.x) >> 4, math.floor(conn.z) >> 4) == current)
         if not conn.alive:
             return
 
-        await _send_chunk_results_streamed(conn, chunk_results)
-        conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in chunk_results)
-
         logger.debug(
-            f"已向 {conn.username} 动态补发新区块 {len(chunk_results)} 个 "
+            f"已向 {conn.username} 动态补发新区块 {sent} 个 "
             f"(中心={center_cx},{center_cz}, 用时 {time.time() - start:.1f}s)"
         )
 
