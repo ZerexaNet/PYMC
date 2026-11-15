@@ -254,6 +254,8 @@ class MinecraftServer:
         level.level_name = self.level_name
         level.seed = self.seed
         level.spawn = tuple(int(v) for v in self.spawn_position)
+        # stopped before the spawn search finished: search again next start
+        level.initialized = bool(getattr(self, "_spawn_resolved", True))
         level.difficulty = str(self.config.get("difficulty", "easy")).lower()
         level.gamemode = str(self.config.get("gamemode", "survival")).lower()
         level.hardcore = bool(self.config.get("hardcore", False))
@@ -450,6 +452,8 @@ class MinecraftServer:
         container_manager.load(str(self.world_storage.world_dir))
         self._initialize_terrain_generator()
         await self._pregenerate_spawn_area()
+        if self.stop_requested:
+            return  # stopped while the spawn area was being prepared; main() saves and exits
         self.save_level_data()
 
         # 初始化红石引擎
@@ -533,6 +537,11 @@ class MinecraftServer:
     async def wait_until_ready(self):
         """等待服务器完成启动 (控制台命令在此之前排队)。"""
         await self._ready_event.wait()
+
+    @property
+    def stop_requested(self) -> bool:
+        """True once /stop, Ctrl+C or SIGTERM asked the server to shut down."""
+        return (not self.running) or (self._stop_event is not None and self._stop_event.is_set())
 
     def request_stop(self):
         """请求停止服务器 (/stop、Ctrl+C、SIGTERM、RCON 均走这里)。"""
@@ -815,7 +824,10 @@ class MinecraftServer:
         center_cx = int(spawn_x) >> 4
         center_cz = int(spawn_z) >> 4
 
-        pregen_radius = min(self.join_immediate_radius, 3)  # 最多 7x7 = 49 个
+        # 最多 7x7 = 49 个; the Python fallback generator needs seconds per chunk,
+        # so it only prepares 3x3 and the rest streams in once players join.
+        max_radius = 3 if self._use_native_terrain else 1
+        pregen_radius = min(self.join_immediate_radius, max_radius)
         chunk_coords = [
             (cx, cz)
             for cx in range(center_cx - pregen_radius, center_cx + pregen_radius + 1)
@@ -825,10 +837,10 @@ class MinecraftServer:
         progress = {"done": 0}
 
         def _generate_spawn_chunks():
-            # 分小批生成, 以便汇报进度
-            batch = max(1, total // 8)
+            # 分小批生成, 以便汇报进度 (慢速 Python 生成器逐个区块汇报)
+            batch = max(1, total // 8) if self._use_native_terrain else 1
             for index in range(0, total, batch):
-                if not self.running:
+                if self.stop_requested:
                     break
                 self.pregenerate_chunks(chunk_coords[index:index + batch])
                 progress["done"] = min(total, index + batch)
@@ -839,11 +851,15 @@ class MinecraftServer:
         last_report = 0.0
         while not future.done():
             await asyncio.wait([future], timeout=0.25)
+            if self.stop_requested:
+                break  # stopping: the worker exits after its current chunk
             now = time.time()
             if not future.done() and now - last_report >= 0.5:
                 last_report = now
                 worker_log.info(f"Preparing spawn area: {progress['done'] * 100 // total}%")
         await future
+        if self.stop_requested:
+            return
         mc_logger.info(f"Time elapsed: {int((time.time() - start) * 1000)} ms")
 
         if not getattr(self, "_spawn_resolved", False):
