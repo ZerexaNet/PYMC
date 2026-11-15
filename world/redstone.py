@@ -1454,7 +1454,12 @@ class RedstoneEngine:
         self._set_block_state(x, y, z, AIR)
         self.on_block_change(x, y, z, tnt_state, AIR)
         self.visual_updates.append((x, y, z, AIR))
-        self._queue_effect("explosion", {"x": x, "y": y, "z": z})
+        # powered TNT becomes primed TNT with the normal 80-tick fuse
+        entity_manager = getattr(self.server, "entity_manager", None)
+        if entity_manager is not None:
+            entity_manager.create_tnt(x + 0.5, y, z + 0.5)
+        else:
+            self._queue_effect("explosion", {"x": x, "y": y, "z": z})
 
     def _activate_dispenser_or_dropper(self, pos: tuple[int, int, int],
                                        comp: RedstoneComponent):

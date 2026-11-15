@@ -158,6 +158,8 @@ class MinecraftServer:
         # 在线玩家列表
         self.connections: list[Connection] = []
         self.next_entity_id = 1
+        self._pending_explosions: list = []
+        self._pending_entity_spawns: list[int] = []
 
         # 服务器状态
         self.running = False
@@ -1162,6 +1164,7 @@ class MinecraftServer:
         # 基础玩家生存规则
         await self._tick_players(tick_count)
         self.entity_manager.tick()
+        await self._process_world_effects()
         if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
             self.entity_manager.spawn_natural_mobs()
         await self._tick_entity_interactions()
@@ -1349,6 +1352,31 @@ class MinecraftServer:
                     and not self.permissions.is_op(conn.username)):
                 await conn.disconnect({"translate": "multiplayer.disconnect.idling"})
 
+    def queue_explosion(self, x: float, y: float, z: float, power: float = 4.0, source=None):
+        """Explosions requested from synchronous code (TNT fuses, redstone) run on the next tick step."""
+        self._pending_explosions.append((x, y, z, power, source))
+
+    async def _process_world_effects(self):
+        """Broadcast freshly created entities (primed TNT) and run queued explosions."""
+        from handlers.play.entities import broadcast_entity_spawn
+        while self._pending_entity_spawns:
+            entity = self.entity_manager.get_entity(self._pending_entity_spawns.pop(0))
+            if entity is not None and entity.alive:
+                await broadcast_entity_spawn(self, entity)
+        rounds = 0
+        while self._pending_explosions and rounds < 64:
+            rounds += 1
+            x, y, z, power, source = self._pending_explosions.pop(0)
+            from world.explosion import explode
+            try:
+                await explode(self, x, y, z, power, source)
+            except Exception as e:
+                logger.warning(f"Explosion failed at ({x:.1f}, {y:.1f}, {z:.1f}): {e}", exc_info=True)
+            while self._pending_entity_spawns:
+                entity = self.entity_manager.get_entity(self._pending_entity_spawns.pop(0))
+                if entity is not None and entity.alive:
+                    await broadcast_entity_spawn(self, entity)
+
     async def _tick_entity_interactions(self):
         """处理实体与玩家的基础交互：拾取、经验、近战伤害。"""
         from handlers.play import (
@@ -1437,7 +1465,7 @@ class MinecraftServer:
         live_entities = {
             entity.entity_id: entity
             for entity in entities
-            if entity.kind in {"orb", "item", "mob", "lightning_bolt"}
+            if entity.kind in {"orb", "item", "mob", "lightning_bolt", "tnt"}
         }
 
         for conn in self.get_online_players():
