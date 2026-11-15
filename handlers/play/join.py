@@ -724,7 +724,9 @@ async def respawn_player(conn: Connection, server):
     from handlers.play.state import send_abilities, send_held_slot
     from protocol.packet_map import get_clientbound_packet
 
-    respawn_x, respawn_y, respawn_z = _resolve_player_respawn_location(conn, server)
+    # The safe-spot search may have to load/generate chunks: keep it off the event loop.
+    respawn_x, respawn_y, respawn_z = await asyncio.get_event_loop().run_in_executor(
+        None, _resolve_player_respawn_location, conn, server)
     conn.x = float(respawn_x) + 0.5
     conn.y = float(respawn_y)
     conn.z = float(respawn_z) + 0.5
@@ -766,6 +768,12 @@ async def respawn_player(conn: Connection, server):
     await _send_spawn_position(conn, *server.spawn_position)
     await _send_game_event(conn, 13, 0.0)
 
+    # Like vanilla: position and health right away, chunks stream in after
+    # (the client holds the player on the "loading terrain" screen meanwhile).
+    await _send_synchronize_position(conn)
+    await _send_update_health(conn)
+    await _send_set_experience(conn)
+
     center_cx = math.floor(conn.x) >> 4
     center_cz = math.floor(conn.z) >> 4
     conn.chunk_center = (center_cx, center_cz)
@@ -778,10 +786,6 @@ async def respawn_player(conn: Connection, server):
     from handlers.play.chunks import _send_chunk_results_streamed
     await _send_chunk_results_streamed(conn, results)
     conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in results)
-
-    await _send_synchronize_position(conn)
-    await _send_update_health(conn)
-    await _send_set_experience(conn)
     await _send_time_update(conn, server)
     from handlers.play.weather import send_weather_state
     await send_weather_state(conn, server)

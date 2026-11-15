@@ -505,7 +505,9 @@ def _is_replaceable(block_state: int) -> bool:
     if block_state == AIR:
         return True
     from world.chunk_io import STATE_ID_TO_BLOCK
-    name, _ = STATE_ID_TO_BLOCK.get(block_state, ("minecraft:stone", {}))
+    name, props = STATE_ID_TO_BLOCK.get(block_state, ("minecraft:stone", {}))
+    if name == "minecraft:snow":
+        return str(props.get("layers", "1")) == "1"
     return name in _REPLACEABLE_BLOCKS
 
 
@@ -513,7 +515,10 @@ _REPLACEABLE_BLOCKS = frozenset({
     "minecraft:air", "minecraft:cave_air", "minecraft:void_air",
     "minecraft:water", "minecraft:lava", "minecraft:short_grass", "minecraft:tall_grass",
     "minecraft:fern", "minecraft:large_fern", "minecraft:dead_bush", "minecraft:seagrass",
-    "minecraft:tall_seagrass", "minecraft:snow", "minecraft:fire", "minecraft:vine",
+    "minecraft:tall_seagrass", "minecraft:snow", "minecraft:fire", "minecraft:soul_fire",
+    "minecraft:vine", "minecraft:glow_lichen", "minecraft:hanging_roots",
+    "minecraft:crimson_roots", "minecraft:warped_roots", "minecraft:nether_sprouts",
+    "minecraft:bubble_column", "minecraft:light", "minecraft:structure_void",
 })
 
 _NON_SOLID_HINTS = ("torch", "flower", "sapling", "button", "lever", "sign", "rail",
@@ -611,10 +616,15 @@ async def _use_item_on(conn: Connection, server, hand: int,
             logger.warning(f"Block behavior error for {target_name}: {e}")
 
     # 3. Attempt block placement
-    dx, dy, dz = FACE_OFFSETS.get(face, (0, 1, 0))
-    place_x = target_x + dx
-    place_y = target_y + dy
-    place_z = target_z + dz
+    # Clicking a replaceable block (grass, fern, a single snow layer...) puts
+    # the new block in its place, like vanilla BlockPlaceContext.
+    if target_block != AIR and _is_replaceable(target_block):
+        place_x, place_y, place_z = target_x, target_y, target_z
+    else:
+        dx, dy, dz = FACE_OFFSETS.get(face, (0, 1, 0))
+        place_x = target_x + dx
+        place_y = target_y + dy
+        place_z = target_z + dz
 
     if place_y < -64 or place_y >= 320:
         return

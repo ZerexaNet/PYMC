@@ -30,6 +30,14 @@ endif()
 # Legacy targets (original subprocess-based tools)
 # ===========================================================
 add_executable(terrain_gen native/terrain_gen.cpp)
+target_compile_features(terrain_gen PRIVATE cxx_std_17)
+# Vanilla terrain must match Java bit for bit: no fused multiply-add, no fast-math.
+if(MSVC)
+    target_compile_options(terrain_gen PRIVATE /fp:precise /fp:contract-)
+else()
+    target_compile_options(terrain_gen PRIVATE -ffp-contract=off -fno-fast-math)
+    target_link_libraries(terrain_gen PRIVATE Threads::Threads)
+endif()
 add_executable(mob_ai native/mob_ai.cpp)
 
 # rootree_worldgen uses C++20 features (std::rotl)

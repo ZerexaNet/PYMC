@@ -35,6 +35,7 @@ jobs:
           python3 -m nuitka --standalone --onefile --assume-yes-for-downloads \
             --include-data-file=world/blocks.json=world/blocks.json \
             --include-data-dir=protocol/data=protocol/data \
+            --include-data-dir=world/data=world/data \
             --include-data-dir=build/stage/native=native \
             main.py -o pymc-server-linux-x86_64
       - name: Upload Linux artifact
@@ -71,6 +72,7 @@ jobs:
           python3 -m nuitka --standalone --onefile --assume-yes-for-downloads \
             --include-data-file=world/blocks.json=world/blocks.json \
             --include-data-dir=protocol/data=protocol/data \
+            --include-data-dir=world/data=world/data \
             --include-data-dir=build/stage/native=native \
             main.py -o pymc-server-macos-arm64
       - name: Upload macOS artifact
@@ -123,6 +125,7 @@ jobs:
           python -m nuitka --standalone --onefile --assume-yes-for-downloads `
             --include-data-file=world/blocks.json=world/blocks.json `
             --include-data-dir=protocol/data=protocol/data `
+            --include-data-dir=world/data=world/data `
             --include-data-dir=build/stage/native=native `
             main.py -o pymc-server-windows-x86_64.exe
       - name: Stage native binaries for separate download
