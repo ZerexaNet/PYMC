@@ -96,12 +96,27 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _passable_states() -> frozenset:
+    global _PASSABLE_CACHE
+    try:
+        return _PASSABLE_CACHE
+    except NameError:
+        pass
+    try:
+        from .block_shapes import no_collision_states
+        _PASSABLE_CACHE = no_collision_states() | frozenset(PASSABLE_BLOCKS)
+    except Exception:
+        _PASSABLE_CACHE = frozenset(PASSABLE_BLOCKS)
+    return _PASSABLE_CACHE
+
+
 def _is_passable(block_id: int | None) -> bool:
-    return block_id is not None and block_id in PASSABLE_BLOCKS
+    """No collision box: air, fluids, grass, flowers, torches, ... (from blocks.json)."""
+    return block_id is not None and block_id in _passable_states()
 
 
 def _is_solid(block_id: int | None) -> bool:
-    return block_id is None or block_id not in PASSABLE_BLOCKS
+    return block_id is None or block_id not in _passable_states()
 
 
 @dataclass
@@ -244,6 +259,10 @@ class MobEntity(Entity):
 
     def tick(self, server, native_ai=None):
         super().tick(server)
+        if getattr(self, "invulnerable_ticks", 0) > 0:
+            self.invulnerable_ticks -= 1
+            if self.invulnerable_ticks == 0:
+                self.last_hurt = 0.0
         if not self.ai_enabled:
             return
         if self.attack_cooldown > 0:
