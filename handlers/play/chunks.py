@@ -20,6 +20,8 @@ import asyncio
 import logging
 import math
 import time
+import threading
+from collections import OrderedDict
 
 from protocol.data_types import (
     write_varint, write_int, write_long,
@@ -172,9 +174,37 @@ def _build_chunk_light_data(chunk_blocks: list[list[list[int]]]) -> tuple[int, i
     return build_light_sections(chunk_blocks)
 
 
+_PAYLOAD_CACHE: "OrderedDict[tuple[int, int], tuple[bytes, bytes]]" = OrderedDict()
+_PAYLOAD_CACHE_LOCK = threading.Lock()
+_PAYLOAD_CACHE_SIZE = 512
+
+
 def build_native_chunk_payload(chunk_x: int, chunk_z: int,
                                motion_blocking: list[int], world_surface: list[int],
                                chunk_data: bytes, chunk_blocks: list[list[list[int]]]) -> bytes:
+    """
+    Cached wrapper: the section bytes fully determine blocks, light and
+    heightmaps, so an identical ``chunk_data`` means an identical payload.
+    """
+    key = (chunk_x, chunk_z)
+    with _PAYLOAD_CACHE_LOCK:
+        cached = _PAYLOAD_CACHE.get(key)
+        if cached is not None and cached[0] == chunk_data:
+            _PAYLOAD_CACHE.move_to_end(key)
+            return cached[1]
+    payload = _build_native_chunk_payload(chunk_x, chunk_z, motion_blocking, world_surface,
+                                          chunk_data, chunk_blocks)
+    with _PAYLOAD_CACHE_LOCK:
+        _PAYLOAD_CACHE[key] = (chunk_data, payload)
+        _PAYLOAD_CACHE.move_to_end(key)
+        while len(_PAYLOAD_CACHE) > _PAYLOAD_CACHE_SIZE:
+            _PAYLOAD_CACHE.popitem(last=False)
+    return payload
+
+
+def _build_native_chunk_payload(chunk_x: int, chunk_z: int,
+                                motion_blocking: list[int], world_surface: list[int],
+                                chunk_data: bytes, chunk_blocks: list[list[list[int]]]) -> bytes:
     """
     组装 1.21.1 的 Chunk Data and Update Light 负载。
 

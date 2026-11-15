@@ -105,7 +105,8 @@ class MinecraftServer:
         universe = str(config.get("universe", "") or "")
         self.level_name = world_name
         world_path = os.path.join(universe, world_name) if universe else world_name
-        self.world_storage = WorldStorage(world_path)
+        self.world_storage = WorldStorage(
+            world_path, region_format=str(config.get("region-file-format", "anvil")))
         self.session_lock = SessionLock(self.world_storage.world_dir)
 
         # level.dat: 出生点、世界时间、天气、游戏规则、种子
@@ -664,7 +665,16 @@ class MinecraftServer:
         chunk_record_map = {}
         missing_coords: list[tuple[int, int]] = []
 
+        built_cache = getattr(storage, "get_built_chunk", None)
         for cx, cz in chunk_coords:
+            built = built_cache(cx, cz) if built_cache is not None else None
+            if built is not None:
+                motion_blocking, world_surface, chunk_data = built
+                chunk_record_map[(cx, cz)] = (
+                    cx, cz, motion_blocking, world_surface, chunk_data, True,
+                    storage.lazy_chunk_blocks(cx, cz), None
+                )
+                continue
             loaded_chunk = storage.load_generated_chunk_with_biomes(cx, cz)
             if loaded_chunk is not None:
                 chunk_blocks, chunk_biomes = loaded_chunk
@@ -673,6 +683,8 @@ class MinecraftServer:
                 motion_blocking = build_heightmap_from_terrain(chunk_blocks, include_water=False)
                 world_surface = build_heightmap_from_terrain(chunk_blocks, include_water=True)
                 chunk_data = build_chunk_column_from_terrain(chunk_blocks, chunk_biomes)
+                if built_cache is not None:
+                    storage.put_built_chunk(cx, cz, motion_blocking, world_surface, chunk_data)
                 chunk_record_map[(cx, cz)] = (
                     cx, cz, motion_blocking, world_surface, chunk_data, True, chunk_blocks, chunk_biomes
                 )
@@ -721,11 +733,12 @@ class MinecraftServer:
                 loaded += 1
                 continue
             self.world_storage.save_generated_chunk(cx, cz, chunk_blocks, chunk_biomes)
+            if built_cache is not None:
+                self.world_storage.put_built_chunk(cx, cz, motion_blocking, world_surface, chunk_data)
             generated += 1
 
         if generated:
             self.world_storage.flush()
-
         return results, loaded, generated
 
     def pregenerate_chunks(self, chunk_coords: list[tuple[int, int]]):
@@ -793,6 +806,11 @@ class MinecraftServer:
         加入后按需流式加载。进度按原版格式输出 (Preparing spawn area: N%)。
         """
         mc_logger.info("Preparing start region for dimension minecraft:overworld")
+        if not getattr(self, "_spawn_resolved", False):
+            # New world: vanilla picks the spawn from the climate (land, not ocean)
+            from handlers.play.spawn import _climate_spawn_column
+            sx, sz = await asyncio.get_running_loop().run_in_executor(None, _climate_spawn_column, self)
+            self.spawn_position = (int(sx), int(self.spawn_position[1]), int(sz))
         spawn_x, _, spawn_z = self.spawn_position
         center_cx = int(spawn_x) >> 4
         center_cz = int(spawn_z) >> 4
@@ -830,11 +848,11 @@ class MinecraftServer:
 
         if not getattr(self, "_spawn_resolved", False):
             # 首次创建世界: 在出生点附近寻找安全的落脚点并写入 level.dat
-            from handlers.play.spawn import _resolve_spawn_location
+            from handlers.play.spawn import find_world_spawn
             try:
-                resolved = await asyncio.get_running_loop().run_in_executor(
-                    None, _resolve_spawn_location, self, int(spawn_x), int(spawn_z))
+                resolved = await asyncio.get_running_loop().run_in_executor(None, find_world_spawn, self)
                 self.spawn_position = tuple(int(v) for v in resolved)
+                logger.debug(f"World spawn: {self.spawn_position}")
             except Exception as e:
                 logger.warning(f"无法解析安全出生点, 使用地表高度: {e}")
             self._spawn_resolved = True

@@ -74,20 +74,32 @@ def _property_values(state_def: dict) -> list[str]:
     return list(state_def.get("values", []))
 
 
-def _state_id_to_properties(block_def: dict, state_id: int) -> dict[str, str]:
+def _state_id_to_properties(block_def: dict, state_id: int, legacy: bool = False) -> dict[str, str]:
+    """
+    Decode a global state id into block properties.
+
+    Vanilla enumerates block states with the *last* property varying fastest
+    (oak_leaves 237 = distance=1,persistent=true,waterlogged=true,
+    238 = ...waterlogged=false). Releases of PyMC before the fix decoded the
+    first property fastest; ``legacy=True`` reproduces that order so chunks
+    written by those versions can still be read correctly.
+    """
     state_defs = block_def.get("states", [])
     if not state_defs:
         return {}
 
     offset = state_id - block_def["minStateId"]
     props: dict[str, str] = {}
-    for state_def in state_defs:
+    ordered = state_defs if legacy else list(reversed(state_defs))
+    for state_def in ordered:
         values = _property_values(state_def)
         if not values:
             continue
         idx = offset % len(values)
         props[state_def["name"]] = values[idx]
         offset //= len(values)
+    if not legacy:
+        props = {d["name"]: props[d["name"]] for d in state_defs if d["name"] in props}
     return props
 
 
@@ -120,6 +132,7 @@ def _build_block_registry():
     state_id_to_block: dict[int, tuple[str, dict[str, str]]] = {}
     block_key_to_state_id: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
     block_name_to_default_state: dict[str, int] = {}
+    legacy_key_to_state_id: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
 
     for block in blocks:
         name = f"minecraft:{block['name']}"
@@ -132,16 +145,41 @@ def _build_block_registry():
             props = _state_id_to_properties(block, state_id)
             state_id_to_block[state_id] = (name, props)
             block_key_to_state_id[(name, tuple(sorted(props.items())))] = state_id
+            legacy_props = _state_id_to_properties(block, state_id, legacy=True)
+            legacy_key_to_state_id[(name, tuple(sorted(legacy_props.items())))] = state_id
 
         # 允许省略 Properties 时直接落到 defaultState
         default_props = _state_id_to_properties(block, default_state)
         block_key_to_state_id[(name, tuple())] = default_state
         block_key_to_state_id[(name, tuple(sorted(default_props.items())))] = default_state
 
+    global LEGACY_KEY_TO_STATE_ID
+    LEGACY_KEY_TO_STATE_ID = legacy_key_to_state_id
     return state_id_to_block, block_key_to_state_id, block_name_to_default_state
 
 
+LEGACY_KEY_TO_STATE_ID: dict = {}
 STATE_ID_TO_BLOCK, BLOCK_KEY_TO_STATE_ID, BLOCK_NAME_TO_DEFAULT_STATE = _build_block_registry()
+
+# Chunks written by this version carry this tag; see _uses_legacy_state_order().
+PYMC_STATE_ORDER_TAG = "PyMCStateOrder"
+PYMC_STATE_ORDER = 2
+
+
+def _uses_legacy_state_order(root: dict) -> bool:
+    """
+    True for chunks written by PyMC before the property-order fix.
+
+    Those chunks have no PyMCStateOrder tag, LastUpdate == 0 and no
+    block_ticks/fluid_ticks lists, which every vanilla 1.21.1 chunk has.
+    """
+    if PYMC_STATE_ORDER_TAG in root:
+        return False
+    if "block_ticks" in root or "fluid_ticks" in root:
+        return False
+    last_update = root.get("LastUpdate", 0)
+    last_update = getattr(last_update, "value", last_update)
+    return int(last_update or 0) == 0
 
 
 def is_pymc_chunk_data(data: bytes) -> bool:
@@ -237,7 +275,7 @@ def _state_id_to_palette_entry(state_id: int) -> dict:
     return entry
 
 
-def _palette_entry_to_state_id(entry: dict) -> int:
+def _palette_entry_to_state_id(entry: dict, legacy: bool = False) -> int:
     if not isinstance(entry, dict):
         return 0
 
@@ -254,7 +292,8 @@ def _palette_entry_to_state_id(entry: dict) -> int:
         for k, v in props.items()
     ))
 
-    state_id = BLOCK_KEY_TO_STATE_ID.get((name, normalized))
+    table = LEGACY_KEY_TO_STATE_ID if legacy else BLOCK_KEY_TO_STATE_ID
+    state_id = table.get((name, normalized))
     if state_id is not None:
         return state_id
     return BLOCK_NAME_TO_DEFAULT_STATE.get(name, 0)
@@ -359,6 +398,10 @@ def serialize_chunk(chunk_blocks: list[list[list[int]]], chunk_x: int = 0,
             "WORLD_SURFACE": NbtLongArray(build_heightmap_from_terrain(chunk_blocks, include_water=True)),
         },
         "sections": sections,
+        PYMC_STATE_ORDER_TAG: PYMC_STATE_ORDER,
+        "block_ticks": [],
+        "fluid_ticks": [],
+        "PostProcessing": [[] for _ in range(NUM_SECTIONS)],
         "block_entities": [],
         "structures": {
             "starts": {},
@@ -379,7 +422,7 @@ def _root_chunk_compound(raw_root: dict) -> dict:
     return raw_root
 
 
-def _decode_section_blocks(section: dict, target: list[list[list[int]]]):
+def _decode_section_blocks(section: dict, target: list[list[list[int]]], legacy: bool = False):
     if not isinstance(section, dict):
         return
 
@@ -397,7 +440,7 @@ def _decode_section_blocks(section: dict, target: list[list[list[int]]]):
     if not isinstance(palette, list) or not palette:
         return
 
-    palette_ids = [_palette_entry_to_state_id(entry) for entry in palette]
+    palette_ids = [_palette_entry_to_state_id(entry, legacy) for entry in palette]
     if len(palette_ids) == 1:
         entries = [0] * 4096
     else:
@@ -513,8 +556,9 @@ def deserialize_chunk(data: bytes) -> list[list[list[int]]] | None:
     blocks = [[[0 for _ in range(16)] for _ in range(16)]
               for _ in range(WORLD_HEIGHT)]
 
+    legacy = _uses_legacy_state_order(chunk)
     for section in sections:
-        _decode_section_blocks(section, blocks)
+        _decode_section_blocks(section, blocks, legacy)
 
     return blocks
 

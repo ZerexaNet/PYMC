@@ -73,8 +73,11 @@ DEFAULT_CONFIG = {
     "network-packet-batching": True,        # Enable packet batching for reduced TCP writes
     "network-movement-rate-hz": 20.0,      # Max position updates per second per player
 
+    # World storage: "anvil" (.mca, vanilla) or "linear" (.linear, needs zstandard)
+    "region-file-format": "anvil",
+
     # Vanilla terrain generation
-    "vanilla-terrain": True,                # Use the vanilla-style approximate terrain generator
+    "vanilla-terrain": True,                # Python fallback generator when terrain_gen is missing
 
     # Redstone
     "redstone-enabled": True,               # Enable redstone simulation

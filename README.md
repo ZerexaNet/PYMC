@@ -12,14 +12,13 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] 离线模式登录、数据包压缩、KeepAlive、玩家移动同步和区块发送。
 - [x] `server.properties` 配置读写，支持原版风格 `level-seed` 解析：数字种子按 64 位整数，字符串种子按 Java `String.hashCode()`。
 - [x] 384 高度主世界区块数据结构，支持从 `-64` 到 `319` 的世界高度。
-- [x] C++ 原生地形生成器 `native/terrain_gen`，优先使用原生生成，失败时回退到 Python 生成器。
-- [x] C++ 地形生成批量接口和 biome metadata 返回，降低入服时批量区块生成开销。
-- [x] 类原版主世界地形：气候/生物群系采样、海洋/河流/山地/沙漠/雪地/恶地等基础地貌。
-- [x] 地表规则和装饰：草地、泥土、沙子、红沙、沙石、红沙石、陶瓦、积雪、细雪、方解石、灰化土、砂砾等。
-- [x] 植被和自然特征：多树种树木、草、蕨、枯灌木、甘蔗、南瓜、西瓜、海草、海带等。
-- [x] 安全出生点解析：首次进入和重生时会生成/读取附近区块，避免出生在地下、水里、岩浆或危险方块上。
-- [x] Linear V2 `.linear` 区域文件读写，并支持从 Anvil `.mca` 自动转换。
-- [x] 玩家 JSON 存档：位置、生命值、饱食度、经验、游戏模式和个人出生点。
+- [x] **原版地形引擎** `native/terrain_gen` (C++17, 多线程)：移植原版 1.21.1 的随机数 (Xoroshiro128++ / `PositionalRandomFactory`)、Perlin/Normal/Blended 噪声、完整的密度函数图 (noise router, 含 4x8x4 插值单元与 flat/2D 缓存)、样条、含水层 (aquifer)、矿脉 (ore vein)、多噪声生物群系查找和 surface rule。数据直接取自原版 worldgen JSON (`world/data/worldgen_overworld.json`)，因此同一种子的地形形状、洞穴、海洋、河流、山地和生物群系分布与原版一致。
+- [x] 原版出生点选择：`Climate.findSpawnPosition` (按气候参数寻找陆地出生点) + 原版 11x11 区块螺旋搜索安全地表。
+- [x] 地物装饰（近似原版）：按生物群系配置的树木（橡树/大橡树/白桦/云杉/松树/巨型云杉/丛林/金合欢/深色橡树/沼泽/樱花/红树）、草/花/蕨、仙人掌、甘蔗、海草/海带、巨型蘑菇、冰刺、苔石堆、矿石团簇和黏土/沙子/砂砾圆盘，可跨区块生成。
+- [x] 启动时自动编译原生生成器 (g++/clang++/MSVC)，版本不符的旧二进制会被忽略；编译不可用时回退 Python 生成器。
+- [x] 安全出生/重生：新玩家在世界出生点周围 `spawnRadius` 范围内随机挑选安全地面 (原版 `fudgeSpawnLocation`)，不会落在水里、岩浆、树顶或方块里；老玩家回到上次下线位置 (被埋住时才会挪到附近安全处)；重生优先个人出生点。
+- [x] **原版 Anvil 存档** (`region/r.X.Z.mca`)：原版客户端/工具 (MCA Selector、prismarine 等) 可以直接读取；旧 PyMC 的 `.linear` 区域会在启动时自动转换 (原文件保留为 `.linear.bak`)。旧版存档中错误的方块状态顺序会自动识别并迁移。
+- [x] **原版玩家存档** `playerdata/<uuid>.dat` (gzip NBT)：位置、朝向、生命、饥饿、经验、游戏模式、物品栏 (原版槽位编号)、末影箱、能力和个人出生点；旧 `.json` 存档自动迁移；正常关服和定时自动保存都会落盘。
 - [x] 基础聊天、方块挖掘/放置、掉落物、经验球和简单生物实体。
 - [x] C++ 原生轻量生物 AI `native/mob_ai`，支持随机游走、看向玩家、敌对追击、近战冷却等行为。
 - [x] 基础 `gamerule`：昼夜流动、天气循环 (doWeatherCycle)、自然刷怪、自然回血、死亡后自动重生回出生点。
@@ -38,7 +37,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] **玩法细节**：死亡界面与原版死亡消息、掉落物品与经验、重生流程、`keepInventory`/`doImmediateRespawn`/`showDeathMessages` 等规则、受伤动画与击退、PvP（`pvp`）、潜行/疾跑/挥手/手持物品同步、生存/创造模式挖掘与放置确认、`spawn-protection`、天空光与方块光计算。
 - [x] 控制台和游戏内基础命令。
 - [x] Web 管理台、权限组、OP、封禁和白名单。
-- [x] 单元测试覆盖原生地形、原生 AI、种子解析和安全出生点。
+- [x] 单元测试覆盖原生地形、原版存档读写与迁移、玩家存档、原生 AI、种子解析和安全出生点。
 - [x] **红石系统**：tick 引擎、电源/导线/火把/中继器/比较器/观察者/活塞、门与灯控制、TNT 起爆、音符盒、发射器/投掷器；红石时序为原版近似。
 - [x] **物品栏系统**：`ItemStack`、玩家物品栏、协议序列化、左右键/Shift/数字键/拖拽/丢弃，以及方块容器交互与持久化；铁砧/附魔台等专业界面仍为简化。
 - [x] **PYMC 原生扩展 API**：支持 Python Mod/Plugin 的发现、依赖排序、生命周期、事件和命令注册。Java Fabric/Forge Mod 不受支持；Bukkit/Paper `.jar` 插件通过可选 Java 桥接层提供 best-effort 兼容，详见 `MOD_COMPATIBILITY.md`。
@@ -46,7 +45,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 
 ### 部分实现（不可视为完成）
 
-- [ ] **原版地形近似实现**：已有密度、气候、洞穴、surface rule 和矿石管线，但并非同种子逐区块 1:1 复刻。
+- [ ] **地物 (feature) 装饰**：树木、花草、矿石等按生物群系近似原版生成，但放置随机数和部分参数与原版不同，因此同一种子下树的具体位置与原版不一致。
 - [ ] **方块行为系统**：已有多种交互框架和基础行为，但部分容器与特殊方块仍是简化实现。
 - [ ] **流体系统**：已有基础水/岩浆传播与交互，但尚未达到完整原版规则。
 - [ ] **多版本协议兼容**：已有 47-770 的版本映射和处理器框架；只有核心路径经过有限验证，不能宣称所有版本完整兼容。
@@ -57,8 +56,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 
 ### 正在推进 / 待实现
 
-- [ ] 完全原版同种子同地形复刻：目标是输入原版 Java 版种子后生成同位置同地形。当前是 clean-room C++ 近似实现，还没有达到逐区块完全一致。
-- [ ] 补齐原版 1.21.1 噪声参数、密度函数、surface rule、carver、aquifer、ore vein 和 feature placement 的精确行为。
+- [ ] 原版 carver (峡谷与旧式洞穴雕刻) 和精确的 feature placement。
 - [ ] 结构生成：村庄、废弃矿井、地牢、沉船、沙漠神殿、林地府邸、远古城市等。
 - [ ] 完整洞穴系统：大型洞穴、繁茂洞穴、溶洞、地下水体、岩浆湖、深暗之域等。
 - [ ] Nether、End 和多维度传送。
@@ -70,8 +68,9 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 ### 当前限制
 
 - 这是服务端原型，不是完整原版服务端替代品。
-- 当前地形生成不会下载或运行 Mojang 原版服务端；地形和 AI 走本项目 C++/Python clean-room 实现。
-- 目标是逐步逼近原版，但现在还不能保证任意原版种子生成完全相同地形。
+- 地形生成不会下载或运行 Mojang 原版服务端；只使用原版公开的 worldgen 数据 JSON。
+- 地形形状/生物群系与原版一致，但还没有结构 (村庄等) 和 carver，树木等地物位置与原版不同。
+- 用旧版本 PyMC 生成的世界，已生成区块保持不变，新生成区块使用新地形，两者交界处会出现断层。
 - 不支持 Java Fabric/Forge/NeoForge/Quilt Mod；Bukkit/Paper `.jar` 插件经 Java 桥接层提供生命周期与命令兼容（best-effort），另支持 PYMC 原生 Python 扩展。
 
 ## 当前能力
@@ -81,14 +80,14 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - 多版本协议兼容 (1.8.9 - 1.21.4, 协议版本 47-770)
 - 数据包压缩、KeepAlive、玩家移动同步
 - 类原版 384 高度主世界区块
-- 优先使用 `native/terrain_gen` C++ 原生地形生成器，回退到原版风格近似或基础 Python 生成器
+- `native/terrain_gen` 原版 1.21.1 地形引擎 (噪声路由、含水层、矿脉、生物群系、surface rule)，回退到 Python 近似生成器
 - 红石系统：常用组件模拟与机械激活（含 TNT、音符盒、发射器/投掷器），每 2 游戏刻 (0.1s) 红石刻
 - 流体系统：水/岩浆流动，水-岩浆交互
 - 物品栏系统：ItemStack、PlayerInventory、协议序列化、点击/Shift/拖拽交互与方块容器持久化
 - 方块行为：基础容器和多种交互框架，部分行为为简化实现
-- 安全出生点解析，避免首次进入或重生时卡在地下、水里或危险方块上
-- Linear V2 `.linear` 区域文件读写，并支持从 Anvil `.mca` 自动转换
-- 玩家位置、生命值、饱食度、经验、游戏模式等 JSON 存档
+- 原版出生点选择与安全出生/重生 (`spawnRadius` 规则)
+- 原版 Anvil `.mca` 区域存档 (可选 Linear V2)，旧 `.linear` 自动转换
+- 原版 `playerdata/<uuid>.dat` 玩家存档 (位置、状态、物品栏、末影箱、出生点)
 - 基础聊天、方块挖掘/放置、掉落物、经验球和简单生物实体
 - 玩家互相可见：实体生成/元数据/移动转发（原生 1.21.1 路径）
 - 战斗系统：攻击生物、武器伤害表、生物死亡掉落与经验、远程生物标记
@@ -168,7 +167,8 @@ python main.py --nogui
 - `permissions-file`：权限文件路径
 - `join-immediate-radius`：玩家入服时优先同步的近距离区块半径
 - `min-protocol-version` / `max-protocol-version`：允许的协议版本范围 (默认 47-770)
-- `vanilla-terrain`：使用原版风格近似地形生成器 (默认 `true`)
+- `vanilla-terrain`：没有原生生成器时使用 Python 原版风格近似地形 (默认 `true`)
+- `region-file-format`：区域文件格式，`anvil` (原版 `.mca`，默认) 或 `linear` (Linear V2，需 `zstandard`)
 - `redstone-enabled`：启用红石模拟 (默认 `true`)
 - `fluid-flow-enabled`：启用流体流动 (默认 `true`)
 - `mods-directory`：Mod 扫描目录 (默认 `mods`)
@@ -210,7 +210,21 @@ build.bat
 
 脚本会编译 `native/terrain_gen.exe`，然后使用 Nuitka 打包为独立可执行文件。
 
-Linux/macOS 可参考 `build.sh` 和 `CMakeLists.txt`。
+Linux/macOS 可参考 `build.sh` 和 `CMakeLists.txt`。直接 `python main.py` 运行时，如果找不到当前版本的地形生成器，服务端会自动用本机的 g++/clang++ 编译到 `build/native/`。手动编译：
+
+```bash
+g++ -O2 -std=c++17 -ffp-contract=off -pthread -o native/terrain_gen native/terrain_gen.cpp
+```
+
+`-ffp-contract=off` 不能省略：它保证浮点运算与 Java 逐位一致，否则地形会与原版有细微差异。
+
+`world/data/worldgen_overworld.json` 由 `tools/gen_worldgen_data.py` 从原版 1.21.1 的 worldgen 数据生成 (需要联网下载原版数据 JSON)，仓库中已附带生成结果，一般无需重新生成：
+
+```bash
+python3 tools/gen_worldgen_data.py
+```
+
+生物群系参数查找树取自 [cubiomes](https://github.com/Cubitect/cubiomes) (MIT 许可) 的 `btree20` 表；worldgen JSON 来自 [misode/mcmeta](https://github.com/misode/mcmeta) 的 `1.21.1-data-json`。
 
 ### CI/CD
 
