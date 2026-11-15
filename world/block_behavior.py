@@ -357,13 +357,45 @@ def calculate_break_time(block_name: str, tool_item: ItemStack | None,
     return max(0.05, break_time)
 
 
+def _harvest_tools() -> dict[str, frozenset[int]]:
+    """Blocks that need the correct tool for drops -> protocol ids of the tools that work."""
+    global _HARVEST_TOOLS
+    try:
+        return _HARVEST_TOOLS
+    except NameError:
+        pass
+    import json
+    from .chunk_io import _find_blocks_json
+    table: dict[str, frozenset[int]] = {}
+    try:
+        with open(_find_blocks_json(), "r", encoding="utf-8") as f:
+            for block in json.load(f):
+                tools = block.get("harvestTools")
+                if tools:
+                    table["minecraft:" + block["name"]] = frozenset(int(k) for k in tools)
+    except (OSError, ValueError):
+        table = {}
+    _HARVEST_TOOLS = table
+    return table
+
+
 def can_harvest_block(block_name: str, tool_item: ItemStack | None) -> bool:
     """
-    Check if a block can be harvested (drops items) with the given tool.
-    Returns True if the block will drop items when broken.
+    Vanilla requiresCorrectToolForDrops: most blocks drop with any tool (or
+    none); stone, ores, metal blocks... only with a tool of the right type
+    and tier.
     """
     if block_name == "minecraft:air":
         return False
+    tools = _harvest_tools()
+    if tools:
+        required = tools.get(block_name)
+        if required is None:
+            return True
+        if tool_item is None or tool_item.is_empty:
+            return False
+        from .inventory import item_name_to_protocol_id
+        return item_name_to_protocol_id(tool_item.item_id) in required
 
     preferred_tool = get_block_tool(block_name)
     tier_required = get_block_tier_required(block_name)
@@ -558,11 +590,26 @@ def _leaf_drops(block_name: str, tool_item, rng=random) -> list[ItemStack]:
     return drops
 
 
-def get_block_drops(block_name: str, tool_item: ItemStack | None = None) -> list[ItemStack]:
+def get_block_drops(block_name: str, tool_item: ItemStack | None = None,
+                    state_props: dict | None = None,
+                    explosion_radius: float | None = None) -> list[ItemStack]:
     """
-    Get the items dropped when a block is broken.
-    Returns a list of ItemStack objects.
+    Get the items dropped when a block is broken: the vanilla block loot
+    table (Fortune, Silk Touch, shears, chances, crop ages...), after the
+    vanilla "needs the correct tool" check.
     """
+    from .loot import LootContext, loot_tables
+    table = "blocks/" + block_name.split(":")[-1]
+    if loot_tables.has(table):
+        if explosion_radius is None and not can_harvest_block(block_name, tool_item):
+            return []
+        ctx = LootContext(tool=tool_item, block_state=dict(state_props or {}),
+                          block_name=block_name, explosion_radius=explosion_radius)
+        merged: dict[str, int] = {}
+        for item_id, count in loot_tables.roll(table, ctx):
+            merged[item_id] = merged.get(item_id, 0) + count
+        return [ItemStack(item_id, count) for item_id, count in merged.items() if count > 0]
+
     if block_name in LEAF_SAPLINGS:
         return _leaf_drops(block_name, tool_item)
     drops = BLOCK_DROPS.get(block_name, [])
@@ -1389,96 +1436,16 @@ class TNTBehavior(BlockBehavior):
         from handlers.play.blocks import _broadcast_block_change
         from world.blocks import AIR
 
-        # Remove the TNT block
+        # Remove the TNT block and spawn primed TNT (80-tick fuse, like vanilla)
         set_world_block(server, x, y, z, AIR)
         await _broadcast_block_change(server, x, y, z, AIR)
-
-        # Create explosion effect
-        await TNTBehavior._create_explosion(server, x, y, z)
+        server.entity_manager.create_tnt(x + 0.5, y, z + 0.5)
 
     @staticmethod
     async def _create_explosion(server, cx: int, cy: int, cz: int, radius: float = 4.0):
-        """
-        Create an explosion at the given position.
-        Destroys blocks in radius, damages entities, creates particles.
-        """
-        from world.editing import get_world_block, set_world_block
-        from handlers.play.blocks import _broadcast_block_change
-        from world.blocks import AIR
-
-        # Ray-trace explosion (simplified - vanilla uses 1352 rays)
-        destroyed = set()
-        for dx in range(-int(radius), int(radius) + 1):
-            for dy in range(-int(radius), int(radius) + 1):
-                for dz in range(-int(radius), int(radius) + 1):
-                    bx, by, bz = cx + dx, cy + dy, cz + dz
-                    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
-                    if dist > radius:
-                        continue
-
-                    state = get_world_block(server, bx, by, bz)
-                    if state is None or state == AIR:
-                        continue
-
-                    block_name, _ = STATE_ID_TO_BLOCK.get(state, ("minecraft:air", {}))
-
-                    # Some blocks resist explosions
-                    blast_resist = {
-                        "minecraft:bedrock": 18000000,
-                        "minecraft:obsidian": 1200,
-                        "minecraft:ender_chest": 600,
-                        "minecraft:anvil": 600,
-                        "minecraft:reinforced_deepslate": 18000000,
-                        "minecraft:command_block": 18000000,
-                        "minecraft:barrier": 18000000,
-                    }
-                    if blast_resist.get(block_name, 0) > 1200:
-                        continue
-
-                    # Random chance based on distance (vanilla-like)
-                    chance = (1.0 - dist / radius) * 0.7
-                    if random.random() < chance:
-                        destroyed.add((bx, by, bz))
-
-        # Destroy blocks and drop some items
-        for bx, by, bz in destroyed:
-            state = get_world_block(server, bx, by, bz)
-            if state is not None and state != AIR:
-                block_name, _ = STATE_ID_TO_BLOCK.get(state, ("minecraft:air", {}))
-
-                # 1/(power+1) chance to drop items (simplified)
-                if random.random() < 1.0 / (radius + 1):
-                    # Drop items at this location (simplified)
-                    drops = get_block_drops(block_name, None)
-                    # In a full implementation, we'd spawn item entities here
-
-            set_world_block(server, bx, by, bz, AIR)
-            await _broadcast_block_change(server, bx, by, bz, AIR)
-
-        # Send explosion particle effect to all nearby players
-        try:
-            from protocol.data_types import write_float, write_varint
-            payload = bytearray()
-            payload.extend(write_float(float(cx)))
-            payload.extend(write_float(float(cy)))
-            payload.extend(write_float(float(cz)))
-            payload.extend(write_float(radius))  # power
-            # Number of records (affected blocks)
-            payload.extend(write_varint(len(destroyed)))
-            # Record positions (relative offsets)
-            for bx, by, bz in destroyed:
-                payload.extend(bytes([bx - cx & 0xFF]))
-                payload.extend(bytes([by - cy & 0xFF]))
-                payload.extend(bytes([bz - cz & 0xFF]))
-            # Player motion (knockback)
-            payload.extend(write_float(0.0))
-            payload.extend(write_float(0.0))
-            payload.extend(write_float(0.0))
-
-            for player in server.get_online_players():
-                await player.send_packet(0x20, bytes(payload))  # Explosion packet (was 0x24 which is hurt_animation)
-        except Exception as e:
-            logger.warning(f"Failed to send explosion packet: {e}")
+        """Explosion at a block position (vanilla algorithm in world.explosion)."""
+        from world.explosion import explode
+        await explode(server, cx + 0.5, cy + 0.0625, cz + 0.5, radius)
 
     @staticmethod
     def is_interactive() -> bool:

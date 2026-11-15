@@ -332,8 +332,10 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
         if inv is not None:
             tool_item = inv.get_held_item_from_slot(conn.selected_hotbar_slot)
 
-        # Use the new block drops system
-        drops = get_block_drops(block_name, tool_item)
+        # Vanilla block loot table (uses the broken block's state, e.g. crop age)
+        from world.chunk_io import STATE_ID_TO_BLOCK
+        state_props = STATE_ID_TO_BLOCK.get(current, (block_name, {}))[1]
+        drops = get_block_drops(block_name, tool_item, state_props)
 
         if drops:
             for drop in drops:

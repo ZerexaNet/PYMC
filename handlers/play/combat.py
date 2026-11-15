@@ -211,10 +211,24 @@ def damage_mob(server, entity, amount: float, source=None) -> bool:
 
     profile = getattr(entity, "profile", {})
 
-    # 掉落物
-    for drop in profile.get("drops", []):
-        item_name, min_count, max_count = drop
-        count = _rng.randint(min_count, max_count)
+    # 掉落物: 原版生物战利品表 (抢夺附魔、仅玩家击杀掉落等), 没有表时用旧配置
+    from world.loot import LootContext, loot_tables
+    table = "entities/" + str(getattr(entity, "mob_type", "")).split(":")[-1]
+    killer = source if source is not None and hasattr(source, "inventory_obj") else None
+    if loot_tables.has(table):
+        tool = None
+        if killer is not None:
+            held = killer.inventory_obj.get_held_item_from_slot(killer.selected_hotbar_slot)
+            tool = None if held is None or held.is_empty else held
+        ctx = LootContext(tool=tool, killed_by_player=killer is not None,
+                          on_fire=getattr(entity, "fire_ticks", 0) > 0)
+        if table == "entities/sheep" and not getattr(entity, "sheared", False):
+            # a sheep's colour table (wool) includes the base sheep table (mutton)
+            table = f"entities/sheep/{getattr(entity, 'color', 'white')}"
+        drops = loot_tables.roll(table, ctx)
+    else:
+        drops = [(name, _rng.randint(lo, hi)) for name, lo, hi in profile.get("drops", [])]
+    for item_name, count in drops:
         if count <= 0:
             continue
         item = server.entity_manager.create_item(

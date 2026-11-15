@@ -86,6 +86,22 @@ async def _send_generic_entity_spawn(conn: Connection, entity):
     payload.extend(write_short(_encode_entity_velocity_component(entity.vz)))
     await conn.send_packet(0x01, bytes(payload))
 
+    if entity.kind == "tnt":
+        # PrimedTnt data: 8 = fuse (VarInt), 9 = block state (TNT)
+        from protocol.packet_map import get_clientbound_packet
+        from world.chunk_io import BLOCK_NAME_TO_DEFAULT_STATE
+        meta = bytearray()
+        meta.extend(write_varint(entity.entity_id))
+        meta.extend(write_ubyte(8))
+        meta.extend(write_varint(1))
+        meta.extend(write_varint(int(entity.metadata.get("fuse", 80))))
+        meta.extend(write_ubyte(9))
+        meta.extend(write_varint(14))
+        meta.extend(write_varint(BLOCK_NAME_TO_DEFAULT_STATE.get("minecraft:tnt", 0)))
+        meta.extend(write_ubyte(0xFF))
+        pid = get_clientbound_packet(conn.protocol_version, "entity_metadata") or 0x58
+        await conn.send_packet(pid, bytes(meta))
+
     # 生物不带自定义名称 (与原版一致): 客户端按实体类型显示本地化名称。
     # 物品实体需要 metadata index 8 (Slot) 才能渲染出具体物品。
     if entity.kind == "item":
@@ -153,7 +169,7 @@ async def _send_visible_entities_to_player(conn: Connection, server):
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob"}:
+        elif entity.kind in {"item", "mob", "tnt"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 
@@ -167,7 +183,7 @@ async def broadcast_entity_spawn(server, entity):
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob", "lightning_bolt"}:
+        elif entity.kind in {"item", "mob", "lightning_bolt", "tnt"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 
