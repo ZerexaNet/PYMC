@@ -1030,8 +1030,8 @@ private:
                 float g = (float)std::abs(m) - 0.25f;
                 for (int n = -l; n <= l; ++n) {
                     float h = (float)std::abs(n) - 0.25f;
-                    if ((m == 0 && n == 0 || !(g * g + h * h > f * f)) &&
-                        (m != -l && m != l && n != -l && n != l || !(r.next_float() > 0.75f))) {
+                    if (((m == 0 && n == 0) || !(g * g + h * h > f * f)) &&
+                        ((m != -l && m != l && n != -l && n != l) || !(r.next_float() > 0.75f))) {
                         int px = x + m, pz = z + n;
                         if (px < 0 || px > 15 || pz < 0 || pz > 15) continue;
                         if (ok(c.get(px, y + k, pz))) c.set(px, y + k, pz, PACKED_ICE);

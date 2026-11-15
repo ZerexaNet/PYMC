@@ -67,7 +67,7 @@ def build_native_generator(force: bool = False) -> str | None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for compiler in compilers:
         if compiler[0] == "cl":
-            cmd = ["cl", "/nologo", "/O2", "/EHsc", "/std:c++17", "/fp:precise", "/fp:contract-",
+            cmd = ["cl", "/nologo", "/O2", "/EHsc", "/std:c++17", "/fp:precise", "/DNOMINMAX",
                    f"/Fe:{binary}", str(SOURCE)]
         else:
             cmd = compiler + ["-O2", "-std=c++17", "-ffp-contract=off", "-pthread", "-o", str(binary), str(SOURCE)]
