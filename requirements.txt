@@ -11,3 +11,6 @@ pytest>=7.0
 # 打包/构建时可选:
 # nuitka
 # ordered-set
+
+# online-mode=true (协议加密) 需要:
+# cryptography>=42

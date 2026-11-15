@@ -233,9 +233,41 @@ def _get_spawn_check_block(
     return int(chunk_blocks[int(world_y) + 64][int(world_z) & 15][int(world_x) & 15])
 
 
+_SUFFOCATING_STATES: frozenset[int] | None = None
+
+
+def _suffocating_states() -> frozenset[int]:
+    """
+    会让玩家窒息的方块状态: 完整的不透光实心方块 (石头、泥土、木板...)。
+    台阶、楼梯、树叶、玻璃、花草、火把、箱子等都不会 (与原版一致)。
+    数据来自 world/blocks.json 的 boundingBox / filterLight。
+    """
+    global _SUFFOCATING_STATES
+    if _SUFFOCATING_STATES is None:
+        import json
+        from world.chunk_io import _find_blocks_json
+        states: set[int] = set()
+        try:
+            with open(_find_blocks_json(), "r", encoding="utf-8") as f:
+                for block in json.load(f):
+                    if (block.get("boundingBox") == "block"
+                            and int(block.get("filterLight", 0)) >= 15
+                            and not block.get("transparent", False)):
+                        states.update(range(block["minStateId"], block["maxStateId"] + 1))
+        except Exception:
+            states = set()
+        _SUFFOCATING_STATES = frozenset(states)
+    return _SUFFOCATING_STATES
+
+
 def _is_suffocating_block(block_id: int | None) -> bool:
-    """是否为会造成窒息的实体方块。"""
-    return block_id is not None and block_id not in PASSABLE_BLOCKS
+    """是否为会造成窒息的完整实心方块。"""
+    if block_id is None:
+        return False
+    states = _suffocating_states()
+    if states:
+        return block_id in states
+    return block_id not in PASSABLE_BLOCKS
 
 
 def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -> bool:
@@ -252,16 +284,27 @@ def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -
 
 
 def _resolve_initial_player_location(server, player_state: dict | None) -> tuple[int, int, int]:
-    """优先使用玩家存档位置，位置无效时回退到安全出生点。"""
-    if player_state is not None:
-        saved_x = math.floor(float(player_state.get("x", server.spawn_position[0])))
-        saved_y = math.floor(float(player_state.get("y", server.spawn_position[1])))
-        saved_z = math.floor(float(player_state.get("z", server.spawn_position[2])))
-        if _is_safe_player_location(server, saved_x, saved_y, saved_z):
-            return saved_x, saved_y, saved_z
+    """
+    优先使用玩家存档位置 (与原版一样原地恢复, 包括半空中的飞行位置);
+    只有当存档位置会让玩家卡在实心方块里或掉出世界时才回退到安全出生点。
+    """
+    if player_state is not None and all(k in player_state for k in ("x", "y", "z")):
+        saved_x = math.floor(float(player_state["x"]))
+        saved_y = math.floor(float(player_state["y"]))
+        saved_z = math.floor(float(player_state["z"]))
+        if -64 <= saved_y < 320:
+            cache: dict = {}
+            foot = _get_spawn_check_block(server, saved_x, saved_y, saved_z, cache)
+            head = _get_spawn_check_block(server, saved_x, min(319, saved_y + 1), saved_z, cache)
+            if (foot is not None and head is not None
+                    and not _is_suffocating_block(foot) and not _is_suffocating_block(head)):
+                return saved_x, saved_y, saved_z
         return _resolve_spawn_location(server, saved_x, saved_z)
 
-    spawn_x, _, spawn_z = server.spawn_position
+    spawn_x, spawn_y, spawn_z = server.spawn_position
+    if getattr(server, "_spawn_resolved", False) and _is_safe_player_location(
+            server, int(spawn_x), int(spawn_y), int(spawn_z)):
+        return int(spawn_x), int(spawn_y), int(spawn_z)
     resolved = _resolve_spawn_location(server, spawn_x, spawn_z)
     server.spawn_position = (int(resolved[0]), int(resolved[1]), int(resolved[2]))
     return resolved
