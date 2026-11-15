@@ -989,6 +989,10 @@ class WorldStorage:
         # 已解码区块的 LRU 缓存
         self._decoded: OrderedDict = OrderedDict()
         self._decoded_lock = threading.Lock()
+        # Region files are read, modified and written from the event loop and
+        # from chunk-generation worker threads: serialize all region access so
+        # two writers never race on the same .tmp file or a half-built region.
+        self._io_lock = threading.RLock()
         # 已编码区块 (heightmaps + 区块段字节) 的 LRU 缓存, 加入/重生时免去重复编码
         self._built: OrderedDict = OrderedDict()
 
@@ -1044,39 +1048,42 @@ class WorldStorage:
 
     def _flush_region_impl(self, rx: int, rz: int, region: LinearRegion):
         """将区域写入磁盘 (由缓存回调调用)。"""
-        path = self._get_region_path(rx, rz)
-        region.write(str(path))
+        with self._io_lock:
+            path = self._get_region_path(rx, rz)
+            region.write(str(path))
 
     def _load_region(self, rx: int, rz: int) -> LinearRegion | None:
         """加载区域文件 (带 LRU 缓存)。"""
-        key = (rx, rz)
+        with self._io_lock:
+            key = (rx, rz)
 
-        # 检查缓存
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
+            # 检查缓存
+            cached = self._cache.get(key)
+            if cached is not None:
+                return cached
 
-        # 从磁盘加载
-        path = self._get_region_path(rx, rz)
-        if not path.exists():
-            return None
+            # 从磁盘加载
+            path = self._get_region_path(rx, rz)
+            if not path.exists():
+                return None
 
-        try:
-            region = self._region_class.read(str(path), verify_checksum=True)
-            self._cache.put(key, region)
-            return region
-        except Exception as e:
-            logger.error(f"Failed to load region ({rx}, {rz}): {e}")
-            return None
+            try:
+                region = self._region_class.read(str(path), verify_checksum=True)
+                self._cache.put(key, region)
+                return region
+            except Exception as e:
+                logger.error(f"Failed to load region ({rx}, {rz}): {e}")
+                return None
 
     def _get_or_create_region(self, rx: int, rz: int) -> LinearRegion:
         """获取区域，不存在则创建空的。"""
-        key = (rx, rz)
-        region = self._load_region(rx, rz)
-        if region is None:
-            region = self._region_class()
-            self._cache.put(key, region)
-        return region
+        with self._io_lock:
+            key = (rx, rz)
+            region = self._load_region(rx, rz)
+            if region is None:
+                region = self._region_class()
+                self._cache.put(key, region)
+            return region
 
     def load_chunk(self, cx: int, cz: int) -> bytes | None:
         """
@@ -1088,11 +1095,12 @@ class WorldStorage:
         返回:
             区块 NBT 数据，或 None (区块不存在)
         """
-        rx, rz, index = self._chunk_to_region(cx, cz)
-        region = self._load_region(rx, rz)
-        if region is None:
-            return None
-        return region.get_chunk(index)
+        with self._io_lock:
+            rx, rz, index = self._chunk_to_region(cx, cz)
+            region = self._load_region(rx, rz)
+            if region is None:
+                return None
+            return region.get_chunk(index)
 
     # ---- 已解码区块缓存 ----
     #
@@ -1182,11 +1190,12 @@ class WorldStorage:
             cx, cz: 区块坐标
             nbt_data: 区块 NBT 数据 (原始未压缩)
         """
-        rx, rz, index = self._chunk_to_region(cx, cz)
-        region = self._get_or_create_region(rx, rz)
-        region.set_chunk(index, nbt_data)
-        self._cache.mark_dirty((rx, rz))
-        self._invalidate_built(cx, cz)
+        with self._io_lock:
+            rx, rz, index = self._chunk_to_region(cx, cz)
+            region = self._get_or_create_region(rx, rz)
+            region.set_chunk(index, nbt_data)
+            self._cache.mark_dirty((rx, rz))
+            self._invalidate_built(cx, cz)
 
     def save_generated_chunk(self, cx: int, cz: int, chunk_blocks, chunk_biomes=None):
         """保存区块方块数组到 Linear V2 区域文件（内容为原版 Chunk NBT）。"""
@@ -1203,12 +1212,29 @@ class WorldStorage:
 
     def flush(self):
         """将所有修改过的区域写入磁盘。"""
-        for key in list(self._cache.dirty):
-            rx, rz = key
+        with self._io_lock:
+            for key in list(self._cache.dirty):
+                rx, rz = key
+                region = self._cache.get(key)
+                if region is None:
+                    continue
+
+                path = self._get_region_path(rx, rz)
+                try:
+                    region.write(str(path))
+                    self._cache.dirty.discard(key)
+                except Exception as e:
+                    logger.error(f"Failed to save region ({rx}, {rz}): {e}")
+
+    def flush_region(self, rx: int, rz: int):
+        """保存单个区域文件。"""
+        with self._io_lock:
+            key = (rx, rz)
+            if not self._cache.is_dirty(key):
+                return
             region = self._cache.get(key)
             if region is None:
-                continue
-
+                return
             path = self._get_region_path(rx, rz)
             try:
                 region.write(str(path))
@@ -1216,36 +1242,24 @@ class WorldStorage:
             except Exception as e:
                 logger.error(f"Failed to save region ({rx}, {rz}): {e}")
 
-    def flush_region(self, rx: int, rz: int):
-        """保存单个区域文件。"""
-        key = (rx, rz)
-        if not self._cache.is_dirty(key):
-            return
-        region = self._cache.get(key)
-        if region is None:
-            return
-        path = self._get_region_path(rx, rz)
-        try:
-            region.write(str(path))
-            self._cache.dirty.discard(key)
-        except Exception as e:
-            logger.error(f"Failed to save region ({rx}, {rz}): {e}")
-
     def has_dirty_regions(self) -> bool:
         """是否存在尚未落盘的区域修改。"""
-        return bool(self._cache.dirty)
+        with self._io_lock:
+            return bool(self._cache.dirty)
 
     def unload_region(self, rx: int, rz: int):
         """卸载区域文件 (先保存再释放内存)。"""
-        key = (rx, rz)
-        if self._cache.is_dirty(key):
-            self.flush_region(rx, rz)
-        self._cache.remove(key)
+        with self._io_lock:
+            key = (rx, rz)
+            if self._cache.is_dirty(key):
+                self.flush_region(rx, rz)
+            self._cache.remove(key)
 
     def close(self):
         """关闭存储，保存所有未写入的数据。"""
-        self.flush()
-        self._cache.clear()
+        with self._io_lock:
+            self.flush()
+            self._cache.clear()
 
     def _get_playerdata_path(self, player_uuid: str) -> Path:
         """玩家存档路径 (原版: playerdata/<uuid>.dat, gzip NBT)。"""

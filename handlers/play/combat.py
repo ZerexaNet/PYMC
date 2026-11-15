@@ -59,16 +59,36 @@ def parse_interact(payload: bytes) -> tuple[int, int] | None:
         return None
 
 
-def get_attack_damage(conn: Connection) -> float:
-    """根据手持物品计算攻击伤害 (含锋利附魔加成)。"""
-    from world.item_properties import sharpness_damage_bonus
+def _held_item(conn: Connection):
     inventory = getattr(conn, "inventory_obj", None)
-    if inventory is not None:
-        held = inventory.get_held_item_from_slot(conn.selected_hotbar_slot)
-        if held is not None and not held.is_empty:
-            base = WEAPON_DAMAGE.get(held.item_id, 1.0)
-            return base + sharpness_damage_bonus(held)
-    return 1.0
+    if inventory is None:
+        return None
+    held = inventory.get_held_item_from_slot(conn.selected_hotbar_slot)
+    return None if held is None or held.is_empty else held
+
+
+def get_attack_damage(conn: Connection, strength: float = 1.0, critical: bool = False) -> float:
+    """手持物品的近战伤害: 原版武器数值、攻击冷却蓄力、暴击与锋利加成。"""
+    from world.combat_rules import melee_damage
+    from world.item_properties import sharpness_damage_bonus
+    held = _held_item(conn)
+    bonus = sharpness_damage_bonus(held) if held is not None else 0.0
+    return melee_damage(held.item_id if held is not None else None, bonus, strength, critical)
+
+
+def _attack_strength_and_crit(conn: Connection) -> tuple[float, bool]:
+    """Attack strength from the time since the last swing; crits need a full swing while falling."""
+    from world.combat_rules import attack_strength
+    now = time.monotonic()
+    last = getattr(conn, "_last_attack_time", None)
+    ticks = (now - last) * 20.0 if last is not None else 1000.0
+    conn._last_attack_time = now
+    held = _held_item(conn)
+    strength = attack_strength(held.item_id if held is not None else None, ticks)
+    falling = (not getattr(conn, "on_ground", True)
+               and getattr(conn, "fall_start_y", conn.y) > conn.y
+               and not getattr(conn, "sprinting", False))
+    return strength, strength > 0.9 and falling
 
 
 async def _broadcast_entity_hurt(server, entity_id: int, x: float, z: float,
@@ -113,12 +133,8 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
     if conn.gamemode == "spectator":
         return
 
-    # 攻击冷却
-    now = time.monotonic()
-    last_attack = getattr(conn, "_last_attack_time", 0.0)
-    if now - last_attack < ATTACK_COOLDOWN_SECONDS:
-        return
-    conn._last_attack_time = now
+    # 原版不丢弃快速攻击, 而是按蓄力程度降低伤害 (最低 20%)
+    strength, critical = _attack_strength_and_crit(conn)
 
     # --- PvP ---
     victim = next((p for p in server.get_online_players()
@@ -132,8 +148,8 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
         if dx * dx + dy * dy + dz * dz > ATTACK_RANGE_SQUARED:
             return
         from handlers.play.join import _damage_player
-        victim.damage_cooldown_ticks = 0
-        await _damage_player(victim, get_attack_damage(conn), f"player:{conn.username}", server)
+        await _damage_player(victim, get_attack_damage(conn, strength, critical),
+                             f"player:{conn.username}", server)
         # 击退: Set Entity Velocity 发给被攻击的玩家本人
         from protocol.data_types import write_varint, write_short
         from protocol.packet_map import get_clientbound_packet
@@ -153,8 +169,11 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
     if entity.distance_squared_to(conn.x, conn.y, conn.z) > ATTACK_RANGE_SQUARED:
         return
 
-    damage = get_attack_damage(conn)
+    damage = get_attack_damage(conn, strength, critical)
+    health_before = entity.health
     killed = damage_mob(server, entity, damage, source=conn)
+    if not killed and entity.health >= health_before:
+        return  # absorbed by the invulnerability window: no hurt effect, no knockback
     await _broadcast_entity_hurt(server, entity.entity_id, entity.x, entity.z,
                                  attacker=conn, dead=killed)
     if not killed:
@@ -177,6 +196,14 @@ def damage_mob(server, entity, amount: float, source=None) -> bool:
     """
     if entity.kind != "mob":
         return False
+    from world.combat_rules import damage_after_invulnerability
+    amount, last_hurt, reset = damage_after_invulnerability(
+        float(amount), getattr(entity, "invulnerable_ticks", 0), getattr(entity, "last_hurt", 0.0))
+    if amount <= 0:
+        return False
+    entity.last_hurt = last_hurt
+    if reset:
+        entity.invulnerable_ticks = 20
     entity.health -= float(amount)
     entity.metadata["health"] = entity.health
     if entity.health > 0:

@@ -70,6 +70,8 @@ class Connection:
         self.fire_ticks: int = 0
         self.freeze_ticks: int = 0
         self.damage_cooldown_ticks: int = 0
+        self.spawn_protection_ticks: int = 0
+        self.last_hurt_amount: float = 0.0
         self.last_damage_reason: str = ""
         self.selected_hotbar_slot: int = 0
         self.personal_spawn: tuple[int, int, int] | None = None
