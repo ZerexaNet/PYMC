@@ -35,6 +35,8 @@ def _open_container(conn, window_id: int):
     kind = getattr(conn, '_open_container_type', 'block')
     if kind == 'ender_chest':
         return ('ender_chest', getattr(conn, 'inventory_obj', None))
+    if kind == 'crafting':
+        return ('crafting', conn)
 
     from .block_behavior import container_manager
     pos = getattr(conn, '_open_container_pos', None)
@@ -53,12 +55,17 @@ def _container_slots(conn, window_id: int):
     kind, data = opened
     if kind == 'ender_chest':
         return data.ender_chest
+    if kind == 'crafting':
+        from .crafting_window import window_items
+        return window_items(conn, window_id)
     return data.items
 
 
 def window_slot_location(conn, window_id: int, slot_idx: int, player_slot_mapper):
     """Map a protocol window slot to ``(kind, index)``."""
     if window_id == 0:
+        if slot_idx == 0:
+            return ('craft_result', 0)
         inventory_slot = player_slot_mapper(slot_idx)
         if inventory_slot is None:
             return None
@@ -66,6 +73,16 @@ def window_slot_location(conn, window_id: int, slot_idx: int, player_slot_mapper
 
     opened = _open_container(conn, window_id)
     if opened is None or slot_idx < 0:
+        return None
+    if opened[0] == 'crafting':
+        if slot_idx == 0:
+            return ('craft_result', 0)
+        if slot_idx <= 9:
+            return ('craft', slot_idx - 1)
+        if slot_idx <= 36:
+            return ('player', slot_idx - 1)       # 10-36 -> main 9-35
+        if slot_idx <= 45:
+            return ('player', slot_idx - 37)      # 37-45 -> hotbar 0-8
         return None
     container_size = len(opened[1].items if opened[0] == 'block' else opened[1].ender_chest)
     if slot_idx < container_size:
@@ -82,6 +99,12 @@ def _read_window_slot(conn, location):
     inv = conn.inventory_obj
     if kind == 'player':
         return inv.get_slot(idx)
+    if kind in ('craft', 'craft_result'):
+        if kind == 'craft_result':
+            return None  # never moved like a normal slot; see _click_result
+        from .crafting_window import grid_slots
+        store, _, _ = grid_slots(conn, getattr(conn, '_open_window_id', None))
+        return store[idx]
     if kind == 'ender_chest':
         return inv.ender_chest[idx]
     opened = _open_container(conn, getattr(conn, '_open_window_id', -1))
@@ -96,6 +119,13 @@ def _write_window_slot(conn, location, item):
         item = None
     if kind == 'player':
         conn.inventory_obj.set_slot(idx, item)
+        return
+    if kind == 'craft_result':
+        return
+    if kind == 'craft':
+        from .crafting_window import grid_slots
+        store, _, _ = grid_slots(conn, getattr(conn, '_open_window_id', None))
+        store[idx] = item
         return
     if kind == 'ender_chest':
         conn.inventory_obj.ender_chest[idx] = item
@@ -257,6 +287,23 @@ def _click_shift(conn, window_id: int, location):
         _shift_player_stack(inv, idx)
         return
 
+    opened = _open_container(conn, window_id)
+    if opened is not None and opened[0] == 'crafting':
+        # vanilla CraftingMenu: grid -> inventory; inventory <-> hotbar
+        if kind == 'craft':
+            order = list(range(9, 36)) + list(range(0, 9))
+        elif 9 <= idx <= 35:
+            order = list(range(0, 9))
+        else:
+            order = list(range(9, 36))
+        _write_window_slot(conn, location, None)
+        leftover = _insert_stack_into_slots(item, inv.slots, order)
+        if leftover > 0:
+            _write_window_slot(conn, location, item)
+        else:
+            inv.state_id += 1
+        return
+
     if kind == 'player':
         opened = _open_container(conn, window_id)
         if opened is None:
@@ -365,9 +412,9 @@ def _drag_end(conn, window_id: int, drag_button: int, player_slot_mapper,
         return False
 
     valid = []
-    for raw_slot in drag_slots:
+    for raw_slot in sorted(drag_slots):
         location = window_slot_location(conn, window_id, raw_slot, player_slot_mapper)
-        if location is not None:
+        if location is not None and location[0] != 'craft_result':
             valid.append(location)
     if not valid:
         return False
@@ -405,23 +452,115 @@ def _drag_end(conn, window_id: int, drag_button: int, player_slot_mapper,
 
 
 # --------------------------------------------------
+# Crafting result slot
+# --------------------------------------------------
+
+def _give_back_into(inv, leftovers: list):
+    def give(stack):
+        left = inv.add_item(stack)
+        if left > 0:
+            extra = stack.copy()
+            extra.count = left
+            leftovers.append(extra)
+    return give
+
+
+def _click_result(conn, window_id: int, mode: int, button: int, leftovers: list) -> bool:
+    """
+    Click on a crafting result slot (vanilla ResultSlot semantics):
+      mode 0  take one craft onto the cursor (if it fits there)
+      mode 1  shift: craft as many times as fit into the inventory
+      mode 2  number key: craft once into an empty hotbar slot
+      mode 4  Q / ctrl+Q: craft once (or as often as possible) and drop it
+    """
+    from .crafting_window import current_result, take_result
+    inv = conn.inventory_obj
+    give = _give_back_into(inv, leftovers)
+    result = current_result(conn, window_id)
+    if result is None:
+        return False
+
+    if mode == 0:
+        cursor = inv.carried_item
+        if cursor is None or cursor.is_empty:
+            inv.carried_item = take_result(conn, window_id, give)
+        elif cursor.can_stack_with(result) and cursor.count + result.count <= cursor.max_stack_size:
+            crafted = take_result(conn, window_id, give)
+            cursor.count += crafted.count
+        else:
+            return False
+        inv.state_id += 1
+        return True
+
+    if mode == 1:
+        if window_id == 0:
+            order = list(range(9, 36)) + list(range(0, 9))
+        else:
+            order = list(range(8, -1, -1)) + list(range(35, 8, -1))
+        crafted_any = False
+        first = result.item_id
+        for _ in range(64 * 9):
+            nxt = current_result(conn, window_id)
+            if nxt is None or nxt.item_id != first:
+                break
+            # only craft when the whole result fits
+            trial = [slot.copy() if slot is not None else None for slot in inv.slots]
+            probe = nxt.copy()
+            if _insert_stack_into_slots(probe, trial, order) > 0:
+                break
+            crafted = take_result(conn, window_id, give)
+            _insert_stack_into_slots(crafted, inv.slots, order)
+            crafted_any = True
+        if crafted_any:
+            inv.state_id += 1
+        return crafted_any
+
+    if mode == 2:
+        if not (0 <= button < 9):
+            return False
+        target = inv.get_slot(button)
+        if target is not None and not target.is_empty:
+            return False
+        inv.set_slot(button, take_result(conn, window_id, give))
+        return True
+
+    if mode == 4:
+        times = 1 if button == 0 else 64
+        for _ in range(times):
+            nxt = current_result(conn, window_id)
+            if nxt is None or nxt.item_id != result.item_id:
+                break
+            leftovers.append(take_result(conn, window_id, give))
+        return True
+    return False
+
+
+# --------------------------------------------------
 # Sync and main entry point
 # --------------------------------------------------
 
-async def _sync_open_container(conn, window_id: int):
-    from .inventory import send_container_content
-
+def _window_contents(conn, window_id: int):
+    """Every slot of a window in protocol order, as the server sees it."""
     inv = getattr(conn, 'inventory_obj', None)
     if inv is None:
-        return
+        return None
+    if window_id == 0:
+        from .inventory import player_window_slots
+        return player_window_slots(inv)
     slots = _container_slots(conn, window_id)
     if slots is None:
-        return
-
+        return None
     all_slots = list(slots)
     all_slots.extend(inv.get_slot(i) for i in range(9, 36))
     all_slots.extend(inv.get_slot(i) for i in range(0, 9))
-    await send_container_content(conn, window_id, all_slots)
+    return all_slots
+
+
+async def _sync_open_container(conn, window_id: int):
+    from .inventory import send_container_content
+    all_slots = _window_contents(conn, window_id)
+    if all_slots is not None:
+        await send_container_content(conn, window_id, all_slots)
 
 
 async def handle_container_click(conn, payload: bytes, server, player_slot_mapper):
@@ -454,13 +593,34 @@ async def handle_container_click(conn, payload: bytes, server, player_slot_mappe
         return
 
     changed_slots: list[int] = []
+    predicted: list = []          # what the client says each changed slot now holds
     for _ in range(changed_count):
         changed_slot, offset = read_short(payload, offset)
-        _, offset = decode_slot_entry(payload, offset)
+        predicted_item, offset = decode_slot_entry(payload, offset)
         changed_slots.append(changed_slot)
-    _, offset = decode_slot_entry(payload, offset)
+        predicted.append((changed_slot, predicted_item))
+    predicted_carried, offset = decode_slot_entry(payload, offset)
+
+    # Vanilla only answers with the slots the client got wrong, as long as it
+    # clicked on the state we last sent; full resync otherwise. Answering every
+    # click with the whole window makes fast, pipelined clicks see stale data.
+    remote = getattr(conn, '_remote_window', None)
+    use_diff = (remote is not None and remote.get("window") == window_id
+                and state_id == getattr(conn, 'inventory_state_id', 0))
 
     mutated = True
+    crafting = False
+    leftovers: list = []
+    from .crafting_window import is_crafting_window, refresh_result
+    grid_before = None
+    if is_crafting_window(conn, window_id):
+        crafting = True
+        from .crafting_window import _grid_items
+        from .inventory import slot_snapshot
+        grid_before = [slot_snapshot(item) for item in _grid_items(conn, window_id)]
+        if slot_idx == 0 and mode in (0, 1, 2, 4):
+            mutated = _click_result(conn, window_id, mode, button, leftovers)
+            mode = -1  # handled
 
     if mode == 0:
         if slot_idx == -999:
@@ -529,9 +689,44 @@ async def handle_container_click(conn, payload: bytes, server, player_slot_mappe
             mutated = _drag_end(conn, window_id, button - 2,
                                 player_slot_mapper, changed_slots)
 
-    if mutated:
-        conn.inventory_state_id += 1
+    for stack in leftovers:
+        if stack is not None and not stack.is_empty:
+            await _drop_stack(conn, server, stack, stack.count)
 
+    if crafting:
+        refresh_result(conn, window_id)
+
+    contents = _window_contents(conn, window_id)
+    if contents is None:
+        return
+    if use_diff and len(remote["slots"]) == len(contents):
+        from .inventory import send_window_slot, slot_snapshot
+        for changed_slot, item in predicted:
+            if 0 <= changed_slot < len(remote["slots"]):
+                remote["slots"][changed_slot] = slot_snapshot(item)
+        remote["carried"] = slot_snapshot(predicted_carried)
+        send = [i for i, item in enumerate(contents) if slot_snapshot(item) != remote["slots"][i]]
+        if crafting and 0 not in send:
+            # CraftingMenu.slotChangedCraftingGrid: any change to (or click in)
+            # the crafting area re-sends the result slot, changed or not.
+            from .crafting_window import _grid_items
+            grid_after = [slot_snapshot(item) for item in _grid_items(conn, window_id)]
+            if grid_after != grid_before or 0 <= slot_idx <= len(grid_after):
+                send.insert(0, 0)
+        cursor_wrong = slot_snapshot(inv.carried_item) != remote["carried"]
+        if send or cursor_wrong:
+            # one state id for the whole answer, so a client that already
+            # clicked again on the first packet of it is still in sync
+            conn.inventory_state_id += 1
+            for i in send:
+                await send_window_slot(conn, window_id, i, contents[i])
+                remote["slots"][i] = slot_snapshot(contents[i])
+            if cursor_wrong:
+                await send_window_slot(conn, -1, -1, inv.carried_item)
+                remote["carried"] = slot_snapshot(inv.carried_item)
+        return
+
+    conn.inventory_state_id += 1
     if window_id == 0:
         await send_inventory_sync(conn)
     else:

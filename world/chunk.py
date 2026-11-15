@@ -22,6 +22,10 @@ Minecraft 区块数据格式实现。
 """
 
 import struct
+
+from .fastpack import (
+    column_heights, flatten_section, longs_to_bytes, pack_longs, palette_of, to_signed,
+)
 import math
 from protocol.data_types import write_varint
 from .blocks import AIR
@@ -62,53 +66,29 @@ def encode_paletted_container_indirect(entries: list[int], palette: list[int],
         entries: 每个位置对应的调色板索引列表 (长度=total_entries)
         palette: 调色板 (全局状态ID列表)
         total_entries: 总条目数 (方块=4096, 生物群系=64)
-
-    返回:
-        编码后的字节
     """
     palette_size = len(palette)
     if palette_size <= 1:
         return encode_paletted_container_single(palette[0] if palette else 0)
 
-    # 计算 bits_per_entry
     bits_per_entry = max(4, math.ceil(math.log2(palette_size)))
-
-    # 方块调色板: 最小 4, 最大 8
     if total_entries == 4096:
+        # 方块调色板: 最小 4, 最大 8; 超过 256 种用直接调色板
         bits_per_entry = max(4, min(8, bits_per_entry))
-        # 如果调色板太大 (>256), 使用直接调色板
         if palette_size > (1 << 8):
             return _encode_direct_palette(entries, palette, total_entries)
-    # 生物群系调色板: 最小 1, 最大 3
     elif total_entries == 64:
+        # 生物群系调色板: 最小 1, 最大 3
         bits_per_entry = max(1, min(3, bits_per_entry))
 
     result = bytearray()
     result.append(bits_per_entry)
-
-    # 写入调色板
     result.extend(write_varint(palette_size))
     for pid in palette:
         result.extend(write_varint(pid))
-
-    # 打包数据数组到 Long 数组
-    entries_per_long = 64 // bits_per_entry
-    num_longs = math.ceil(total_entries / entries_per_long)
-    result.extend(write_varint(num_longs))
-
-    entry_mask = (1 << bits_per_entry) - 1
-    for long_index in range(num_longs):
-        long_val = 0
-        for i in range(entries_per_long):
-            entry_index = long_index * entries_per_long + i
-            if entry_index < len(entries):
-                value = entries[entry_index] & entry_mask
-                long_val |= value << (i * bits_per_entry)
-        # 转为有符号 64 位
-        if long_val >= (1 << 63):
-            long_val -= (1 << 64)
-        result.extend(struct.pack('>q', long_val))
-
+    longs = pack_longs(entries[:total_entries], bits_per_entry)
+    result.extend(write_varint(len(longs)))
+    result.extend(longs_to_bytes(longs))
     return bytes(result)
 
 
@@ -119,29 +99,13 @@ def _encode_direct_palette(entries: list[int], palette: list[int],
     bits_per_entry = 15 (for blocks)。
     """
     bits_per_entry = 15
+    size = len(palette)
+    global_ids = [palette[i] if i < size else 0 for i in entries[:total_entries]]
+    longs = pack_longs(global_ids, bits_per_entry)
     result = bytearray()
     result.append(bits_per_entry)
-    # 直接调色板没有调色板数据
-
-    # 将调色板索引转回全局 ID
-    entries_per_long = 64 // bits_per_entry  # 4
-    num_longs = math.ceil(total_entries / entries_per_long)
-    result.extend(write_varint(num_longs))
-
-    entry_mask = (1 << bits_per_entry) - 1
-    for long_index in range(num_longs):
-        long_val = 0
-        for i in range(entries_per_long):
-            entry_index = long_index * entries_per_long + i
-            if entry_index < len(entries):
-                # 将调色板索引转回全局 ID
-                palette_idx = entries[entry_index]
-                global_id = palette[palette_idx] if palette_idx < len(palette) else 0
-                long_val |= (global_id & entry_mask) << (i * bits_per_entry)
-        if long_val >= (1 << 63):
-            long_val -= (1 << 64)
-        result.extend(struct.pack('>q', long_val))
-
+    result.extend(write_varint(len(longs)))
+    result.extend(longs_to_bytes(longs))
     return bytes(result)
 
 
@@ -160,25 +124,10 @@ def build_section_from_blocks(section_blocks: list[list[list[int]]],
     """
     result = bytearray()
 
-    # --- 统计方块和构建调色板 ---
-    palette_map = {}   # 全局ID -> 调色板索引
-    palette = []       # 调色板列表 (全局ID)
-    entries = []       # 4096 个调色板索引 (y*256 + z*16 + x 顺序)
-    non_air_count = 0
-
-    for y in range(16):
-        for z in range(16):
-            for x in range(16):
-                block_id = section_blocks[y][z][x]
-
-                if block_id != AIR:
-                    non_air_count += 1
-
-                if block_id not in palette_map:
-                    palette_map[block_id] = len(palette)
-                    palette.append(block_id)
-
-                entries.append(palette_map[block_id])
+    # --- 统计方块和构建调色板 (y*256 + z*16 + x 顺序) ---
+    flat = flatten_section(section_blocks)
+    non_air_count = len(flat) - flat.count(AIR)
+    palette, entries = palette_of(flat)
 
     # 方块计数 (Short)
     result.extend(struct.pack('>h', non_air_count))
@@ -245,7 +194,7 @@ def build_chunk_column_from_terrain(chunk_blocks: list[list[list[int]]],
     return bytes(result)
 
 
-def build_heightmap_from_terrain(chunk_blocks: list[list[list[int]]], 
+def build_heightmap_from_terrain(chunk_blocks: list[list[list[int]]],
                                  include_water: bool = False) -> list[int]:
     """
     从方块数据计算高度图。
@@ -259,41 +208,8 @@ def build_heightmap_from_terrain(chunk_blocks: list[list[list[int]]],
     """
     from .blocks import WATER
 
-    bits_per_entry = 9
-    entries_per_long = 64 // bits_per_entry  # 7
-    num_longs = math.ceil(256 / entries_per_long)  # 37
-
-    # 计算每列高度 (从上到下扫描)
-    heights = [0] * 256  # x + z*16 顺序
-
-    for z in range(16):
-        for x in range(16):
-            height = 0
-            # 从顶部向下搜索
-            for yi in range(WORLD_HEIGHT - 1, -1, -1):
-                block = chunk_blocks[yi][z][x]
-                if block != AIR:
-                    if not include_water and block == WATER:
-                        continue
-                    height = yi + 1  # 高度是方块上方一格
-                    break
-            heights[x + z * 16] = height
-
-    # 打包到 Long 数组
-    longs = []
-    for long_index in range(num_longs):
-        long_val = 0
-        for i in range(entries_per_long):
-            entry_index = long_index * entries_per_long + i
-            if entry_index < 256:
-                long_val |= (heights[entry_index] & 0x1FF) << (i * bits_per_entry)
-        
-        # 补码处理 (Python 的 int 是无限精度的，需要模拟 64 位有符号整数)
-        if long_val >= (1 << 63):
-            long_val -= (1 << 64)
-        longs.append(long_val)
-
-    return longs
+    heights = column_heights(chunk_blocks, None if include_water else WATER)
+    return to_signed(pack_longs(heights, 9))
 
 
 # --------------------------------------------------

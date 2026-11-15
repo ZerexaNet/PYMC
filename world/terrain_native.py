@@ -172,16 +172,9 @@ def _decode_binary_blocks(data: bytes) -> list[list[list[int]]]:
     flat.frombytes(data)
 
     # 用切片批量转换为 3D 数组 [y][z][x]，避免逐元素循环
-    blocks = []
-    offset = 0
-    for y in range(WORLD_HEIGHT):
-        layer = []
-        for z in range(16):
-            layer.append(list(flat[offset:offset + 16]))
-            offset += 16
-        blocks.append(layer)
-
-    return blocks
+    values = flat.tolist()
+    rows = [values[i:i + 16] for i in range(0, WORLD_HEIGHT * 256, 16)]
+    return [rows[i:i + 16] for i in range(0, WORLD_HEIGHT * 16, 16)]
 
 
 def _decode_binary_heightmap(data: bytes) -> list[list[int]]:
@@ -366,14 +359,17 @@ class NativeTerrainGenerator:
         return " | ".join(parts)
 
     def _read_exact(self, n: int) -> bytes:
-        """从子进程 stdout 精确读取 n 字节。"""
-        data = b''
-        while len(data) < n:
-            chunk = self._process.stdout.read(n - len(data))
-            if not chunk:
+        """从子进程 stdout 精确读取 n 字节 (预分配缓冲区, 避免反复拼接)。"""
+        buf = bytearray(n)
+        view = memoryview(buf)
+        got = 0
+        stream = self._process.stdout
+        while got < n:
+            read = stream.readinto(view[got:])
+            if not read:
                 raise RuntimeError("子进程无响应 (可能已退出)")
-            data += chunk
-        return data
+            got += read
+        return bytes(buf)
 
     def _send_single_request(self, chunk_x: int, chunk_z: int):
         """发送单区块二进制请求到子进程。"""

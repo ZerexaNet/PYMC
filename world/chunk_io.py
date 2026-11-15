@@ -22,6 +22,8 @@ import array
 import json
 import logging
 import math
+
+from .fastpack import flatten_section, pack_longs, palette_of, to_signed, unpack_longs
 import struct
 import sys
 from functools import lru_cache
@@ -221,45 +223,12 @@ def _decode_legacy_chunk(data: bytes) -> list[list[list[int]]] | None:
 def _pack_palette_indices(entries: list[int], bits_per_entry: int) -> list[int]:
     if bits_per_entry <= 0:
         return []
-
-    entry_mask = (1 << bits_per_entry) - 1
-    entries_per_long = 64 // bits_per_entry
-    num_longs = math.ceil(len(entries) / entries_per_long)
-    longs: list[int] = []
-
-    for long_index in range(num_longs):
-        long_val = 0
-        for i in range(entries_per_long):
-            entry_index = long_index * entries_per_long + i
-            if entry_index >= len(entries):
-                break
-            long_val |= (entries[entry_index] & entry_mask) << (i * bits_per_entry)
-        if long_val >= (1 << 63):
-            long_val -= (1 << 64)
-        longs.append(long_val)
-    return longs
+    return to_signed(pack_longs(entries, bits_per_entry))
 
 
 def _unpack_palette_indices(longs: list[int], bits_per_entry: int,
                             total_entries: int) -> list[int]:
-    if bits_per_entry <= 0:
-        return [0] * total_entries
-
-    entry_mask = (1 << bits_per_entry) - 1
-    entries_per_long = 64 // bits_per_entry
-    values: list[int] = []
-
-    for long_val in longs:
-        if long_val < 0:
-            long_val += 1 << 64
-        for i in range(entries_per_long):
-            values.append((long_val >> (i * bits_per_entry)) & entry_mask)
-            if len(values) >= total_entries:
-                return values
-
-    if len(values) < total_entries:
-        values.extend([0] * (total_entries - len(values)))
-    return values
+    return unpack_longs(longs, bits_per_entry, total_entries)
 
 
 def _state_id_to_palette_entry(state_id: int) -> dict:
@@ -301,21 +270,9 @@ def _palette_entry_to_state_id(entry: dict, legacy: bool = False) -> int:
 
 def _build_section_nbt(section_blocks: list[list[list[int]]], section_y: int,
                        biome_ids: list[int] | None = None) -> dict:
-    palette_map: dict[int, int] = {}
-    palette_state_ids: list[int] = []
-    entries: list[int] = []
-    non_air_count = 0
-
-    for local_y in range(16):
-        for z in range(16):
-            for x in range(16):
-                state_id = int(section_blocks[local_y][z][x])
-                if state_id != 0:
-                    non_air_count += 1
-                if state_id not in palette_map:
-                    palette_map[state_id] = len(palette_state_ids)
-                    palette_state_ids.append(state_id)
-                entries.append(palette_map[state_id])
+    flat = flatten_section(section_blocks)
+    non_air_count = len(flat) - flat.count(0)
+    palette_state_ids, entries = palette_of(flat)
 
     if not palette_state_ids:
         palette_state_ids = [0]
@@ -449,15 +406,19 @@ def _decode_section_blocks(section: dict, target: list[list[list[int]]], legacy:
         bits = max(4, math.ceil(math.log2(len(palette_ids))))
         entries = _unpack_palette_indices(list(raw_longs), bits, 4096)
 
+    if len(palette_ids) == 1:
+        states = [palette_ids[0]] * 4096
+    else:
+        # out-of-range indices (corrupt data) read as air
+        lookup = palette_ids + [0] * (max(entries) + 1 - len(palette_ids))
+        states = list(map(lookup.__getitem__, entries))
     y_start = section_index * 16
-    idx = 0
+    offset = 0
     for local_y in range(16):
+        layer = target[y_start + local_y]
         for z in range(16):
-            for x in range(16):
-                palette_index = entries[idx]
-                idx += 1
-                state_id = palette_ids[palette_index] if palette_index < len(palette_ids) else 0
-                target[y_start + local_y][z][x] = state_id
+            layer[z] = states[offset:offset + 16]
+            offset += 16
 
 
 def _decode_section_biomes(section: dict, target: list[list[int]]):

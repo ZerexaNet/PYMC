@@ -39,6 +39,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] Web 管理台、权限组、OP、封禁和白名单。
 - [x] 单元测试覆盖原生地形、原版存档读写与迁移、玩家存档、原生 AI、种子解析和安全出生点。
 - [x] **红石系统**：tick 引擎、电源/导线/火把/中继器/比较器/观察者/活塞、门与灯控制、TNT 起爆、音符盒、发射器/投掷器；红石时序为原版近似。
+- [x] **合成**：背包 2×2 与工作台 3×3，原版 1.21.1 全部有序/无序配方（标签展开、镜像、合成剩余物），Shift 批量合成。
 - [x] **物品栏系统**：`ItemStack`、玩家物品栏、协议序列化、左右键/Shift/数字键/拖拽/丢弃，以及方块容器交互与持久化；铁砧/附魔台等专业界面仍为简化。
 - [x] **PYMC 原生扩展 API**：支持 Python Mod/Plugin 的发现、依赖排序、生命周期、事件和命令注册。Java Fabric/Forge Mod 不受支持；Bukkit/Paper `.jar` 插件通过可选 Java 桥接层提供 best-effort 兼容，详见 `MOD_COMPATIBILITY.md`。
 - [x] **Web 管理台安全默认值**：默认只监听 `127.0.0.1`；由于当前没有内置认证，远程监听必须显式设置 `web-admin-allow-remote=true` 并部署外部访问控制。
@@ -222,6 +223,12 @@ g++ -O2 -std=c++17 -ffp-contract=off -pthread -o native/terrain_gen native/terra
 
 ```bash
 python3 tools/gen_worldgen_data.py
+```
+
+合成配方 `world/data/recipes.json` 同样由 `tools/gen_recipe_data.py` 从原版 1.21.1 数据生成（已附带）：
+
+```bash
+python3 tools/gen_recipe_data.py
 ```
 
 生物群系参数查找树取自 [cubiomes](https://github.com/Cubitect/cubiomes) (MIT 许可) 的 `btree20` 表；worldgen JSON 来自 [misode/mcmeta](https://github.com/misode/mcmeta) 的 `1.21.1-data-json`。
