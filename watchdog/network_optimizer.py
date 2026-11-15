@@ -52,12 +52,12 @@ class PlayerNetworkOptimizer:
     async def start(self):
         """Start the network optimizer."""
         if not self.server.config.get('network-packet-batching', True):
-            logger.info("Network packet batching disabled (network-packet-batching=false)")
+            logger.debug("Network packet batching disabled (network-packet-batching=false)")
             return
 
         self._running = True
         self._flush_task = asyncio.create_task(self._flush_loop())
-        logger.info(f"Network optimizer started (batch interval={self.movement_batch_interval*1000:.0f}ms, "
+        logger.debug(f"Network optimizer started (batch interval={self.movement_batch_interval*1000:.0f}ms, "
                      f"movement updates={self._movement_rate_hz:.0f}Hz)")
 
     async def stop(self):
@@ -73,7 +73,7 @@ class PlayerNetworkOptimizer:
         # Flush any remaining packets
         await self.flush_all()
 
-        logger.info(f"Network optimizer stopped (batched={self._packets_batched}, "
+        logger.debug(f"Network optimizer stopped (batched={self._packets_batched}, "
                      f"direct={self._packets_sent_directly}, "
                      f"movements_dropped={self._movements_dropped})")
 

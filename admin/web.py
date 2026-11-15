@@ -688,7 +688,7 @@ class WebAdminServer:
             daemon=True,
         )
         self._thread.start()
-        logger.info(f"Web 管理台已启动: http://{self.host}:{self.port}")
+        logger.info(f"Web admin console running on http://{self.host}:{self.port}")
 
     @staticmethod
     def _is_loopback_host(host: str) -> bool:
@@ -706,7 +706,7 @@ class WebAdminServer:
         self._httpd.shutdown()
         self._httpd.server_close()
         self._httpd = None
-        logger.info("Web 管理台已关闭")
+        logger.debug("Web admin console stopped")
 
     def _make_handler(self):
         outer = self

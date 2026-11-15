@@ -226,7 +226,7 @@ class NativeIPCConnection:
 
         lib_path = _find_native_lib()
         if lib_path is None:
-            logger.info("pymc_native shared library not found; IPC native mode unavailable")
+            logger.debug("pymc_native shared library not found; IPC native mode unavailable")
             return False
 
         try:
@@ -262,7 +262,7 @@ class NativeIPCConnection:
         """Start the native server process and establish IPC."""
         server_path = _find_native_server()
         if server_path is None:
-            logger.info("pymc_native_server not found; IPC native mode unavailable")
+            logger.debug("pymc_native_server not found; IPC native mode unavailable")
             return False
 
         if not self._ensure_lib():
@@ -920,7 +920,7 @@ class NativeCore:
         except Exception as e:
             logger.debug(f"Direct mode unavailable: {e}")
 
-        logger.info("Native acceleration layer not available, using Python fallback")
+        logger.debug("Native acceleration layer not available, using Python fallback")
 
     def _init_ipc_mode(self):
         """Initialize IPC mode (separate process + shared memory)."""

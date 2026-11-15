@@ -75,19 +75,19 @@ class SpawnPayloadTests(unittest.TestCase):
         payload = build_player_metadata_payload(player)
         eid, offset = read_varint(payload, 0)
         self.assertEqual(eid, 42)
-        self.assertEqual(payload[offset], 17)      # skin parts index
-        type_id, offset2 = read_varint(payload, offset + 1)
-        self.assertEqual(type_id, 0)               # Byte
-        self.assertEqual(payload[offset2], 0x7F)   # all layers
-        self.assertEqual(payload[offset2 + 1], 0xFF)
+        # index 0: entity flags (Byte), index 6: pose (type 21), index 17: skin parts
+        self.assertEqual(payload[offset:offset + 3], bytes([0, 0, 0]))
+        self.assertEqual(payload[offset + 3:offset + 6], bytes([6, 21, 0]))
+        self.assertEqual(payload[offset + 6:offset + 9], bytes([17, 0, 0x7F]))
+        self.assertEqual(payload[offset + 9], 0xFF)
 
-    def test_rotate_head_payload(self):
+    def test_sneaking_sets_flag_and_pose(self):
         player = FakeConn("Alex", 42)
-        player.yaw = 180.0
-        payload = build_rotate_head_payload(player)
-        eid, offset = read_varint(payload, 0)
-        self.assertEqual(eid, 42)
-        self.assertEqual(payload[offset], 128)  # 180° -> 180/360*256 = 128
+        player.sneaking = True
+        payload = build_player_metadata_payload(player)
+        _, offset = read_varint(payload, 0)
+        self.assertEqual(payload[offset + 2], 0x02)   # sneaking flag
+        self.assertEqual(payload[offset + 5], 5)      # Pose.SNEAKING
 
 
 class SpawnSyncTests(unittest.IsolatedAsyncioTestCase):
@@ -106,11 +106,19 @@ class SpawnSyncTests(unittest.IsolatedAsyncioTestCase):
         await send_player_spawn(observer, player)
         self.assertEqual(len(observer.sent), 2)
 
-    async def test_spawn_skipped_for_versioned_clients(self):
-        observer = FakeConn("Steve", 1, version_handler=object())
+    async def test_spawn_skipped_for_other_protocol_versions(self):
+        observer = FakeConn("Steve", 1)
+        observer.protocol_version = 47
         player = FakeConn("Alex", 2)
         await send_player_spawn(observer, player)
         self.assertEqual(observer.sent, [])
+
+    async def test_spawn_sent_to_clients_with_version_handler(self):
+        # Real connections always carry a version handler after the handshake.
+        observer = FakeConn("Steve", 1, version_handler=object())
+        player = FakeConn("Alex", 2)
+        await send_player_spawn(observer, player)
+        self.assertEqual(observer.sent[0][0], 0x01)
 
     async def test_visibility_sync_is_bidirectional(self):
         a = FakeConn("Steve", 1)

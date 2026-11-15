@@ -62,7 +62,7 @@ if exist "C:\Program Files\Microsoft Visual Studio\Installer\vswhere.exe" (
 
 where cl >nul 2>&1
 if not errorlevel 1 (
-    cl /O2 /EHsc /std:c++17 /Fe:native\terrain_gen.exe native\terrain_gen.cpp
+    cl /O2 /EHsc /std:c++17 /fp:precise /DNOMINMAX /Fe:native\terrain_gen.exe native\terrain_gen.cpp
 ) else (
     where g++ >nul 2>&1
     if errorlevel 1 (
@@ -70,7 +70,7 @@ if not errorlevel 1 (
         pause
         exit /b 1
     )
-    g++ -O3 -std=c++17 -o native\terrain_gen.exe native\terrain_gen.cpp
+    g++ -O2 -std=c++17 -ffp-contract=off -pthread -static -o native\terrain_gen.exe native\terrain_gen.cpp
 )
 
 if errorlevel 1 (
@@ -111,6 +111,8 @@ echo.
     --include-data-files=native/terrain_gen.exe=terrain_gen.exe ^
     --include-data-files=native/mob_ai.exe=mob_ai.exe ^
     --include-data-files=world/blocks.json=world/blocks.json ^
+    --include-data-dir=protocol/data=protocol/data ^
+    --include-data-dir=world/data=world/data ^
     --follow-imports ^
     --assume-yes-for-downloads ^
     --windows-console-mode=force ^

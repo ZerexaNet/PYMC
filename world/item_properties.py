@@ -118,14 +118,19 @@ async def damage_held_item(conn, server, amount: int = 1) -> bool:
     if item is None or item.is_empty:
         return False
 
+    from world.inventory import send_slot_update
     if not damage_item(item, amount):
+        # 同步耐久条
+        await send_slot_update(conn, slot)
         return False
 
-    # 物品损毁
+    # 物品损毁: 清空槽位, 并让客户端播放工具损坏的音效/粒子 (Entity Event 47)
     inventory.set_slot(slot, None)
-    logger.info(f"{conn.username} 的 {item.item_id} 已损毁")
-    from handlers.play.chat import send_system_message
-    await send_system_message(conn, f"[PyMC] 你的 {item.item_id} 已损毁")
-    from world.inventory import send_inventory_sync
-    await send_inventory_sync(conn)
+    conn.inventory_state_id = getattr(conn, "inventory_state_id", 0) + 1
+    await send_slot_update(conn, slot)
+    from protocol.packet_map import get_clientbound_packet
+    from protocol.data_types import write_int, write_byte
+    pid = get_clientbound_packet(conn.protocol_version, "entity_status")
+    if pid is not None:
+        await conn.send_packet(pid, write_int(conn.entity_id) + write_byte(47))
     return True

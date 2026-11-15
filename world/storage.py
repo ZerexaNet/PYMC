@@ -520,6 +520,49 @@ class AnvilWriter:
             raise
 
 
+class AnvilRegion:
+    """
+    Anvil (.mca) region with the same interface as LinearRegion.
+
+    This is the vanilla on-disk format, so a world written by PyMC opens in
+    singleplayer, MCASelector, Amulet, NBT editors etc.
+    """
+
+    def __init__(self):
+        self.chunks: list[bytes | None] = [None] * 1024
+        self.timestamps: list[int] = [0] * 1024
+        self.compression_level: int = 6
+
+    @staticmethod
+    def read(filepath: str, verify_checksum: bool = True) -> 'AnvilRegion':
+        reader = AnvilReader(filepath)
+        region = AnvilRegion()
+        region.chunks = list(reader.chunks)
+        region.timestamps = list(reader.timestamps)
+        return region
+
+    def write(self, filepath: str, compression_level: int | None = None, **_kwargs):
+        writer = AnvilWriter()
+        for i in range(1024):
+            if self.chunks[i] is not None:
+                writer.set_chunk(i, self.chunks[i], self.timestamps[i] or None)
+        writer.write(filepath, 2)
+
+    @property
+    def chunk_count(self) -> int:
+        return sum(1 for c in self.chunks if c is not None)
+
+    def get_chunk(self, index: int) -> bytes | None:
+        return self.chunks[index]
+
+    def set_chunk(self, index: int, data: bytes, timestamp: int | None = None):
+        self.chunks[index] = data
+        self.timestamps[index] = timestamp or int(time.time())
+
+    def estimated_size(self) -> int:
+        return sum(len(c) for c in self.chunks if c is not None) + 8192
+
+
 # ============================================================
 # Anvil -> Linear 转换器 (增强版 + 并发支持)
 # ============================================================
@@ -931,10 +974,23 @@ class WorldStorage:
 
     def __init__(self, world_dir: str,
                  max_cached_regions: int = DEFAULT_MAX_REGIONS,
-                 max_memory_mb: int = DEFAULT_MAX_MEMORY_MB):
+                 max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
+                 region_format: str = "anvil"):
         self.world_dir = Path(world_dir)
+        self.region_format = "linear" if str(region_format).lower() == "linear" else "anvil"
+        if self.region_format == "linear" and not HAS_ZSTD:
+            logger.warning("zstandard is not installed; storing regions as Anvil (.mca) instead of Linear")
+            self.region_format = "anvil"
+        self._region_class = LinearRegion if self.region_format == "linear" else AnvilRegion
+        self._region_suffix = ".linear" if self.region_format == "linear" else ".mca"
         self.region_dir = self.world_dir / "region"
         self.playerdata_dir = self.world_dir / "playerdata"
+
+        # 已解码区块的 LRU 缓存
+        self._decoded: OrderedDict = OrderedDict()
+        self._decoded_lock = threading.Lock()
+        # 已编码区块 (heightmaps + 区块段字节) 的 LRU 缓存, 加入/重生时免去重复编码
+        self._built: OrderedDict = OrderedDict()
 
         # LRU 缓存
         self._cache = LRUCache(max_cached_regions, max_memory_mb)
@@ -945,8 +1001,30 @@ class WorldStorage:
         self.playerdata_dir.mkdir(parents=True, exist_ok=True)
 
     def initialize(self):
-        """初始化存储，执行必要的格式转换。"""
-        convert_world_anvil_to_linear(str(self.world_dir))
+        """
+        初始化存储并统一区域文件格式。
+
+        Anvil 模式 (默认, 原版格式): 旧版 PyMC 写入的 .linear 区域会一次性转换
+        为 .mca, 原文件改名为 .linear.bak 保留。Linear 模式: .mca 转为 .linear。
+        """
+        if self.region_format == "linear":
+            convert_world_anvil_to_linear(str(self.world_dir))
+            return
+        converted = 0
+        for linear_file in sorted(self.region_dir.glob("*.linear")):
+            mca_file = linear_file.with_suffix(".mca")
+            if mca_file.exists():
+                continue
+            if not HAS_ZSTD:
+                logger.error(f"Cannot convert {linear_file.name}: zstandard is not installed "
+                             f"(pip install zstandard)")
+                continue
+            if convert_linear_to_anvil(str(linear_file), str(mca_file)) > 0:
+                linear_file.rename(linear_file.with_name(linear_file.name + ".bak"))
+                converted += 1
+        if converted:
+            logger.info(f"Converted {converted} Linear region files to Anvil (.mca); "
+                        f"originals kept as *.linear.bak")
 
     @staticmethod
     def _chunk_to_region(cx: int, cz: int) -> tuple[int, int, int]:
@@ -962,7 +1040,7 @@ class WorldStorage:
 
     def _get_region_path(self, rx: int, rz: int) -> Path:
         """获取区域文件路径。"""
-        return self.region_dir / f"r.{rx}.{rz}.linear"
+        return self.region_dir / f"r.{rx}.{rz}{self._region_suffix}"
 
     def _flush_region_impl(self, rx: int, rz: int, region: LinearRegion):
         """将区域写入磁盘 (由缓存回调调用)。"""
@@ -984,7 +1062,7 @@ class WorldStorage:
             return None
 
         try:
-            region = LinearRegion.read(str(path), verify_checksum=True)
+            region = self._region_class.read(str(path), verify_checksum=True)
             self._cache.put(key, region)
             return region
         except Exception as e:
@@ -996,7 +1074,7 @@ class WorldStorage:
         key = (rx, rz)
         region = self._load_region(rx, rz)
         if region is None:
-            region = LinearRegion()
+            region = self._region_class()
             self._cache.put(key, region)
         return region
 
@@ -1016,6 +1094,54 @@ class WorldStorage:
             return None
         return region.get_chunk(index)
 
+    # ---- 已解码区块缓存 ----
+    #
+    # 游戏刻里的方块查询 (伤害判定、生物物理、红石、流体) 每刻要读很多次
+    # 方块。每次都从序列化字节反序列化整个 16x384x16 区块需要几十毫秒, 会把
+    # TPS 拖垮, 所以把解码后的数组按 LRU 缓存起来。缓存中的数组是共享对象:
+    # 修改后必须调用 save_generated_chunk() 写回 (世界编辑代码都是这么做的)。
+
+    DECODED_CACHE_SIZE = 192
+
+    def _decoded_cache_get(self, key):
+        with self._decoded_lock:
+            entry = self._decoded.get(key)
+            if entry is not None:
+                self._decoded.move_to_end(key)
+            return entry
+
+    def _decoded_cache_put(self, key, blocks, biomes):
+        with self._decoded_lock:
+            self._decoded[key] = (blocks, biomes)
+            self._decoded.move_to_end(key)
+            while len(self._decoded) > self.DECODED_CACHE_SIZE:
+                self._decoded.popitem(last=False)
+
+    BUILT_CACHE_SIZE = 1024
+
+    def lazy_chunk_blocks(self, cx: int, cz: int) -> "LazyChunkBlocks":
+        """Block array that is only decoded from disk when something reads it."""
+        return LazyChunkBlocks(lambda: self.load_generated_chunk(cx, cz))
+
+    def get_built_chunk(self, cx: int, cz: int):
+        """(motion_blocking, world_surface, chunk_data) cached for an unmodified chunk, or None."""
+        with self._decoded_lock:
+            entry = self._built.get((cx, cz))
+            if entry is not None:
+                self._built.move_to_end((cx, cz))
+            return entry
+
+    def put_built_chunk(self, cx: int, cz: int, motion_blocking, world_surface, chunk_data: bytes):
+        with self._decoded_lock:
+            self._built[(cx, cz)] = (motion_blocking, world_surface, chunk_data)
+            self._built.move_to_end((cx, cz))
+            while len(self._built) > self.BUILT_CACHE_SIZE:
+                self._built.popitem(last=False)
+
+    def _invalidate_built(self, cx: int, cz: int):
+        with self._decoded_lock:
+            self._built.pop((cx, cz), None)
+
     def load_generated_chunk(self, cx: int, cz: int):
         """
         加载区块方块数组。
@@ -1023,10 +1149,11 @@ class WorldStorage:
         返回:
             [y][z][x] 方块数组，或 None（不存在 / 无法解析）
         """
-        raw = self.load_chunk(cx, cz)
-        if raw is None:
-            return None
-        return deserialize_chunk(raw)
+        entry = self._decoded_cache_get((cx, cz))
+        if entry is not None:
+            return entry[0]
+        loaded = self.load_generated_chunk_with_biomes(cx, cz)
+        return loaded[0] if loaded is not None else None
 
     def load_generated_chunk_with_biomes(self, cx: int, cz: int):
         """
@@ -1035,10 +1162,17 @@ class WorldStorage:
         返回:
             (blocks, biomes) 或 None
         """
+        entry = self._decoded_cache_get((cx, cz))
+        if entry is not None:
+            return entry
         raw = self.load_chunk(cx, cz)
         if raw is None:
             return None
-        return deserialize_chunk_with_biomes(raw)
+        decoded = deserialize_chunk_with_biomes(raw)
+        if decoded is None or decoded[0] is None:
+            return None
+        self._decoded_cache_put((cx, cz), decoded[0], decoded[1])
+        return decoded
 
     def save_chunk(self, cx: int, cz: int, nbt_data: bytes):
         """
@@ -1052,9 +1186,15 @@ class WorldStorage:
         region = self._get_or_create_region(rx, rz)
         region.set_chunk(index, nbt_data)
         self._cache.mark_dirty((rx, rz))
+        self._invalidate_built(cx, cz)
 
     def save_generated_chunk(self, cx: int, cz: int, chunk_blocks, chunk_biomes=None):
         """保存区块方块数组到 Linear V2 区域文件（内容为原版 Chunk NBT）。"""
+        if chunk_biomes is None:
+            previous = self._decoded_cache_get((cx, cz))
+            if previous is not None:
+                chunk_biomes = previous[1]
+        self._decoded_cache_put((cx, cz), chunk_blocks, chunk_biomes)
         self.save_chunk(
             cx,
             cz,
@@ -1108,33 +1248,53 @@ class WorldStorage:
         self._cache.clear()
 
     def _get_playerdata_path(self, player_uuid: str) -> Path:
-        """获取玩家存档路径。"""
+        """玩家存档路径 (原版: playerdata/<uuid>.dat, gzip NBT)。"""
+        return self.playerdata_dir / f"{player_uuid}.dat"
+
+    def _legacy_playerdata_path(self, player_uuid: str) -> Path:
         return self.playerdata_dir / f"{player_uuid}.json"
 
     def load_player_data(self, player_uuid: str) -> dict | None:
-        """加载玩家存档。"""
-        path = self._get_playerdata_path(player_uuid)
-        if not path.exists():
-            return None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                return data
-        except Exception as e:
-            logger.error(f"Failed to load player data ({player_uuid}): {e}")
+        """加载玩家存档: 优先原版 .dat (NBT), 其次旧版 PyMC .json。"""
+        for path in (self._get_playerdata_path(player_uuid),
+                     self.playerdata_dir / f"{player_uuid}.dat_old"):
+            if not path.exists():
+                continue
+            try:
+                with gzip.open(path, "rb") as f:
+                    raw = f.read()
+                from protocol.nbt import decode_nbt
+                from .level_data import _plain
+                root, _ = decode_nbt(raw, 0, with_type=True, with_name=True)
+                return player_nbt_to_state(_plain(root or {}))
+            except Exception as e:
+                logger.error(f"Failed to load player data {path.name}: {e}")
+        legacy = self._legacy_playerdata_path(player_uuid)
+        if legacy.exists():
+            try:
+                with open(legacy, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception as e:
+                logger.error(f"Failed to load player data ({player_uuid}): {e}")
         return None
 
     def save_player_data(self, player_uuid: str, data: dict):
-        """保存玩家存档。"""
+        """保存玩家存档 (原版 NBT 格式, 旧文件保留为 .dat_old)。"""
         path = self._get_playerdata_path(player_uuid)
-        tmp_path = path.with_suffix(".json.tmp")
+        tmp_path = path.with_name(path.name + ".tmp")
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
+            from protocol.nbt import encode_nbt
+            raw = encode_nbt(player_state_to_nbt(data), with_type=True, root_name="")
+            with gzip.open(tmp_path, "wb") as f:
+                f.write(raw)
+            if path.exists():
+                os.replace(path, path.with_name(path.name.replace(".dat", ".dat_old")))
             os.replace(tmp_path, path)
+            legacy = self._legacy_playerdata_path(player_uuid)
+            if legacy.exists():
+                legacy.replace(legacy.with_name(legacy.name + ".bak"))
         except Exception as e:
             logger.error(f"Failed to save player data ({player_uuid}): {e}")
             try:
@@ -1375,3 +1535,188 @@ class WorldStorage:
             preferred_x=spawn_x,
             preferred_z=spawn_z,
         )
+
+
+# ============================================================
+# 玩家存档 <-> 原版 NBT
+# ============================================================
+
+_GAMEMODE_IDS = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
+_GAMEMODE_NAMES = {v: k for k, v in _GAMEMODE_IDS.items()}
+
+
+def _inventory_slot_to_nbt(index: int) -> int | None:
+    """PlayerInventory index -> vanilla Inventory "Slot" byte."""
+    if 0 <= index <= 35:
+        return index
+    if 36 <= index <= 39:          # boots, leggings, chestplate, helmet
+        return 100 + (index - 36)
+    if index == 40:                # offhand
+        return -106
+    return None
+
+
+def _nbt_slot_to_inventory(slot: int) -> int | None:
+    if 0 <= slot <= 35:
+        return slot
+    if 100 <= slot <= 103:
+        return 36 + (slot - 100)
+    if slot == -106:
+        return 40
+    return None
+
+
+def _item_to_nbt(slot: int, entry: dict) -> dict:
+    from protocol.nbt import NbtByte
+    item = {"Slot": NbtByte(slot), "id": str(entry.get("item", "minecraft:air")),
+            "count": int(entry.get("count", 1))}
+    components = {}
+    damage = int(entry.get("damage", 0) or 0)
+    if damage > 0:
+        components["minecraft:damage"] = damage
+    extra = entry.get("nbt") or {}
+    if extra:
+        components["minecraft:custom_data"] = {"pymc": json.dumps(extra, ensure_ascii=False)}
+    if components:
+        item["components"] = components
+    return item
+
+
+def _item_from_nbt(item: dict) -> tuple[int | None, dict]:
+    components = item.get("components") or {}
+    extra = {}
+    custom = components.get("minecraft:custom_data") or {}
+    if isinstance(custom, dict) and "pymc" in custom:
+        try:
+            extra = json.loads(custom["pymc"])
+        except ValueError:
+            extra = {}
+    entry = {"item": item.get("id", "minecraft:air"), "count": int(item.get("count", item.get("Count", 1))),
+             "damage": int(components.get("minecraft:damage", 0) or 0), "nbt": extra}
+    return item.get("Slot"), entry
+
+
+def player_state_to_nbt(data: dict) -> dict:
+    """PyMC player state dict -> vanilla playerdata compound."""
+    from protocol.nbt import NbtByte, NbtDouble, NbtFloat, NbtShort
+    inventory = data.get("inventory") or {}
+    slots = inventory.get("slots", {}) if isinstance(inventory, dict) else {}
+    ender = inventory.get("ender_chest", {}) if isinstance(inventory, dict) else {}
+    inv_list = []
+    for key, entry in slots.items():
+        slot = _inventory_slot_to_nbt(int(key))
+        if slot is not None:
+            inv_list.append(_item_to_nbt(slot, entry))
+    ender_list = [_item_to_nbt(int(k), v) for k, v in ender.items() if 0 <= int(k) < 27]
+    mode = _GAMEMODE_IDS.get(str(data.get("gamemode", "survival")), 0)
+    root = {
+        "DataVersion": 3955,
+        "Pos": [NbtDouble(float(data.get("x", 0.0))), NbtDouble(float(data.get("y", 64.0))),
+                NbtDouble(float(data.get("z", 0.0)))],
+        "Rotation": [NbtFloat(float(data.get("yaw", 0.0))), NbtFloat(float(data.get("pitch", 0.0)))],
+        "Motion": [NbtDouble(0.0), NbtDouble(0.0), NbtDouble(0.0)],
+        "Dimension": "minecraft:overworld",
+        "Health": NbtFloat(float(data.get("health", 20.0))),
+        "foodLevel": int(data.get("food", 20)),
+        "foodSaturationLevel": NbtFloat(float(data.get("saturation", 5.0))),
+        "foodExhaustionLevel": NbtFloat(0.0),
+        "XpLevel": int(data.get("experience_level", 0)),
+        "XpP": NbtFloat(float(data.get("experience_progress", 0.0))),
+        "XpTotal": int(data.get("experience_total", 0)),
+        "Score": int(data.get("experience_total", 0)),
+        "playerGameType": mode,
+        "Air": NbtShort(int(data.get("air_supply", 300))),
+        "Fire": NbtShort(int(data.get("fire_ticks", 0))),
+        "TicksFrozen": int(data.get("freeze_ticks", 0)),
+        "OnGround": NbtByte(1 if data.get("on_ground", True) else 0),
+        "SelectedItemSlot": int(data.get("selected_slot", 0)),
+        "Inventory": inv_list,
+        "EnderItems": ender_list,
+        "abilities": {
+            "flying": NbtByte(1 if data.get("flying") else 0),
+            "mayfly": NbtByte(1 if mode in (1, 3) else 0),
+            "instabuild": NbtByte(1 if mode == 1 else 0),
+            "invulnerable": NbtByte(1 if mode in (1, 3) else 0),
+            "mayBuild": NbtByte(0 if mode in (2, 3) else 1),
+            "flySpeed": NbtFloat(0.05),
+            "walkSpeed": NbtFloat(0.1),
+        },
+        "bukkit": {"lastKnownName": str(data.get("username", ""))},
+    }
+    spawn = data.get("personal_spawn")
+    if isinstance(spawn, (list, tuple)) and len(spawn) == 3:
+        root["SpawnX"], root["SpawnY"], root["SpawnZ"] = (int(v) for v in spawn)
+        root["SpawnDimension"] = "minecraft:overworld"
+        root["SpawnForced"] = NbtByte(1)
+    return root
+
+
+def player_nbt_to_state(root: dict) -> dict:
+    """Vanilla playerdata compound -> PyMC player state dict."""
+    pos = root.get("Pos") or [0.0, 64.0, 0.0]
+    rot = root.get("Rotation") or [0.0, 0.0]
+    slots, ender = {}, {}
+    for item in root.get("Inventory") or []:
+        slot, entry = _item_from_nbt(item)
+        index = _nbt_slot_to_inventory(int(slot)) if slot is not None else None
+        if index is not None:
+            slots[str(index)] = entry
+    for item in root.get("EnderItems") or []:
+        slot, entry = _item_from_nbt(item)
+        if slot is not None and 0 <= int(slot) < 27:
+            ender[str(int(slot))] = entry
+    abilities = root.get("abilities") or {}
+    state = {
+        "username": (root.get("bukkit") or {}).get("lastKnownName", ""),
+        "x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2]),
+        "yaw": float(rot[0]), "pitch": float(rot[1]),
+        "health": float(root.get("Health", 20.0)),
+        "food": int(root.get("foodLevel", 20)),
+        "saturation": float(root.get("foodSaturationLevel", 5.0)),
+        "experience_total": int(root.get("XpTotal", 0)),
+        "experience_level": int(root.get("XpLevel", 0)),
+        "experience_progress": float(root.get("XpP", 0.0)),
+        "gamemode": _GAMEMODE_NAMES.get(int(root.get("playerGameType", 0)), "survival"),
+        "on_ground": bool(root.get("OnGround", 1)),
+        "air_supply": int(root.get("Air", 300)),
+        "fire_ticks": max(0, int(root.get("Fire", 0))),
+        "freeze_ticks": int(root.get("TicksFrozen", 0)),
+        "flying": bool(abilities.get("flying", 0)),
+        "selected_slot": int(root.get("SelectedItemSlot", 0)),
+        "inventory": {"slots": slots, "ender_chest": ender,
+                      "selected_slot": int(root.get("SelectedItemSlot", 0)), "held_slot": 0},
+        "personal_spawn": None,
+    }
+    if all(k in root for k in ("SpawnX", "SpawnY", "SpawnZ")):
+        state["personal_spawn"] = [int(root["SpawnX"]), int(root["SpawnY"]), int(root["SpawnZ"])]
+    return state
+
+
+class LazyChunkBlocks:
+    """
+    Read-only stand-in for a [y][z][x] chunk block array: decodes on first
+    access. Used when the encoded packet for a chunk is cached so callers
+    that never look at the blocks don't pay for decoding them.
+    """
+
+    __slots__ = ("_loader", "_blocks")
+
+    def __init__(self, loader):
+        self._loader = loader
+        self._blocks = None
+
+    def _get(self):
+        if self._blocks is None:
+            blocks = self._loader()
+            self._blocks = blocks if blocks is not None else []
+        return self._blocks
+
+    def __getitem__(self, index):
+        return self._get()[index]
+
+    def __len__(self):
+        return len(self._get())
+
+    def __iter__(self):
+        return iter(self._get())
+

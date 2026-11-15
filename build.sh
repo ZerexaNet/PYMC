@@ -36,7 +36,7 @@ fi
 
 echo "[信息] 正在编译原生地形生成器..."
 mkdir -p native build
-g++ -O3 -std=c++17 -o native/terrain_gen native/terrain_gen.cpp
+g++ -O2 -std=c++17 -ffp-contract=off -pthread -o native/terrain_gen native/terrain_gen.cpp
 
 if [ $? -ne 0 ]; then
     echo "[错误] terrain_gen 编译失败!"
@@ -85,6 +85,8 @@ python3 -m nuitka \
     --include-data-files=native/pymc_native_server=pymc_native_server \
     --include-data-files=native/libpymc_native.so=libpymc_native.so \
     --include-data-files=world/blocks.json=world/blocks.json \
+    --include-data-dir=protocol/data=protocol/data \
+    --include-data-dir=world/data=world/data \
     --follow-imports \
     --assume-yes-for-downloads \
     main.py

@@ -203,110 +203,212 @@ def _is_serverbound_packet(conn: Connection, packet_id: int,
 
 def _player_window_slot_to_inventory(slot: int) -> int | None:
     """Translate protocol window-0 slots to PlayerInventory indices."""
-    if slot == 0:       # crafting output
-        return 45
-    if 1 <= slot <= 4:  # 2x2 crafting input
-        return 40 + slot
-    if 5 <= slot <= 8:  # helmet, chest, legs, boots
-        return 44 - slot
-    if 9 <= slot <= 35:  # main inventory
-        return slot
-    if 36 <= slot <= 44:  # hotbar
-        return slot - 36
-    if slot == 45:      # offhand
-        return 40
-    return None
+    from world.inventory import window_slot_to_inventory
+    return window_slot_to_inventory(slot)
+
+
+_REVERSE_MAPS: dict[int, dict[int, str]] = {}
+
+
+def _serverbound_name(conn: Connection, packet_id: int) -> str | None:
+    """把客户端数据包 ID 解析为逻辑名称 (按连接协商的协议版本)。"""
+    from protocol.packet_map import SERVERBOUND_PACKETS, build_serverbound_reverse_map
+    version = conn.protocol_version
+    if version not in SERVERBOUND_PACKETS:
+        return None
+    reverse = _REVERSE_MAPS.get(version)
+    if reverse is None:
+        reverse = _REVERSE_MAPS[version] = build_serverbound_reverse_map(version)
+    return reverse.get(packet_id)
 
 
 async def handle_play(conn: Connection, packet_id: int, payload: bytes,
                       server):
     """分发 Play 阶段的客户端数据包。"""
-
-    # Handle respawn: if player is dead, only accept confirm_teleportation
-    # In 1.21.1, the client sends Client Status (action=0) to respawn.
-    # We treat any packet while dead as a respawn request.
-    if getattr(conn, '_dead', False):
-        if packet_id == 0x00:  # Confirm Teleportation
-            _handle_confirm_teleportation(conn, payload)
-        else:
-            await _handle_respawn(conn, server)
+    name = _serverbound_name(conn, packet_id)
+    if name is None:
         return
 
-    if _is_serverbound_packet(conn, packet_id, "confirm_teleportation", 0x00):
-        # Confirm Teleportation
-        _handle_confirm_teleportation(conn, payload)
-
-    elif _is_serverbound_packet(conn, packet_id, "chat_command", 0x05):
-        # Chat Command
-        await _handle_chat_command(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "signed_chat_command", 0x06):
-        # Signed Chat Command
-        await _handle_chat_command(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "chat_message", 0x07):
-        # Chat Message (聊天消息)
-        await _handle_chat_message(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "chunk_batch_received", 0x09):
-        # Chunk Batch Received (客户端确认区块批次)
-        pass  # 不需要特殊处理
-
-    elif _is_serverbound_packet(conn, packet_id, "keep_alive", 0x1A):
-        # Keep Alive
+    if name == "keep_alive":
         _handle_keepalive(conn, payload)
+        return
+    if name == "confirm_teleportation":
+        _handle_confirm_teleportation(conn, payload)
+        return
+    if name == "client_command":
+        await _handle_client_command(conn, payload, server)
+        return
+    if name == "client_settings":
+        await _handle_client_settings(conn, payload, server)
+        return
+    if name == "custom_payload":
+        from handlers.configuration import _handle_plugin_message
+        _handle_plugin_message(conn, payload)
+        return
+    if name == "ping_request":
+        from protocol.packet_map import get_clientbound_packet
+        pid = get_clientbound_packet(conn.protocol_version, "ping_response")
+        if pid is not None:
+            await conn.send_packet(pid, payload[:8])
+        return
+    if name in ("chunk_batch_received", "pong", "chat_session_update",
+                "configuration_acknowledged"):
+        return
 
-    elif _is_serverbound_packet(conn, packet_id, "player_position", 0x1C):
-        # Player Position
+    # 死亡后只接受重生请求和聊天/命令; 忽略移动、交互等动作
+    if getattr(conn, '_dead', False) and name not in (
+            "chat_message", "chat_command", "signed_chat_command", "tab_complete"):
+        return
+
+    import time as _time
+    if name not in ("player_on_ground",):
+        conn.last_active = _time.monotonic()
+
+    if name in ("chat_command", "signed_chat_command"):
+        await _handle_chat_command(conn, payload, server)
+    elif name == "chat_message":
+        await _handle_chat_message(conn, payload, server)
+    elif name == "tab_complete":
+        await _handle_tab_complete(conn, payload, server)
+    elif name == "player_position":
         await _handle_player_position(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "player_position_rotation", 0x1D):
-        # Player Position and Rotation
+    elif name == "player_position_rotation":
         await _handle_player_position_rotation(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "player_rotation", 0x1E):
-        # Player Rotation
+    elif name == "player_rotation":
         await _handle_player_rotation(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "player_on_ground", 0x1F):
-        # Player On Ground
+    elif name == "player_on_ground":
         await _handle_player_on_ground(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "block_dig", 0x26):
-        # Block Dig
+    elif name == "block_dig":
         await _handle_block_dig(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "held_item_slot", 0x31):
-        # Held Item Slot
+    elif name == "held_item_slot":
         _handle_held_item_slot(conn, payload)
-
-    elif _is_serverbound_packet(conn, packet_id, "block_place", 0x3A):
-        # Use Item On / Block Place
+        from handlers.play.players import broadcast_player_equipment
+        await broadcast_player_equipment(server, conn)
+    elif name == "block_place":
         await _handle_block_place(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "click_container", 0x0C):
-        # Click Container (window click)
+    elif name == "click_container":
         await _handle_click_container(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "close_container", 0x0D):
-        # Close Container
+        from handlers.play.players import broadcast_player_equipment
+        await broadcast_player_equipment(server, conn)
+    elif name == "close_container":
         _handle_close_container(conn, payload)
-
-    elif _is_serverbound_packet(conn, packet_id, "interact", 0x14):
-        # Interact (Entity): 攻击动作由战斗系统处理
+    elif name == "interact":
         await _handle_interact(conn, payload, server)
-
-    elif _is_serverbound_packet(conn, packet_id, "set_creative_mode_slot", 0x22):
-        # Set Creative Mode Slot
+    elif name == "set_creative_mode_slot":
         await _handle_creative_inventory_action(conn, payload, server)
+        from handlers.play.players import broadcast_player_equipment
+        await broadcast_player_equipment(server, conn)
+    elif name == "entity_action":
+        await _handle_entity_action(conn, payload, server)
+    elif name == "arm_animation":
+        await _handle_arm_animation(conn, payload, server)
+    elif name == "player_abilities":
+        _handle_player_abilities(conn, payload)
+    elif name == "use_item":
+        pass  # TODO: item use in air (eating, bows, ...)
 
-    elif _is_serverbound_packet(conn, packet_id, "use_item", 0x29):
-        # Use Item (right-click air)
-        pass  # TODO: item use in air
 
+async def _handle_client_command(conn: Connection, payload: bytes, server):
+    """Client Command: 0 = Perform Respawn, 1 = Request Stats。"""
+    from protocol.data_types import read_varint, write_varint
+    action, _ = read_varint(payload, 0)
+    if action == 0:
+        if getattr(conn, '_dead', False):
+            await _handle_respawn(conn, server)
+    elif action == 1:
+        from protocol.packet_map import get_clientbound_packet
+        pid = get_clientbound_packet(conn.protocol_version, "statistics")
+        if pid is not None:
+            await conn.send_packet(pid, write_varint(0))
+
+
+async def _handle_client_settings(conn: Connection, payload: bytes, server):
+    """游戏内修改设置 (视距/皮肤层/主手): 重新同步给其他玩家。"""
+    from handlers.configuration import parse_client_information
+    old_parts = conn.skin_parts
+    parse_client_information(conn, payload)
+    if conn.skin_parts != old_parts:
+        from handlers.play.players import broadcast_player_metadata
+        await broadcast_player_metadata(server, conn)
+
+
+async def _handle_tab_complete(conn: Connection, payload: bytes, server):
+    """Command Suggestions Request -> Command Suggestions Response。"""
+    from protocol.data_types import read_varint, read_string, write_varint, write_string, write_boolean
+    from protocol.packet_map import get_clientbound_packet
+    transaction_id, offset = read_varint(payload, 0)
+    text, _ = read_string(payload, offset)
+    manager = getattr(server, "command_manager", None)
+    pid = get_clientbound_packet(conn.protocol_version, "tab_complete")
+    if manager is None or pid is None:
+        return
+
+    body = text[1:] if text.startswith("/") else text
+    try:
+        suggestions = manager.get_suggestions(conn, body) or []
+    except Exception as e:
+        logger.debug(f"命令补全失败 ({text!r}): {e}")
+        suggestions = []
+
+    # 被替换的范围: 最后一个参数 (命令名补全时为整个命令名)
+    last_space = text.rfind(" ")
+    start = last_space + 1 if last_space >= 0 else (1 if text.startswith("/") else 0)
+    prefix = text[start:].lower()
+    cleaned = []
+    for suggestion in suggestions:
+        suggestion = str(suggestion)
+        if last_space < 0:
+            suggestion = suggestion.lstrip("/")
+        if suggestion and suggestion.lower().startswith(prefix) and suggestion not in cleaned:
+            cleaned.append(suggestion)
+    cleaned.sort()
+
+    out = bytearray()
+    out.extend(write_varint(transaction_id))
+    out.extend(write_varint(start))
+    out.extend(write_varint(len(text) - start))
+    out.extend(write_varint(len(cleaned)))
+    for suggestion in cleaned:
+        out.extend(write_string(suggestion))
+        out.extend(write_boolean(False))  # no tooltip
+    await conn.send_packet(pid, bytes(out))
+
+
+async def _handle_entity_action(conn: Connection, payload: bytes, server):
+    """Player Command: 潜行/疾跑状态变化, 同步给其他玩家。"""
+    from protocol.data_types import read_varint
+    _entity_id, offset = read_varint(payload, 0)
+    action, offset = read_varint(payload, offset)
+    if action == 0:
+        conn.sneaking = True
+    elif action == 1:
+        conn.sneaking = False
+    elif action == 3:
+        conn.sprinting = True
+    elif action == 4:
+        conn.sprinting = False
     else:
-        # 忽略未处理的数据包
-        pass
+        return
+    from handlers.play.players import broadcast_player_metadata
+    await broadcast_player_metadata(server, conn)
+
+
+async def _handle_arm_animation(conn: Connection, payload: bytes, server):
+    """Swing Arm: 把挥手动画转发给其他玩家。"""
+    from protocol.data_types import read_varint
+    hand, _ = read_varint(payload, 0) if payload else (0, 0)
+    from handlers.play.players import broadcast_player_animation
+    await broadcast_player_animation(server, conn, 0 if hand == 0 else 3)
+
+
+def _handle_player_abilities(conn: Connection, payload: bytes):
+    """Player Abilities (serverbound): 仅允许有飞行能力的模式切换飞行。"""
+    if not payload:
+        return
+    flying = bool(payload[0] & 0x02)
+    conn.flying = flying and conn.gamemode in ("creative", "spectator")
+    if conn.flying:
+        conn.fall_start_y = conn.y
 
 
 async def _handle_click_container(conn: Connection, payload: bytes, server):
@@ -339,55 +441,9 @@ def _handle_close_container(conn: Connection, payload: bytes):
 
 
 async def _handle_respawn(conn: Connection, server):
-    """Handle player respawn after death."""
-    from protocol.data_types import (
-        write_varint, write_long, write_byte, write_ubyte,
-        write_boolean, write_identifier,
-    )
-    from handlers.play.join import (
-        _send_synchronize_position, _send_update_health,
-        _send_set_experience, _send_time_update,
-    )
-    from handlers.play.spawn import _resolve_player_respawn_location
-    from handlers.play.chat import send_system_message
-    from protocol.packet_map import get_clientbound_packet
-
-    respawn_x, respawn_y, respawn_z = _resolve_player_respawn_location(conn, server)
-    conn.x = float(respawn_x) + 0.5
-    conn.y = float(respawn_y)
-    conn.z = float(respawn_z) + 0.5
-    conn.fall_start_y = conn.y
-    conn.health = 20.0
-    conn.food = 20
-    conn.saturation = 5.0
-    conn.air_supply = 300
-    conn.fire_ticks = 0
-    conn.freeze_ticks = 0
-    conn.damage_cooldown_ticks = 0
-    conn.last_damage_reason = ""
-    conn._dead = False
-
-    # Send Respawn packet (client needs this to exit death screen)
-    respawn_pid = get_clientbound_packet(conn.protocol_version, "respawn")
-    if respawn_pid is not None:
-        payload = bytearray()
-        payload.extend(write_varint(0))  # Dimension type (overworld)
-        payload.extend(write_identifier("minecraft:overworld"))
-        payload.extend(write_long(0))  # Hashed seed
-        gamemode_map = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
-        payload.extend(write_ubyte(gamemode_map.get(conn.gamemode, 1)))
-        payload.extend(write_byte(-1))  # Previous gamemode
-        payload.extend(write_boolean(False))  # Is debug
-        payload.extend(write_boolean(False))  # Is flat
-        payload.extend(write_boolean(False))  # Has death location
-        payload.extend(write_varint(0))  # Portal cooldown
-        await conn.send_packet(respawn_pid, bytes(payload))
-
-    await _send_synchronize_position(conn)
-    await _send_update_health(conn)
-    await _send_set_experience(conn)
-    await _send_time_update(conn, server)
-    await send_system_message(conn, "[PyMC] 你已重生")
+    """Handle player respawn after death (Client Command: Perform Respawn)."""
+    from handlers.play.join import respawn_player
+    await respawn_player(conn, server)
 
 
 async def _handle_creative_inventory_action(conn: Connection, payload: bytes, server):
@@ -400,7 +456,7 @@ async def _handle_creative_inventory_action(conn: Connection, payload: bytes, se
 
     offset = 0
     slot_idx, offset = read_short(payload, offset)
-    clicked_item = decode_slot_entry(payload, offset)
+    clicked_item, offset = decode_slot_entry(payload, offset)
 
     inv = getattr(conn, 'inventory_obj', None)
     if inv is None:

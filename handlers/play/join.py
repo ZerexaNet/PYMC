@@ -65,79 +65,68 @@ from handlers.play.chat import (
 logger = logging.getLogger("PyMC.游戏")
 
 
+def _restore_player_state(conn: Connection, server, player_state: dict | None):
+    """把存档中的玩家状态恢复到连接对象上 (在发送 Login 包之前调用)。"""
+    from handlers.play.state import normalize_gamemode
+    default_mode = normalize_gamemode(server.config.get("gamemode", "survival"))
+    force_mode = bool(server.config.get("force-gamemode", False))
+
+    if player_state:
+        conn.yaw = float(player_state.get("yaw", conn.yaw))
+        conn.pitch = float(player_state.get("pitch", conn.pitch))
+        conn.health = float(player_state.get("health", conn.health))
+        conn.food = int(player_state.get("food", conn.food))
+        conn.saturation = float(player_state.get("saturation", conn.saturation))
+        conn.experience_total = int(player_state.get("experience_total", conn.experience_total))
+        conn.experience_level = int(player_state.get("experience_level", conn.experience_level))
+        conn.experience_progress = float(player_state.get("experience_progress", conn.experience_progress))
+        conn.gamemode = normalize_gamemode(player_state.get("gamemode"), default_mode)
+        conn.on_ground = bool(player_state.get("on_ground", True))
+        conn.air_supply = int(player_state.get("air_supply", 300))
+        conn.fire_ticks = int(player_state.get("fire_ticks", 0))
+        conn.freeze_ticks = int(player_state.get("freeze_ticks", 0))
+        conn.flying = bool(player_state.get("flying", False))
+        slot = int(player_state.get("selected_slot", 0))
+        conn.selected_hotbar_slot = slot if 0 <= slot < 9 else 0
+        personal_spawn = player_state.get("personal_spawn")
+        conn.personal_spawn = None
+        if isinstance(personal_spawn, (list, tuple)) and len(personal_spawn) == 3:
+            try:
+                conn.personal_spawn = tuple(int(v) for v in personal_spawn)
+            except (TypeError, ValueError):
+                conn.personal_spawn = None
+        if conn.health <= 0:
+            # 死亡状态下退出的玩家: 重新进入时在出生点满血复活
+            conn.health, conn.food, conn.saturation = 20.0, 20, 5.0
+            player_state.pop("x", None)
+    else:
+        conn.gamemode = default_mode
+        conn.personal_spawn = None
+
+    if force_mode:
+        conn.gamemode = default_mode
+    if conn.gamemode not in ("creative", "spectator"):
+        conn.flying = False
+
+
 async def send_join_game(conn: Connection, server):
     """
-    发送 Login (Join Game) 数据包及相关初始化数据包。
-    这是玩家进入 Play 阶段后收到的第一个数据包。
-    使用版本处理器来发送正确的格式。
+    玩家进入 Play 阶段后的完整进服流程，数据包顺序与原版服务端一致:
+
+      Login -> Difficulty -> Abilities -> Held Slot -> Op Level -> Commands
+      -> 区块中心/视距 -> 出生点区块 -> Spawn Position -> 位置同步
+      -> 生命/经验/时间/天气/物品栏 -> Player Info -> 加入消息 -> 实体
     """
-    logger.info(f"正在发送游戏数据给 {conn.username} (版本 {conn.mc_version}, 协议 {conn.protocol_version})...")
     load_start = time.time()
     server._initialize_terrain_generator()
-
-    terrain = server.terrain_generator
     use_native = getattr(server, '_use_native_terrain', False)
+    native_path = conn.protocol_version >= 767
 
-    # --- 1. Login (Join Game) 数据包 ---
-    # Use version handler for version-specific Join Game format
-    if conn.version_handler is not None:
-        await conn.version_handler.send_join_game(conn, server)
-    else:
-        await _send_login_play(conn, server)
-
-    # --- 2. 发送游戏事件: 等待区块 ---
-    if conn.version_handler is not None:
-        await conn.version_handler.send_game_event(conn, 13, 0.0)
-    else:
-        await _send_game_event(conn, 13, 0.0)
-
-    # --- 3. 设置区块中心 ---
-    center_cx = int(server.spawn_position[0]) >> 4
-    center_cz = int(server.spawn_position[2]) >> 4
-    conn.chunk_center = (center_cx, center_cz)
-    if conn.version_handler is not None:
-        await conn.version_handler.send_set_center_chunk(conn, center_cx, center_cz)
-        await conn.version_handler.send_set_chunk_cache_radius(conn, server.view_distance)
-    else:
-        await _send_center_chunk(conn, center_cx, center_cz)
-        await conn.send_packet(0x62, write_varint(server.view_distance))  # set_chunk_cache_radius (simulation_distance) — was 0x55 (wrong)
-
-    view_distance = server.view_distance
-    chunk_coords = _sorted_chunk_coords(center_cx, center_cz, view_distance)
-    immediate_radius = min(server.join_immediate_radius, view_distance)
-    immediate_count = (immediate_radius * 2 + 1) ** 2
-    immediate_coords = chunk_coords[:immediate_count]
-    deferred_coords = chunk_coords[immediate_count:]
-
-    # 在线程池中预生成所有区块数据 (避免阻塞事件循环)
-    loop = asyncio.get_event_loop()
-    logger.info(f"正在准备 {len(chunk_coords)} 个区块 (视距={view_distance}, "
-                f"引擎={'C++' if use_native else 'Python'})...")
-    gen_start = time.time()
-
-    def _generate_chunks(coords):
-        """在工作线程中批量准备区块数据。"""
-        results, loaded, generated = server.generate_chunk_results(coords)
-        if loaded > 0:
-            logger.info(f"从存档加载 {loaded} 个区块")
-        if generated > 0:
-            logger.info(f"新生成 {generated} 个区块")
-        return results
-
-    immediate_results = await loop.run_in_executor(None, _generate_chunks, immediate_coords)
-    gen_elapsed = time.time() - gen_start
-    logger.info(f"出生点附近区块已准备完成: {len(immediate_results)} 个, 耗时 {gen_elapsed:.1f}s")
-
-    await _send_chunk_batch(conn, immediate_results)
-    conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in immediate_results)
-
-    # Scan loaded chunks for redstone components
-    if server.redstone_engine:
-        for cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks in immediate_results:
-            server.redstone_engine.scan_chunk(cx, cz, chunk_blocks)
-
-    # --- 5. 恢复玩家存档位置，必要时回退到安全出生点 ---
+    # --- 0. 读取玩家存档 (Login 包需要正确的游戏模式) ---
     player_state = server.world_storage.load_player_data(str(conn.uuid))
+    first_join = player_state is None
+    _restore_player_state(conn, server, player_state)
+
     from world.inventory import PlayerInventory, initialize_player_inventory
     inventory_data = player_state.get("inventory") if player_state else None
     if isinstance(inventory_data, list):
@@ -149,60 +138,91 @@ async def send_join_game(conn: Connection, server):
     else:
         initialize_player_inventory(conn)
     conn.inventory_state_id = 0
+
+    # --- 1. Login (Join Game) 数据包 ---
+    if conn.version_handler is not None:
+        await conn.version_handler.send_join_game(conn, server)
+    else:
+        await _send_login_play(conn, server)
+
+    if native_path:
+        from handlers.play.state import (
+            send_abilities, send_difficulty, send_held_slot, send_op_level,
+        )
+        await send_difficulty(conn, server)
+        await send_abilities(conn)
+        await send_held_slot(conn)
+        await send_op_level(conn, server)
+        from commands.brigadier import send_commands
+        await send_commands(conn, server)
+
+    # --- 2. 解析出生位置 (存档位置不安全时回退到安全出生点) ---
     target_x, target_y, target_z = _resolve_initial_player_location(
         server, player_state
     )
-    await _send_spawn_position(conn, *server.spawn_position)
-
-    # --- 6. 同步玩家位置 ---
-    conn.x = float(target_x) + 0.5
-    conn.y = float(target_y)
-    conn.z = float(target_z) + 0.5
-    if player_state:
-        conn.yaw = float(player_state.get("yaw", conn.yaw))
-        conn.pitch = float(player_state.get("pitch", conn.pitch))
-        conn.health = float(player_state.get("health", conn.health))
-        conn.food = int(player_state.get("food", conn.food))
-        conn.saturation = float(player_state.get("saturation", conn.saturation))
-        conn.experience_total = int(player_state.get("experience_total", conn.experience_total))
-        conn.experience_level = int(player_state.get("experience_level", conn.experience_level))
-        conn.experience_progress = float(player_state.get("experience_progress", conn.experience_progress))
-        conn.gamemode = str(player_state.get("gamemode", server.config.get("gamemode", "creative")))
-        conn.on_ground = bool(player_state.get("on_ground", True))
-        conn.air_supply = int(player_state.get("air_supply", 300))
-        conn.fire_ticks = int(player_state.get("fire_ticks", 0))
-        conn.freeze_ticks = int(player_state.get("freeze_ticks", 0))
-        personal_spawn = player_state.get("personal_spawn")
-        if (
-            isinstance(personal_spawn, (list, tuple))
-            and len(personal_spawn) == 3
-        ):
-            try:
-                conn.personal_spawn = (
-                    int(personal_spawn[0]),
-                    int(personal_spawn[1]),
-                    int(personal_spawn[2]),
-                )
-            except (TypeError, ValueError):
-                conn.personal_spawn = None
+    if player_state and all(k in player_state for k in ("x", "y", "z")):
+        # 保留方块内的小数坐标, 仅当安全位置与存档方块一致时
+        px, py, pz = (float(player_state["x"]), float(player_state["y"]),
+                      float(player_state["z"]))
+        if (math.floor(px), math.floor(pz)) == (int(target_x), int(target_z)) \
+                and abs(py - float(target_y)) < 1.0:
+            conn.x, conn.y, conn.z = px, py, pz
         else:
-            conn.personal_spawn = None
+            conn.x, conn.y, conn.z = float(target_x) + 0.5, float(target_y), float(target_z) + 0.5
     else:
-        conn.gamemode = server.config.get("gamemode", "creative")
-        conn.personal_spawn = None
+        conn.x, conn.y, conn.z = float(target_x) + 0.5, float(target_y), float(target_z) + 0.5
     conn.fall_start_y = conn.y
 
-    # Use version handler for version-specific position/health/experience/time sync
+    # --- 3. 等待区块 + 区块中心 ---
+    if conn.version_handler is not None:
+        await conn.version_handler.send_game_event(conn, 13, 0.0)
+    else:
+        await _send_game_event(conn, 13, 0.0)
+
+    center_cx = math.floor(conn.x) >> 4
+    center_cz = math.floor(conn.z) >> 4
+    conn.chunk_center = (center_cx, center_cz)
+    view_distance = effective_view_distance(conn, server)
+    if conn.version_handler is not None:
+        await conn.version_handler.send_set_center_chunk(conn, center_cx, center_cz)
+    else:
+        await _send_center_chunk(conn, center_cx, center_cz)
+
+    chunk_coords = _sorted_chunk_coords(center_cx, center_cz, view_distance)
+    immediate_radius = min(server.join_immediate_radius, view_distance)
+    immediate_count = (immediate_radius * 2 + 1) ** 2
+    immediate_coords = chunk_coords[:immediate_count]
+    deferred_coords = chunk_coords[immediate_count:]
+
+    # 在线程池中准备区块数据 (避免阻塞事件循环)
+    loop = asyncio.get_event_loop()
+    logger.debug(f"正在为 {conn.username} 准备 {len(chunk_coords)} 个区块 (视距={view_distance}, "
+                 f"引擎={'C++' if use_native else 'Python'})...")
+
+    def _generate_chunks(coords):
+        return server.generate_chunk_results(coords)[0]
+
+    immediate_results = await loop.run_in_executor(None, _generate_chunks, immediate_coords)
+    await _send_chunk_batch(conn, immediate_results)
+    conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in immediate_results)
+
+    # Scan loaded chunks for redstone components
+    if server.redstone_engine:
+        for cx, cz, motion_blocking, world_surface, chunk_data, chunk_blocks in immediate_results:
+            server.redstone_engine.scan_chunk(cx, cz, chunk_blocks)
+
+    # --- 4. 出生点 + 位置同步 ---
+    await _send_spawn_position(conn, *server.spawn_position)
+
     if conn.version_handler is not None:
         await conn.version_handler.send_synchronize_position(conn)
         await conn.version_handler.send_update_health(conn)
         await conn.version_handler.send_set_experience(conn)
-        await conn.version_handler.send_update_time(conn, server.world_time)
     else:
         await _send_synchronize_position(conn)
         await _send_update_health(conn)
         await _send_set_experience(conn)
-        await _send_time_update(conn, server)
+    await _send_time_update(conn, server)
 
     # 同步当前天气状态 (晴天时为空操作)
     from handlers.play.weather import send_weather_state
@@ -211,37 +231,77 @@ async def send_join_game(conn: Connection, server):
     from world.inventory import send_inventory_sync
     await send_inventory_sync(conn)
 
-    # --- 7. Tab list header/footer ---
-    import json as _json
-    from protocol.packet_map import get_clientbound_packet
-    tab_header = _json.dumps({"text": "\u00a7bPyMC Server"}, ensure_ascii=False)
-    tab_footer = _json.dumps({"text": "\u00a77Welcome to PyMC!"}, ensure_ascii=False)
-    tab_pid = get_clientbound_packet(conn.protocol_version, "playerlist_header")
-    if tab_pid is not None:
-        tab_payload = bytearray()
-        tab_payload.extend(write_string(tab_header))
-        tab_payload.extend(write_string(tab_footer))
-        await conn.send_packet(tab_pid, bytes(tab_payload))
+    if native_path:
+        from handlers.play.state import send_ticking_state
+        await send_ticking_state(conn)
 
-    # --- 8. 通知其他玩家 ---
+    # --- 5. Tab 列表页眉/页脚 (可选, 由 server.properties 配置) ---
+    await send_tab_header_footer(conn, server)
+
+    # --- 6. 通知其他玩家 + 加入消息 ---
+    conn.joined = True
+    conn.last_active = time.monotonic()
     await _broadcast_player_join(conn, server)
     await _send_visible_entities_to_player(conn, server)
+
+    from protocol.text import translate, player_name
+    logging.getLogger("minecraft.server").info(
+        f"{conn.username}[/{conn.address}] logged in with entity id {conn.entity_id} "
+        f"at ({conn.x:.1f}, {conn.y:.1f}, {conn.z:.1f})"
+    )
+    server.broadcast_system_message(
+        translate("multiplayer.player.joined", player_name(conn), color="yellow"),
+        log=True,
+    )
+    usercache = getattr(server, "usercache", None)
+    if usercache is not None:
+        usercache.record(conn.username, conn.uuid)
 
     # Plugin hook: fire PlayerJoinEvent
     from mods.bridge import hook_player_join
     hook_player_join(server, conn)
 
-    load_elapsed = time.time() - load_start
-    logger.info(f"加载完成，用时 {load_elapsed:.1f}s")
-    logger.info(
-        f"玩家 {conn.username} 已成功加入游戏 "
-        f"(位置: {int(conn.x)}, {int(conn.y)}, {int(conn.z)})"
-    )
+    logger.debug(f"{conn.username} 进服流程完成, 用时 {time.time() - load_start:.2f}s"
+                 f"{' (首次进入)' if first_join else ''}")
 
     if deferred_coords:
         asyncio.create_task(_send_deferred_chunks(
             conn, server, deferred_coords, len(chunk_coords)
         ))
+
+
+def effective_view_distance(conn: Connection, server) -> int:
+    """服务端视距与客户端请求视距取较小值 (原版行为)。"""
+    view_distance = int(server.view_distance)
+    client = int(getattr(conn, "client_view_distance", 0) or 0)
+    if client >= 2:
+        view_distance = min(view_distance, client)
+    return max(2, view_distance)
+
+
+async def send_tab_header_footer(conn: Connection, server):
+    """发送 Tab 列表页眉/页脚; 未配置时不发送 (原版默认没有)。"""
+    header = str(server.config.get("tab-list-header", "") or "")
+    footer = str(server.config.get("tab-list-footer", "") or "")
+    if not header and not footer:
+        return
+    from protocol.packet_map import get_clientbound_packet
+    from protocol.text import encode_component
+    tab_pid = get_clientbound_packet(conn.protocol_version, "playerlist_header")
+    if tab_pid is None:
+        return
+    payload = (encode_component(header, conn.protocol_version)
+               + encode_component(footer, conn.protocol_version))
+    await conn.send_packet(tab_pid, payload)
+
+
+def hashed_seed(server) -> int:
+    """SHA-256(seed) 的前 8 字节 (客户端用于生物群系噪声), 与原版一致。"""
+    import hashlib
+    from network.server import parse_vanilla_seed
+    seed = parse_vanilla_seed(server.config.get("level-seed", 0))
+    digest = hashlib.sha256(struct.pack(">q", seed)).digest()
+    return struct.unpack(">q", digest[:8])[0]
 
 
 async def _send_login_play(conn: Connection, server):
@@ -255,7 +315,7 @@ async def _send_login_play(conn: Connection, server):
     payload.extend(write_int(conn.entity_id))
 
     # Is Hardcore (Boolean)
-    payload.extend(write_boolean(False))
+    payload.extend(write_boolean(bool(server.config.get("hardcore", False))))
 
     # Dimension Count + Dimension Names (VarInt + Array of Identifier)
     dimension_names = [
@@ -274,16 +334,16 @@ async def _send_login_play(conn: Connection, server):
     payload.extend(write_varint(server.view_distance))
 
     # Simulation Distance (VarInt)
-    payload.extend(write_varint(server.view_distance))
+    payload.extend(write_varint(int(getattr(server, "simulation_distance", server.view_distance))))
 
     # Reduced Debug Info (Boolean)
-    payload.extend(write_boolean(False))
+    payload.extend(write_boolean(bool(server.gamerules.get("reducedDebugInfo", False))))
 
     # Enable Respawn Screen (Boolean)
-    payload.extend(write_boolean(True))
+    payload.extend(write_boolean(not server.gamerules.get("doImmediateRespawn", False)))
 
     # Do Limited Crafting (Boolean)
-    payload.extend(write_boolean(False))
+    payload.extend(write_boolean(bool(server.gamerules.get("doLimitedCrafting", False))))
 
     # Dimension Type (VarInt - 注册表索引)
     payload.extend(write_varint(0))  # 0 = overworld
@@ -292,11 +352,11 @@ async def _send_login_play(conn: Connection, server):
     payload.extend(write_identifier("minecraft:overworld"))
 
     # Hashed Seed (Long)
-    payload.extend(write_long(0))
+    payload.extend(write_long(hashed_seed(server)))
 
     # Game Mode (Unsigned Byte) - 0=生存, 1=创造, 2=冒险, 3=旁观
     gamemode_map = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
-    payload.extend(write_ubyte(gamemode_map.get(server.config.get("gamemode", "creative"), 1)))
+    payload.extend(write_ubyte(gamemode_map.get(conn.gamemode, 0)))
 
     # Previous Game Mode (Byte) - -1 表示无
     payload.extend(write_byte(-1))
@@ -440,46 +500,315 @@ async def _send_collect_entity(
     await conn.send_packet(0x6F, bytes(payload))
 
 
+def world_time_fields(server) -> tuple[int, int]:
+    """
+    (世界总刻数, 昼夜时间) —— Update Time 数据包的两个字段。
+    doDaylightCycle=false 时昼夜时间取负值, 客户端据此停止本地推进太阳。
+    """
+    manager = getattr(server, "_time_manager", None)
+    if manager is None:
+        value = int(getattr(server, "world_time", 0))
+        return value, value
+    day_time = int(manager.day_time_total)
+    if not server.gamerules.get("doDaylightCycle", True):
+        day_time = -day_time if day_time > 0 else -1
+    return int(manager.age), day_time
+
+
 async def _send_time_update(conn: Connection, server):
     """发送世界时间。"""
+    age, day_time = world_time_fields(server)
     if conn.version_handler is not None:
-        await conn.version_handler.send_update_time(conn, server.world_time)
+        await conn.version_handler.send_update_time(conn, age, day_time)
         return
 
     payload = bytearray()
-    payload.extend(write_long(int(server.world_time)))
-    payload.extend(write_long(int(server.world_time)))
+    payload.extend(write_long(age))
+    payload.extend(write_long(day_time))
     await conn.send_packet(0x64, bytes(payload))
 
 
+# 伤害原因 -> (原版 damage_type, 死亡消息翻译键)
+DAMAGE_SOURCES = {
+    "摔落": ("minecraft:fall", "death.attack.fall"),
+    "虚空": ("minecraft:out_of_world", "death.attack.outOfWorld"),
+    "窒息": ("minecraft:in_wall", "death.attack.inWall"),
+    "溺水": ("minecraft:drown", "death.attack.drown"),
+    "岩浆": ("minecraft:lava", "death.attack.lava"),
+    "火焰": ("minecraft:in_fire", "death.attack.inFire"),
+    "燃烧": ("minecraft:on_fire", "death.attack.onFire"),
+    "高温地面": ("minecraft:hot_floor", "death.attack.hotFloor"),
+    "仙人掌": ("minecraft:cactus", "death.attack.cactus"),
+    "甜浆果丛": ("minecraft:sweet_berry_bush", "death.attack.sweetBerryBush"),
+    "冰冻": ("minecraft:freeze", "death.attack.freeze"),
+    "饥饿": ("minecraft:starve", "death.attack.starve"),
+    "闪电": ("minecraft:lightning_bolt", "death.attack.lightningBolt"),
+    "爆炸": ("minecraft:explosion", "death.attack.explosion"),
+    "魔法": ("minecraft:magic", "death.attack.magic"),
+    "kill": ("minecraft:generic_kill", "death.attack.genericKill"),
+    "generic": ("minecraft:generic", "death.attack.generic"),
+}
+
+# 原版 damage_type 名称 (/damage 命令) 也可直接作为原因传入
+for _key, _msg in (
+    ("fall", "fall"), ("out_of_world", "outOfWorld"), ("in_wall", "inWall"),
+    ("drown", "drown"), ("lava", "lava"), ("in_fire", "inFire"), ("on_fire", "onFire"),
+    ("hot_floor", "hotFloor"), ("cactus", "cactus"), ("sweet_berry_bush", "sweetBerryBush"),
+    ("freeze", "freeze"), ("starve", "starve"), ("lightning_bolt", "lightningBolt"),
+    ("explosion", "explosion"), ("magic", "magic"), ("generic_kill", "genericKill"),
+    ("generic", "generic"), ("wither", "wither"), ("cramming", "cramming"),
+    ("fly_into_wall", "flyIntoWall"), ("dragon_breath", "dragonBreath"),
+    ("dry_out", "dryout"), ("stalagmite", "stalagmite"), ("thorns", "thorns"),
+):
+    DAMAGE_SOURCES.setdefault(_key, (f"minecraft:{_key}", f"death.attack.{_msg}"))
+    DAMAGE_SOURCES.setdefault(f"minecraft:{_key}", (f"minecraft:{_key}", f"death.attack.{_msg}"))
+
+
+def resolve_damage_source(conn: Connection, reason: str):
+    """
+    把内部伤害原因解析为 (damage_type, 死亡消息组件)。
+
+    支持: 环境原因 (见 DAMAGE_SOURCES)、生物类型名 ("zombie")、
+    远程生物 ("skeleton的箭") 以及玩家攻击 ("player:<名字>")。
+    """
+    from protocol.gamedata import entity_type_ids
+    from protocol.text import translate, player_name
+    victim = player_name(conn)
+    reason = str(reason or "generic")
+
+    if reason in DAMAGE_SOURCES:
+        damage_type, key = DAMAGE_SOURCES[reason]
+        return damage_type, translate(key, victim)
+    if reason.startswith("player:"):
+        return "minecraft:player_attack", translate(
+            "death.attack.player", victim, {"text": reason[7:]})
+    ranged = reason.endswith("的箭")
+    mob = reason[:-2] if ranged else reason
+    mob = mob.split(":")[-1]
+    if f"minecraft:{mob}" in entity_type_ids():
+        mob_component = {"translate": f"entity.minecraft.{mob}"}
+        if ranged:
+            return "minecraft:arrow", translate("death.attack.arrow", victim, mob_component)
+        return "minecraft:mob_attack", translate("death.attack.mob", victim, mob_component)
+    return "minecraft:generic", translate("death.attack.generic", victim)
+
+
+async def _broadcast_damage_event(conn: Connection, server, damage_type: str):
+    """Damage Event + 受伤音效: 客户端据此播放受伤动画 (屏幕泛红/实体变红)。"""
+    from protocol.gamedata import registry_index
+    from protocol.packet_map import get_clientbound_packet
+    type_id = registry_index("minecraft:damage_type").get(damage_type, 0)
+    payload = bytearray()
+    payload.extend(write_varint(conn.entity_id))
+    payload.extend(write_varint(type_id))
+    payload.extend(write_varint(0))       # source cause id + 1 (0 = none)
+    payload.extend(write_varint(0))       # source direct id + 1 (0 = none)
+    payload.extend(write_boolean(False))  # has source position
+    data = bytes(payload)
+    for other in server.get_online_players():
+        if other.protocol_version < 767:
+            continue
+        if other is not conn and conn.entity_id not in other.tracked_players:
+            continue
+        pid = get_clientbound_packet(other.protocol_version, "damage_event")
+        if pid is not None:
+            await other.send_packet(pid, data)
+
+
 async def _damage_player(conn: Connection, amount: float, reason: str, server):
-    """对玩家造成基础伤害。死亡时回到出生点。"""
+    """对玩家造成伤害; 生命值归零时进入死亡流程 (死亡界面 + 死亡消息)。"""
     if not conn.alive or conn.gamemode in {"creative", "spectator"}:
+        return
+    if getattr(conn, "_dead", False) or amount <= 0:
         return
     if conn.damage_cooldown_ticks > 0 and conn.last_damage_reason == reason:
         return
+    gamerules = server.gamerules
+    if reason == "摔落" and not gamerules.get("fallDamage", True):
+        return
+    if reason in ("火焰", "燃烧", "岩浆", "高温地面") and not gamerules.get("fireDamage", True):
+        return
+    if reason == "溺水" and not gamerules.get("drowningDamage", True):
+        return
+    if reason == "冰冻" and not gamerules.get("freezeDamage", True):
+        return
+
+    damage_type, death_message = resolve_damage_source(conn, reason)
 
     conn.health = max(0.0, conn.health - amount)
     conn.damage_cooldown_ticks = 10
     conn.last_damage_reason = reason
     await _send_update_health(conn)
+    await _broadcast_damage_event(conn, server, damage_type)
 
     if conn.health > 0:
-        await send_system_message(conn, f"[PyMC] 你受到了 {amount:.1f} 点{reason}伤害")
         return
+    await _kill_player(conn, server, death_message)
 
-    # Send death screen with message
-    import json as _json
+
+async def _kill_player(conn: Connection, server, death_message):
+    """玩家死亡: 掉落物品/经验、显示死亡界面、广播死亡消息。"""
     from protocol.packet_map import get_clientbound_packet as _gcp
-    death_msg = _json.dumps({"text": f"你被 {reason} 杀死了"}, ensure_ascii=False)
-    dp = bytearray()
-    dp.extend(write_varint(conn.entity_id))
-    dp.extend(write_varint(0))
-    dp.extend(write_string(death_msg))
-    dpid = _gcp(conn.protocol_version, "death_combat_event")
-    if dpid is not None:
-        await conn.send_packet(dpid, bytes(dp))
+    from protocol.text import encode_component
+
+    conn.health = 0.0
     conn._dead = True
+    conn.fire_ticks = 0
+
+    if not server.gamerules.get("keepInventory", False):
+        await _drop_player_inventory(conn, server)
+
+    pid = _gcp(conn.protocol_version, "death_combat_event")
+    if pid is not None:
+        payload = bytearray()
+        payload.extend(write_varint(conn.entity_id))
+        payload.extend(encode_component(death_message, conn.protocol_version))
+        await conn.send_packet(pid, bytes(payload))
+
+    # Entity Event 3 = 死亡动画 (其他玩家看到倒地)
+    status_pid = _gcp(conn.protocol_version, "entity_status")
+    for other in server.get_online_players():
+        if other is conn or conn.entity_id not in other.tracked_players:
+            continue
+        opid = _gcp(other.protocol_version, "entity_status")
+        if opid is not None:
+            await other.send_packet(opid, write_int(conn.entity_id) + write_byte(3))
+
+    from protocol.text import plain_text
+    if server.gamerules.get("showDeathMessages", True):
+        server.broadcast_system_message(death_message, log=True)
+    else:
+        logging.getLogger("minecraft.server").info(plain_text(death_message))
+
+    from plugins.bridge import hook_player_death
+    hook_player_death(server, conn, plain_text(death_message))
+
+    if server.gamerules.get("doImmediateRespawn", False):
+        await respawn_player(conn, server)
+
+
+async def _drop_player_inventory(conn: Connection, server):
+    """死亡时掉落全部物品和部分经验 (keepInventory=false)。"""
+    inventory = getattr(conn, "inventory_obj", None)
+    if inventory is not None:
+        import random
+        for index, stack in enumerate(list(inventory.slots)):
+            if stack is None or stack.is_empty:
+                continue
+            item = server.entity_manager.create_item(
+                conn.x + random.uniform(-0.5, 0.5), conn.y + 0.5,
+                conn.z + random.uniform(-0.5, 0.5), stack.item_id, stack.count)
+            item.pickup_delay = 40
+            inventory.slots[index] = None
+        inventory.carried_item = None
+        conn.inventory_state_id += 1
+        from world.inventory import send_inventory_sync
+        await send_inventory_sync(conn)
+
+    dropped_xp = min(100, conn.experience_level * 7)
+    if dropped_xp > 0:
+        server.entity_manager.create_experience_orb(conn.x, conn.y + 0.5, conn.z, dropped_xp)
+    conn.experience_total = 0
+    conn.experience_level = 0
+    conn.experience_progress = 0.0
+
+
+async def respawn_player(conn: Connection, server):
+    """
+    玩家点击 "重生" 后的完整重生流程。
+
+    客户端收到 Respawn 后会重建世界 (丢弃所有区块和实体), 因此需要重新发送
+    区块、位置、生命值、物品栏以及周围的实体。
+    """
+    from handlers.play.spawn import _resolve_player_respawn_location
+    from handlers.play.state import send_abilities, send_held_slot
+    from protocol.packet_map import get_clientbound_packet
+
+    # The safe-spot search may have to load/generate chunks: keep it off the event loop.
+    respawn_x, respawn_y, respawn_z = await asyncio.get_event_loop().run_in_executor(
+        None, _resolve_player_respawn_location, conn, server)
+    conn.x = float(respawn_x) + 0.5
+    conn.y = float(respawn_y)
+    conn.z = float(respawn_z) + 0.5
+    conn.fall_start_y = conn.y
+    conn.on_ground = True
+    conn.health = 20.0
+    conn.food = 20
+    conn.saturation = 5.0
+    conn.air_supply = 300
+    conn.fire_ticks = 0
+    conn.freeze_ticks = 0
+    conn.damage_cooldown_ticks = 60   # 重生保护
+    conn.last_damage_reason = ""
+    conn._dead = False
+
+    respawn_pid = get_clientbound_packet(conn.protocol_version, "respawn")
+    if respawn_pid is not None:
+        gamemode_map = {"survival": 0, "creative": 1, "adventure": 2, "spectator": 3}
+        payload = bytearray()
+        payload.extend(write_varint(0))  # Dimension type (overworld)
+        payload.extend(write_identifier("minecraft:overworld"))
+        payload.extend(write_long(hashed_seed(server)))
+        payload.extend(write_ubyte(gamemode_map.get(conn.gamemode, 0)))
+        payload.extend(write_byte(-1))        # Previous gamemode
+        payload.extend(write_boolean(False))  # Is debug
+        payload.extend(write_boolean(False))  # Is flat
+        payload.extend(write_boolean(False))  # Has death location
+        payload.extend(write_varint(0))       # Portal cooldown
+        payload.extend(write_byte(0))         # Data kept (0 = nothing)
+        await conn.send_packet(respawn_pid, bytes(payload))
+
+    # 客户端世界已重建: 重新发送区块与实体
+    conn.loaded_chunks.clear()
+    conn.tracked_entities.clear()
+    conn.tracked_players.clear()
+
+    await send_abilities(conn)
+    await send_held_slot(conn)
+    await _send_spawn_position(conn, *server.spawn_position)
+    await _send_game_event(conn, 13, 0.0)
+
+    # Like vanilla: position and health right away, chunks stream in after
+    # (the client holds the player on the "loading terrain" screen meanwhile).
+    await _send_synchronize_position(conn)
+    await _send_update_health(conn)
+    await _send_set_experience(conn)
+
+    center_cx = math.floor(conn.x) >> 4
+    center_cz = math.floor(conn.z) >> 4
+    conn.chunk_center = (center_cx, center_cz)
+    await _send_center_chunk(conn, center_cx, center_cz)
+    view_distance = effective_view_distance(conn, server)
+    chunk_coords = _sorted_chunk_coords(center_cx, center_cz, view_distance)
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(
+        None, lambda: server.generate_chunk_results(chunk_coords)[0])
+    from handlers.play.chunks import _send_chunk_results_streamed
+    await _send_chunk_results_streamed(conn, results)
+    conn.loaded_chunks.update((cx, cz) for cx, cz, *_ in results)
+    await _send_time_update(conn, server)
+    from handlers.play.weather import send_weather_state
+    await send_weather_state(conn, server)
+    from world.inventory import send_inventory_sync
+    await send_inventory_sync(conn)
+
+    # 其他玩家: 移除旧实体后重新生成
+    from handlers.play.players import send_player_spawn, remove_player_entity
+    remove_pid_payload = write_varint(1) + write_varint(conn.entity_id)
+    for other in server.get_online_players():
+        if other is conn:
+            continue
+        if conn.entity_id in other.tracked_players:
+            rpid = get_clientbound_packet(other.protocol_version, "remove_entities")
+            if rpid is not None:
+                await other.send_packet(rpid, remove_pid_payload)
+            await remove_player_entity(other, conn.entity_id)
+        await send_player_spawn(other, conn)
+        await send_player_spawn(conn, other)
+    await _send_visible_entities_to_player(conn, server)
+
+    from plugins.bridge import hook_player_respawn
+    hook_player_respawn(server, conn)
 
 
 async def _update_player_motion_state(conn: Connection, new_y: float, new_on_ground: bool, server):

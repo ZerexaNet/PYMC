@@ -754,7 +754,7 @@ class ContainerManager:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
-            logger.info(f"已保存 {len(self.containers)} 个方块容器到 {path}")
+            logger.debug(f"已保存 {len(self.containers)} 个方块容器到 {path}")
         except Exception as e:
             logger.error(f"Failed to save container data: {e}")
             try:
@@ -772,7 +772,7 @@ class ContainerManager:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if self.deserialize(data):
-                logger.info(f"已加载 {len(self.containers)} 个方块容器 (来自 {path})")
+                logger.debug(f"已加载 {len(self.containers)} 个方块容器 (来自 {path})")
                 return True
         except Exception as e:
             logger.error(f"Failed to load container data: {e}")
@@ -877,7 +877,7 @@ class ChestBehavior(BlockBehavior):
         conn._open_container_pos = (x, y, z)
         conn._open_container_type = 'block'
 
-        await send_open_container(conn, window_id, "minecraft:generic_9x3", "Chest")
+        await send_open_container(conn, window_id, "minecraft:generic_9x3", {"translate": "container.chest"})
 
         # Send container contents: 27 chest slots + 36 player inventory slots
         all_slots = list(container.items) + [None] * (27 - len(container.items))
@@ -909,7 +909,7 @@ class CraftingTableBehavior(BlockBehavior):
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
 
-        await send_open_container(conn, window_id, "minecraft:crafting", "Crafting Table")
+        await send_open_container(conn, window_id, "minecraft:crafting", {"translate": "container.crafting"})
         return True
 
     @staticmethod
@@ -931,7 +931,7 @@ class FurnaceBehavior(BlockBehavior):
         conn._open_container_pos = (x, y, z)
         conn._open_container_type = 'block'
 
-        await send_open_container(conn, window_id, "minecraft:furnace", "Furnace")
+        await send_open_container(conn, window_id, "minecraft:furnace", {"translate": "container.furnace"})
 
         # Send furnace contents: 3 furnace slots + 36 player inventory slots
         all_slots = list(container.items) + [None] * (3 - len(container.items))
@@ -966,7 +966,7 @@ class BlastFurnaceBehavior(BlockBehavior):
         conn._open_container_pos = (x, y, z)
         conn._open_container_type = 'block'
 
-        await send_open_container(conn, window_id, "minecraft:blast_furnace", "Blast Furnace")
+        await send_open_container(conn, window_id, "minecraft:blast_furnace", {"translate": "container.blast_furnace"})
 
         all_slots = list(container.items) + [None] * (3 - len(container.items))
         inv = getattr(conn, 'inventory_obj', None)
@@ -996,7 +996,7 @@ class AnvilBehavior(BlockBehavior):
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
 
-        await send_open_container(conn, window_id, "minecraft:anvil", "Anvil")
+        await send_open_container(conn, window_id, "minecraft:anvil", {"translate": "container.repair"})
         return True
 
     @staticmethod
@@ -1015,7 +1015,7 @@ class EnchantingTableBehavior(BlockBehavior):
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
 
-        await send_open_container(conn, window_id, "minecraft:enchanting_table", "Enchanting Table")
+        await send_open_container(conn, window_id, "minecraft:enchantment", {"translate": "container.enchant"})
         return True
 
     @staticmethod
@@ -1040,7 +1040,7 @@ class EnderChestBehavior(BlockBehavior):
         conn._open_container_pos = (x, y, z)
         conn._open_container_type = 'ender_chest'
 
-        await send_open_container(conn, window_id, "minecraft:generic_9x3", "Ender Chest")
+        await send_open_container(conn, window_id, "minecraft:generic_9x3", {"translate": "container.enderchest"})
 
         # Send ender chest contents
         all_slots = list(inv.ender_chest) + [None] * (27 - len(inv.ender_chest))

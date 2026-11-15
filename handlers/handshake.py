@@ -40,7 +40,7 @@ async def handle_handshake(conn: Connection, packet_id: int, payload: bytes):
     conn.protocol_version = protocol_version
     conn.mc_version = get_version_name(protocol_version)
 
-    logger.info(f"握手: 协议版本={protocol_version} ({conn.mc_version}), "
+    logger.debug(f"握手: 协议版本={protocol_version} ({conn.mc_version}), "
                 f"地址={server_address}:{server_port}, "
                 f"下一状态={next_state}")
 
@@ -66,5 +66,5 @@ def _setup_version_handler(conn: Connection):
     from handlers.versioned import get_version_handler
     conn.version_handler = get_version_handler(conn.protocol_version)
     handler_name = conn.version_handler.__class__.__name__
-    logger.info(f"已为 {conn.mc_version} (协议 {conn.protocol_version}) "
+    logger.debug(f"已为 {conn.mc_version} (协议 {conn.protocol_version}) "
                 f"加载版本处理器: {handler_name}")

@@ -62,7 +62,11 @@ async def _send_experience_orb_spawn(conn: Connection, entity):
 
 
 async def _send_generic_entity_spawn(conn: Connection, entity):
-    entity_type_id = ENTITY_TYPE_IDS.get(entity.metadata.get("mob_type", entity.kind))
+    type_name = entity.metadata.get("mob_type", entity.kind)
+    entity_type_id = ENTITY_TYPE_IDS.get(type_name)
+    if entity_type_id is None:
+        from protocol.gamedata import entity_type_ids
+        entity_type_id = entity_type_ids().get(f"minecraft:{str(type_name).split(':')[-1]}")
     if entity_type_id is None:
         return
 
@@ -82,29 +86,23 @@ async def _send_generic_entity_spawn(conn: Connection, entity):
     payload.extend(write_short(_encode_entity_velocity_component(entity.vz)))
     await conn.send_packet(0x01, bytes(payload))
 
-    # Send entity metadata (health bar for mobs)
-    if entity.kind == "mob":
+    # 生物不带自定义名称 (与原版一致): 客户端按实体类型显示本地化名称。
+    # 物品实体需要 metadata index 8 (Slot) 才能渲染出具体物品。
+    if entity.kind == "item":
+        from world.inventory import ItemStack, encode_slot_entry
+        from protocol.packet_map import get_clientbound_packet
+        stack = ItemStack(
+            entity.metadata.get("item_name", "minecraft:stone"),
+            max(1, int(entity.metadata.get("count", 1))),
+        )
         meta = bytearray()
         meta.extend(write_varint(entity.entity_id))
-        # Index 0: Entity flags (Byte)
-        meta.extend(write_ubyte(0))   # index
-        meta.extend(write_varint(0))  # type = Byte
-        meta.extend(write_ubyte(0))   # flags = 0
-        # Index 2: Custom name (Optional<ChatComponent>)
-        import json as _json
-        mob_name = entity.metadata.get("mob_type", "mob")
-        display_name = {"translate": f"entity.minecraft.{mob_name}"}
-        meta.extend(write_ubyte(2))   # index
-        meta.extend(write_varint(5))  # type = Optional<ChatComponent>
-        meta.extend(write_boolean(True))  # has custom name
-        meta.extend(write_string(_json.dumps(display_name)))
-        # Index 3: Custom name visible (Boolean)
-        meta.extend(write_ubyte(3))   # index
-        meta.extend(write_varint(7))  # type = Boolean
-        meta.extend(write_boolean(False))
-        # Terminator
+        meta.extend(write_ubyte(8))   # index 8: item stack
+        meta.extend(write_varint(7))  # type 7 = Slot
+        meta.extend(encode_slot_entry(stack))
         meta.extend(write_ubyte(0xFF))
-        await conn.send_packet(0x58, bytes(meta))
+        pid = get_clientbound_packet(conn.protocol_version, "entity_metadata") or 0x58
+        await conn.send_packet(pid, bytes(meta))
 
 
 def build_entity_teleport_payload(entity) -> bytes:
@@ -148,6 +146,8 @@ async def _send_entity_remove(conn: Connection, entity_ids: list[int]):
 
 async def _send_visible_entities_to_player(conn: Connection, server):
     for entity in server.entity_manager.list_entities():
+        if entity.entity_id in conn.tracked_entities:
+            continue
         if not _entity_within_tracking_range(entity, conn, server.view_distance):
             continue
         if entity.kind == "orb":
@@ -160,12 +160,14 @@ async def _send_visible_entities_to_player(conn: Connection, server):
 
 async def broadcast_entity_spawn(server, entity):
     for conn in server.get_online_players():
+        if entity.entity_id in conn.tracked_entities:
+            continue
         if not _entity_within_tracking_range(entity, conn, server.view_distance):
             continue
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob"}:
+        elif entity.kind in {"item", "mob", "lightning_bolt"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 

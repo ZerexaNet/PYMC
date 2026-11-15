@@ -28,7 +28,9 @@ import struct
 import array
 import logging
 import subprocess
+import threading
 import time
+import functools
 from pathlib import Path
 
 from ._native_binary import is_runnable_native_binary
@@ -56,17 +58,43 @@ SINGLE_RESPONSE_HEADER_FORMAT = '<I'
 BATCH_RESPONSE_HEADER_FORMAT = '<I'
 
 
-def _find_native_binary() -> str | None:
-    """查找跨平台 terrain_gen 可执行文件路径。
+WORLDGEN_VERSION_PREFIX = "pymc-worldgen 2"
 
-    查找顺序:
-      1. 本地源码树 / build 目录 / 工作目录中已有的 terrain_gen(.exe)
-      2. 如果本地没有，自动从 GitHub Release 下载最新版
 
-    所有候选项都通过 is_runnable_native_binary() 验证 magic bytes
-    和架构匹配，避免在 Linux 上选到 .exe 或在 Windows 上选到 ELF。
-    """
-    # Pick binary name based on current OS
+def _worldgen_data_path() -> str | None:
+    """Locate world/data/worldgen_overworld.json (source tree or packaged)."""
+    candidates = [
+        Path(__file__).resolve().parent / "data" / "worldgen_overworld.json",
+        Path(sys.argv[0]).resolve().parent / "world" / "data" / "worldgen_overworld.json",
+        Path.cwd() / "world" / "data" / "worldgen_overworld.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def native_binary_version(path: str | Path) -> str | None:
+    """Return the generator's ``--version`` string, or None for old/broken binaries."""
+    try:
+        result = subprocess.run(
+            [str(path), "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = result.stdout.decode("utf-8", errors="replace").strip()
+    return text if text.startswith(WORLDGEN_VERSION_PREFIX) else None
+
+
+def _is_current_binary(path: Path) -> bool:
+    try:
+        return is_runnable_native_binary(path) and native_binary_version(path) is not None
+    except Exception:
+        return False
+
+
+def _candidate_binaries() -> list[Path]:
     if os.name == "nt":
         binary_names = ["terrain_gen.exe", "terrain_gen"]
     else:
@@ -82,84 +110,55 @@ def _find_native_binary() -> str | None:
         else None,
         Path(sys.executable).resolve().parent,
     ]
-
-    search_roots: list[Path] = []
+    seen: set[Path] = set()
+    candidates: list[Path] = []
     for root in base_roots:
         if root is None:
             continue
-        current = root
-        for _ in range(4):
-            if current not in search_roots:
-                search_roots.append(current)
-            parent = current.parent
-            if parent == current:
-                break
-            current = parent
-
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-
-    for root in search_roots:
-        # Prefer source-tree artifacts first, then CMake install/build trees.
-        for relative in (
-            "native",
-            "build/stage/native",
-            "build/stage",
-            "build",
-            ".",
-        ):
-            base = root / relative
+        for relative in ("native", "build/stage/native", "build/stage", "build", "build/native", "."):
             for name in binary_names:
-                candidate = (base / name).resolve()
+                candidate = (root / relative / name).resolve()
                 if candidate not in seen:
                     seen.add(candidate)
                     candidates.append(candidate)
+    from ._native_build import build_cache_dir
+    for name in binary_names:
+        candidate = build_cache_dir() / name
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+    return candidates
 
-        # 兼容 standalone / onefile 等不同打包布局，在根目录附近再做一次浅层扫描。
-        for name in binary_names:
-            direct = root / name
-            if direct not in seen:
-                seen.add(direct)
-                candidates.append(direct)
-        try:
-            for pattern in ("terrain_gen*", "native/terrain_gen*"):
-                for candidate in root.glob(pattern):
-                    resolved = candidate.resolve()
-                    if resolved not in seen:
-                        seen.add(resolved)
-                        candidates.append(resolved)
-                for candidate in root.glob(f"*/{pattern}"):
-                    resolved = candidate.resolve()
-                    if resolved not in seen:
-                        seen.add(resolved)
-                        candidates.append(resolved)
-                for candidate in root.glob(f"*/*/{pattern}"):
-                    resolved = candidate.resolve()
-                    if resolved not in seen:
-                        seen.add(resolved)
-                        candidates.append(resolved)
-        except Exception:
-            pass
 
-    for path in candidates:
-        if is_runnable_native_binary(path):
+def _find_native_binary() -> str | None:
+    """
+    Find a terrain_gen binary that speaks the current protocol.
+
+    Order: existing binaries (source tree, build dirs, packaged layout) whose
+    ``--version`` matches -> compile native/terrain_gen.cpp with a local C++
+    compiler -> download from GitHub Releases (accepted only if the version
+    matches). Older binaries are ignored: they produce a different world.
+    """
+    stale = []
+    for path in _candidate_binaries():
+        if not path.exists():
+            continue
+        if _is_current_binary(path):
             return str(path)
+        stale.append(path)
+    if stale:
+        logger.info(f"Ignoring outdated terrain_gen binaries: {', '.join(str(p) for p in stale[:3])}")
 
-    # 本地未找到可用二进制 — 尝试从 GitHub Release 自动下载
-    logger.info(
-        "本地未找到可用的 terrain_gen 二进制，尝试从 GitHub Release 自动下载..."
-    )
+    from ._native_build import build_native_generator
+    built = build_native_generator()
+    if built and _is_current_binary(Path(built)):
+        return built
+
     downloaded = ensure_native_binary("terrain_gen")
+    if downloaded and _is_current_binary(Path(downloaded)):
+        return downloaded
     if downloaded:
-        # 下载后再次验证 magic
-        try:
-            if is_runnable_native_binary(Path(downloaded)):
-                return downloaded
-            logger.warning(
-                f"下载的 {downloaded} 未通过 magic 校验，将使用纯 Python 回退"
-            )
-        except Exception as e:
-            logger.warning(f"校验下载的二进制失败: {e}")
+        logger.info("The terrain_gen release on GitHub is outdated; not using it")
     return None
 
 
@@ -216,6 +215,15 @@ def _decode_binary_biomes(data: bytes) -> list[list[int]] | None:
     return sections
 
 
+def _serialized(method):
+    """Run one request/response exchange at a time (the pipe is shared by threads)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class NativeTerrainGenerator:
     """
     使用 C++ 子进程的高性能地形生成器。
@@ -228,20 +236,21 @@ class NativeTerrainGenerator:
 
     def __init__(self, seed: int, binary_path: str | None = None, worker_count: int | None = None):
         self.seed = seed
+        self._lock = threading.RLock()
         self._process: subprocess.Popen | None = None
         self._binary_path = binary_path or _find_native_binary()
         self.worker_count = max(1, int(worker_count or (os.cpu_count() or 1)))
         self._redownload_attempted = False
 
         if self._binary_path:
-            logger.info(f"找到原生地形生成器: {self._binary_path}")
+            logger.debug(f"找到原生地形生成器: {self._binary_path}")
             self._start_process()
-            # 启动后如果立即崩溃，可能是本地二进制版本不对（如缺 DLL），
-            # 尝试从 GitHub Release 重新下载最新版替换
-            if not self.available and not self._redownload_attempted:
-                self._try_redownload_after_crash()
         else:
-            logger.warning("未找到 terrain_gen 原生生成器，将使用纯 Python 回退")
+            logger.warning(
+                "No native terrain generator available: build it with "
+                "'g++ -O2 -std=c++17 -ffp-contract=off -pthread -o native/terrain_gen native/terrain_gen.cpp' "
+                "(or install a C++ compiler and restart) to get vanilla terrain"
+            )
 
     def _try_redownload_after_crash(self) -> None:
         """子进程启动崩溃后，自动从 GitHub Release 重新下载二进制。"""
@@ -283,8 +292,12 @@ class NativeTerrainGenerator:
             return
 
         try:
+            command = [self._binary_path, "--threads", str(self.worker_count)]
+            data_path = _worldgen_data_path()
+            if data_path:
+                command += ["--data", data_path]
             self._process = subprocess.Popen(
-                [self._binary_path, "--threads", str(self.worker_count)],
+                command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -306,7 +319,7 @@ class NativeTerrainGenerator:
                 )
                 self._process = None
                 return
-            logger.info(f"原生地形生成器子进程已启动 (PID: {self._process.pid})")
+            logger.debug(f"原生地形生成器子进程已启动 (PID: {self._process.pid})")
         except Exception as e:
             logger.error(f"启动原生地形生成器失败: {e}")
             self._process = None
@@ -423,6 +436,7 @@ class NativeTerrainGenerator:
             ))
         return chunks
 
+    @_serialized
     def generate_chunk(self, chunk_x: int, chunk_z: int) -> list[list[list[int]]]:
         """
         通过 C++ 子进程生成区块数据。
@@ -452,6 +466,7 @@ class NativeTerrainGenerator:
             self._start_process()
             raise
 
+    @_serialized
     def generate_chunk_with_heightmap(self, chunk_x: int, chunk_z: int):
         """
         生成区块数据和高度图。
@@ -482,6 +497,7 @@ class NativeTerrainGenerator:
             self._start_process()
             raise
 
+    @_serialized
     def generate_chunk_with_metadata(self, chunk_x: int, chunk_z: int):
         """生成区块、地形高度图和原生 biome section ids。"""
         if not self.available:
@@ -504,6 +520,7 @@ class NativeTerrainGenerator:
             self._start_process()
             raise
 
+    @_serialized
     def generate_chunks_with_heightmaps(self, chunk_coords: list[tuple[int, int]]):
         """
         批量生成多个区块数据和高度图。
@@ -533,6 +550,7 @@ class NativeTerrainGenerator:
             self._start_process()
             raise
 
+    @_serialized
     def generate_chunks_with_metadata(self, chunk_coords: list[tuple[int, int]]):
         """批量生成区块、地形高度图和 biome section ids。"""
         if not chunk_coords:
@@ -560,6 +578,26 @@ class NativeTerrainGenerator:
             self.shutdown()
             self._start_process()
             raise
+
+    @_serialized
+    def find_spawn(self) -> tuple[int, int] | None:
+        """
+        Vanilla Climate.findSpawnPosition: the column near the origin whose
+        climate best matches the noise settings' spawn targets (land, not ocean).
+        """
+        if not self.available:
+            self._start_process()
+            if not self.available:
+                return None
+        try:
+            self._process.stdin.write(b"S" + struct.pack("<q", self.seed))
+            self._process.stdin.flush()
+            x, z = struct.unpack("<ii", self._read_exact(8))
+            return x, z
+        except Exception as e:
+            logger.error(self._diagnose_crash(f"spawn search failed: {e}"))
+            self.shutdown()
+            return None
 
     def get_terrain_height(self, world_x: int, world_z: int) -> int:
         """
@@ -595,7 +633,7 @@ class NativeTerrainGenerator:
                     except Exception:
                         pass
             self._process = None
-            logger.info("原生地形生成器子进程已关闭")
+            logger.debug("原生地形生成器子进程已关闭")
 
     def __del__(self):
         self.shutdown()

@@ -157,29 +157,14 @@ class CommandManager:
         # Step 2: Resolve command (check per-command aliases, then global aliases)
         command = self.get_command(cmd_name)
 
-        if command is None:
-            # Check if it's in the unrecognized set
-            if cmd_name in RECOGNIZED_BUT_UNSUPPORTED:
-                if sender is not None:
-                    from handlers.play.chat import send_system_message
-                    await send_system_message(sender, f"[PyMC] 已识别原版指令 /{cmd_name}，但当前 PyMC 尚未实现其所需游戏系统")
-                else:
-                    logger.info(f"[PyMC] 已识别原版指令 /{cmd_name}，但当前 PyMC 尚未实现其所需游戏系统")
-                return FAILURE
-
-            if sender is not None:
-                from handlers.play.chat import send_system_message
-                await send_system_message(sender, f"[PyMC] 未知命令: /{cmd_name}")
-            else:
-                logger.info(f"[PyMC] 未知命令: /{cmd_name}")
-            return FAILURE
-
-        # Step 3: Check permission
-        if command.permission and sender is not None:
-            if not self.server.permissions.has_permission(sender.username, command.permission):
-                from handlers.play.chat import send_system_message
-                await send_system_message(sender, f"[PyMC] 你没有权限执行该命令: /{cmd_name}")
-                return ERROR  # -1 for no permission
+        # Step 3: unknown command or missing permission -> the same vanilla
+        # error (players never learn which commands exist but are locked).
+        allowed = command is not None and (
+            not command.permission or sender is None
+            or self.server.permissions.has_permission(sender.username, command.permission))
+        if not allowed:
+            await self._send_unknown_command(sender, command_string)
+            return FAILURE if command is None else ERROR
 
         # Step 4: Parse arguments
         arguments = {}
@@ -190,12 +175,7 @@ class CommandManager:
                     tokens, command.arguments, start_index=1
                 )
             except ValueError as e:
-                from handlers.play.chat import send_system_message
-                msg = f"[PyMC] 参数错误: {e}"
-                if sender is not None:
-                    await send_system_message(sender, msg)
-                else:
-                    logger.info(msg)
+                await self._send_message(sender, {"text": str(e), "color": "red"})
                 return FAILURE
         else:
             remaining_tokens = tokens[1:]
@@ -218,6 +198,28 @@ class CommandManager:
 
         # Step 6: Execute and return result
         return await command.run(context)
+
+    async def _send_message(self, sender, message):
+        if sender is not None:
+            from handlers.play.chat import send_system_message
+            await send_system_message(sender, message)
+        else:
+            from commands.framework import console_output
+            console_output(message)
+
+    async def _send_unknown_command(self, sender, command_string: str):
+        """Vanilla two-line error: message + the input with ``<--[HERE]``."""
+        await self._send_message(sender, {"translate": "command.unknown.command", "color": "red"})
+        shown = command_string if len(command_string) <= 10 else "..." + command_string[-10:]
+        await self._send_message(sender, {
+            "text": "",
+            "color": "gray",
+            "extra": [
+                {"text": shown, "color": "red", "underlined": True,
+                 "clickEvent": {"action": "suggest_command", "value": "/" + command_string}},
+                {"translate": "command.context.here", "color": "red", "italic": True},
+            ],
+        })
 
     def get_suggestions(self, sender, input_string: str) -> list[str]:
         """Get tab-completion suggestions for a partial command input."""

@@ -139,81 +139,23 @@ def _spawn_candidate_from_column(chunk_blocks, local_x: int, local_z: int):
 
 def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, int, int]:
     """
-    在出生点附近选择一个更安全、更平坦的落脚点。
-    优先选择草地/泥土/沙地等自然地表，并要求头顶有足够空间。
+    The nearest column around (x, z) where a player can stand safely
+    (used when a saved position is no longer valid).
     """
-    search_radius = 8
-    preferred_blocks = {
-        GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL, MOSS_BLOCK,
-        SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY,
-    }
-    chunk_cache: dict[tuple[int, int], list[list[list[int]]] | None] = {}
-
-    def _column_top(world_x: int, world_z: int):
-        chunk_x = int(world_x) >> 4
-        chunk_z = int(world_z) >> 4
-        chunk_blocks = _load_or_generate_spawn_chunk(server, chunk_x, chunk_z, chunk_cache)
-        if chunk_blocks is None:
-            return None
-
-        local_x = int(world_x) & 15
-        local_z = int(world_z) & 15
-        return _spawn_candidate_from_column(chunk_blocks, local_x, local_z)
-
-    def _surface_slope(world_x: int, world_z: int) -> int:
-        center = _column_top(world_x, world_z)
-        if center is None:
-            return 999
-        deltas = []
-        for dx, dz in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            neighbor = _column_top(world_x + dx, world_z + dz)
-            if neighbor is None:
-                continue
-            deltas.append(abs(center["world_y"] - neighbor["world_y"]))
-        return max(deltas) if deltas else 0
-
-    best_choice = None
-    best_score = None
-    fallback_choice = None
-    fallback_score = None
-    fallback_y = int(server.spawn_position[1])
-
-    for dz in range(-search_radius, search_radius + 1):
-        for dx in range(-search_radius, search_radius + 1):
-            world_x = int(block_x) + dx
-            world_z = int(block_z) + dz
-            column = _column_top(world_x, world_z)
-            if column is None:
-                continue
-
-            if dx == 0 and dz == 0:
-                fallback_y = column["spawn_y"]
-
-            slope = _surface_slope(world_x, world_z)
-            distance = abs(dx) + abs(dz)
-            score = distance * 6 + slope * 10
-            if column["world_y"] < 62:
-                score += 20
-
-            if fallback_score is None or score < fallback_score:
-                fallback_score = score
-                fallback_choice = (world_x, column["spawn_y"], world_z)
-
-            if column["block_id"] not in preferred_blocks:
-                continue
-
-            if column["block_id"] in preferred_blocks:
-                score -= 40
-
-            if best_score is None or score < best_score:
-                best_score = score
-                best_choice = (world_x, column["spawn_y"], world_z)
-
-    if best_choice is not None:
-        return best_choice
-    if fallback_choice is not None:
-        return fallback_choice
-    return int(block_x), fallback_y, int(block_z)
+    cache: dict = {}
+    pos = overworld_respawn_pos(server, int(block_x), int(block_z), cache)
+    if pos is not None:
+        return pos
+    for radius in range(1, 17):
+        for dx in range(-radius, radius + 1):
+            for dz in (-radius, radius) if abs(dx) != radius else range(-radius, radius + 1):
+                pos = overworld_respawn_pos(server, int(block_x) + dx, int(block_z) + dz, cache)
+                if pos is not None:
+                    return pos
+    pos = _search_safe_nearby(server, int(block_x), int(block_z), 256, cache)
+    if pos is not None:
+        return pos
+    return int(block_x), int(server.spawn_position[1]), int(block_z)
 
 
 def _get_spawn_check_block(
@@ -233,9 +175,41 @@ def _get_spawn_check_block(
     return int(chunk_blocks[int(world_y) + 64][int(world_z) & 15][int(world_x) & 15])
 
 
+_SUFFOCATING_STATES: frozenset[int] | None = None
+
+
+def _suffocating_states() -> frozenset[int]:
+    """
+    会让玩家窒息的方块状态: 完整的不透光实心方块 (石头、泥土、木板...)。
+    台阶、楼梯、树叶、玻璃、花草、火把、箱子等都不会 (与原版一致)。
+    数据来自 world/blocks.json 的 boundingBox / filterLight。
+    """
+    global _SUFFOCATING_STATES
+    if _SUFFOCATING_STATES is None:
+        import json
+        from world.chunk_io import _find_blocks_json
+        states: set[int] = set()
+        try:
+            with open(_find_blocks_json(), "r", encoding="utf-8") as f:
+                for block in json.load(f):
+                    if (block.get("boundingBox") == "block"
+                            and int(block.get("filterLight", 0)) >= 15
+                            and not block.get("transparent", False)):
+                        states.update(range(block["minStateId"], block["maxStateId"] + 1))
+        except Exception:
+            states = set()
+        _SUFFOCATING_STATES = frozenset(states)
+    return _SUFFOCATING_STATES
+
+
 def _is_suffocating_block(block_id: int | None) -> bool:
-    """是否为会造成窒息的实体方块。"""
-    return block_id is not None and block_id not in PASSABLE_BLOCKS
+    """是否为会造成窒息的完整实心方块。"""
+    if block_id is None:
+        return False
+    states = _suffocating_states()
+    if states:
+        return block_id in states
+    return block_id not in PASSABLE_BLOCKS
 
 
 def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -> bool:
@@ -251,31 +225,247 @@ def _is_safe_player_location(server, world_x: int, world_y: int, world_z: int) -
     return _is_spawn_ground_block(below_block)
 
 
+# ------------------------------------------------------------------
+# Vanilla spawn logic (PlayerRespawnLogic / MinecraftServer.setInitialSpawn)
+# ------------------------------------------------------------------
+
+def _block_tables():
+    """(fluid ids, full-top-face ids, hazard ids, non-blocking ids) from blocks.json."""
+    global _TABLES
+    try:
+        return _TABLES
+    except NameError:
+        pass
+    import json
+    from world.chunk_io import _find_blocks_json
+    fluids, full, hazards, passable, leaves = set(), set(), set(), set(), set()
+    partial_names = ("_slab", "_stairs", "carpet", "pressure_plate", "_wall", "fence", "_pane", "bars",
+                     "snow", "cactus", "farmland", "dirt_path", "soul_sand", "honey_block", "bed",
+                     "chest", "lantern", "cake", "candle", "head", "skull", "pot", "anvil", "hopper",
+                     "cauldron", "lectern", "enchanting", "brewing", "dripstone", "amethyst_cluster",
+                     "bud", "scaffolding", "door", "trapdoor", "chain", "rod", "rail", "button", "lever",
+                     "torch", "sign", "banner", "campfire", "composter", "stonecutter", "grindstone",
+                     "bell", "conduit", "sea_pickle", "turtle_egg", "sniffer_egg", "frogspawn")
+    hazard_names = ("lava", "fire", "magma_block", "campfire", "cactus", "sweet_berry_bush",
+                    "powder_snow", "wither_rose", "pointed_dripstone")
+    with open(_find_blocks_json(), "r", encoding="utf-8") as f:
+        for block in json.load(f):
+            name = block["name"]
+            ids = range(block["minStateId"], block["maxStateId"] + 1)
+            if name in ("water", "lava", "bubble_column"):
+                fluids.update(ids)
+            if any(h in name for h in hazard_names):
+                hazards.update(ids)
+            if block.get("boundingBox") == "block" and not any(p in name for p in partial_names):
+                full.update(ids)
+            if block.get("boundingBox") == "empty" or name in ("snow",):
+                passable.update(ids)
+            if name.endswith("_leaves"):
+                leaves.update(ids)
+    fluids_f, full_f, hazards_f, passable_f = map(frozenset, (fluids, full, hazards, passable))
+    _TABLES = (fluids_f, full_f, hazards_f, passable_f, frozenset(leaves))
+    return _TABLES
+
+
+def _column_block(chunk_blocks, x: int, y: int, z: int) -> int:
+    if y < -64 or y > 319:
+        return AIR
+    return int(chunk_blocks[y + 64][z & 15][x & 15])
+
+
+def overworld_respawn_pos(server, x: int, z: int, chunk_cache: dict | None = None,
+                          allow_tree_tops: bool = False):
+    """
+    PlayerRespawnLogic.getOverworldRespawnPos plus safety checks.
+
+    Returns the block position the player's feet go into, or None when the
+    column's top is a fluid (ocean, lake, lava pool), when there is no full
+    block to stand on, or when the spot is next to something harmful.
+    """
+    if chunk_cache is None:
+        chunk_cache = {}
+    chunk = _load_or_generate_spawn_chunk(server, x >> 4, z >> 4, chunk_cache)
+    if chunk is None:
+        return None
+    fluids, full, hazards, passable, leaves = _block_tables()
+    top = None
+    for y in range(319, -65, -1):
+        block = _column_block(chunk, x, y, z)
+        if block == AIR or block in passable and block not in fluids:
+            continue
+        if block in leaves and not allow_tree_tops:
+            continue  # look for the ground below the canopy (MOTION_BLOCKING_NO_LEAVES)
+        top = y
+        break
+    if top is None or _column_block(chunk, x, top, z) in fluids:
+        return None
+    ground = _column_block(chunk, x, top, z)
+    if ground not in full or ground in hazards:
+        return None
+    feet, head = top + 1, top + 2
+    if head > 319:
+        return None
+    for y in (feet, head):
+        block = _column_block(chunk, x, y, z)
+        if block in fluids or block in hazards or not (block == AIR or block in passable):
+            return None
+    # nothing harmful next to the player's body
+    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        neighbour = _load_or_generate_spawn_chunk(server, (x + dx) >> 4, (z + dz) >> 4, chunk_cache)
+        if neighbour is None:
+            continue
+        for y in (top, feet, head):
+            if _column_block(neighbour, x + dx, y, z + dz) in hazards:
+                return None
+    return int(x), int(feet), int(z)
+
+
+def spawn_pos_in_chunk(server, chunk_x: int, chunk_z: int, chunk_cache: dict | None = None,
+                       allow_tree_tops: bool = False):
+    """PlayerRespawnLogic.getSpawnPosInChunk: first valid column, scanning x then z."""
+    for x in range(chunk_x * 16, chunk_x * 16 + 16):
+        for z in range(chunk_z * 16, chunk_z * 16 + 16):
+            pos = overworld_respawn_pos(server, x, z, chunk_cache, allow_tree_tops)
+            if pos is not None:
+                return pos
+    return None
+
+
+def _climate_spawn_column(server) -> tuple[int, int]:
+    """The column vanilla starts from: Climate.findSpawnPosition (native) or a land search."""
+    terrain = getattr(server, "terrain_generator", None)
+    finder = getattr(terrain, "find_spawn", None)
+    if finder is not None:
+        try:
+            found = finder()
+            if found is not None:
+                return int(found[0]), int(found[1])
+        except Exception as e:
+            logger.warning(f"Native spawn search failed: {e}")
+    # Fallback for the Python generators: nearest land on a coarse spiral.
+    height = getattr(terrain, "get_terrain_height", None)
+    if height is not None:
+        for radius in range(0, 2049, 64):
+            steps = max(1, radius // 16)
+            for i in range(steps * 4 if radius else 1):
+                angle = (i / (steps * 4)) * 6.283185307179586 if radius else 0.0
+                x = int(math.sin(angle) * radius)
+                z = int(math.cos(angle) * radius)
+                try:
+                    if height(x, z) > 64:
+                        return x, z
+                except Exception:
+                    break
+    return 0, 0
+
+
+def find_world_spawn(server) -> tuple[int, int, int]:
+    """
+    Pick the spawn point of a new world like MinecraftServer.setInitialSpawn:
+    climate-based search for land, then an 11x11 chunk spiral for the first
+    column a player can safely stand on.
+    """
+    x, z = _climate_spawn_column(server)
+    center_cx, center_cz = x >> 4, z >> 4
+    cache: dict = {}
+    for allow_tree_tops in (False, True):
+        j = k = l = 0
+        m = -1
+        for _ in range(11 * 11):
+            if -5 <= j <= 5 and -5 <= k <= 5:
+                pos = spawn_pos_in_chunk(server, center_cx + j, center_cz + k, cache, allow_tree_tops)
+                if pos is not None:
+                    return pos
+            if j == k or (j < 0 and j == -k) or (j > 0 and j == 1 - k):
+                l, m = -m, l
+            j += l
+            k += m
+    # nothing safe in 11x11 chunks (e.g. a mushroom island in the ocean): widen the search
+    pos = _search_safe_nearby(server, center_cx * 16 + 8, center_cz * 16 + 8, 256, cache)
+    if pos is not None:
+        return pos
+    return center_cx * 16 + 8, 100, center_cz * 16 + 8
+
+
+def _search_safe_nearby(server, x: int, z: int, radius: int, cache: dict):
+    for r in range(0, radius + 1, 4):
+        for dx in range(-r, r + 1, 4):
+            for dz in (-r, r) if abs(dx) != r else range(-r, r + 1, 4):
+                pos = overworld_respawn_pos(server, x + dx, z + dz, cache)
+                if pos is not None:
+                    return pos
+    return None
+
+
+def _spawn_radius(server) -> int:
+    rules = getattr(server, "gamerules", None)
+    try:
+        return max(0, int(rules.get("spawnRadius", 10))) if rules is not None else 10
+    except (TypeError, ValueError):
+        return 10
+
+
+def fudge_spawn_location(server, base: tuple[int, int, int], radius: int | None = None):
+    """
+    ServerPlayer.fudgeSpawnLocation: a random safe column within the
+    spawnRadius gamerule around the world spawn (visits every column once,
+    in a random coprime order, like vanilla).
+    """
+    import random
+    bx, by, bz = (int(v) for v in base)
+    r = _spawn_radius(server) if radius is None else radius
+    if r <= 0:
+        r = 0
+    side = r * 2 + 1
+    total = side * side
+    step = _coprime(total)
+    start = random.randrange(total)
+    cache: dict = {}
+    for allow_tree_tops in (False, True):
+        for p in range(total):
+            q = (start + step * p) % total
+            x = bx + q % side - r
+            z = bz + q // side - r
+            pos = overworld_respawn_pos(server, x, z, cache, allow_tree_tops)
+            if pos is not None:
+                return pos
+    pos = overworld_respawn_pos(server, bx, bz, cache) or _search_safe_nearby(server, bx, bz, 128, cache)
+    return pos if pos is not None else (bx, by, bz)
+
+
+def _coprime(n: int) -> int:
+    return 17 if n <= 16 else 17 if n % 17 else 31 if n % 31 else 1
+
+
 def _resolve_initial_player_location(server, player_state: dict | None) -> tuple[int, int, int]:
-    """优先使用玩家存档位置，位置无效时回退到安全出生点。"""
-    if player_state is not None:
-        saved_x = math.floor(float(player_state.get("x", server.spawn_position[0])))
-        saved_y = math.floor(float(player_state.get("y", server.spawn_position[1])))
-        saved_z = math.floor(float(player_state.get("z", server.spawn_position[2])))
-        if _is_safe_player_location(server, saved_x, saved_y, saved_z):
-            return saved_x, saved_y, saved_z
+    """
+    Returning players: their saved position, unless it would trap them in a
+    solid block or below the world. New players: a random safe column near
+    the world spawn.
+    """
+    if player_state is not None and all(k in player_state for k in ("x", "y", "z")):
+        saved_x = math.floor(float(player_state["x"]))
+        saved_y = math.floor(float(player_state["y"]))
+        saved_z = math.floor(float(player_state["z"]))
+        if -64 <= saved_y < 320:
+            cache: dict = {}
+            foot = _get_spawn_check_block(server, saved_x, saved_y, saved_z, cache)
+            head = _get_spawn_check_block(server, saved_x, min(319, saved_y + 1), saved_z, cache)
+            if (foot is not None and head is not None
+                    and not _is_suffocating_block(foot) and not _is_suffocating_block(head)):
+                return saved_x, saved_y, saved_z
         return _resolve_spawn_location(server, saved_x, saved_z)
 
-    spawn_x, _, spawn_z = server.spawn_position
-    resolved = _resolve_spawn_location(server, spawn_x, spawn_z)
-    server.spawn_position = (int(resolved[0]), int(resolved[1]), int(resolved[2]))
-    return resolved
+    if not getattr(server, "_spawn_resolved", True):
+        server.spawn_position = find_world_spawn(server)
+        server._spawn_resolved = True
+    return fudge_spawn_location(server, server.spawn_position)
 
 
 def _resolve_player_respawn_location(conn: Connection, server) -> tuple[int, int, int]:
-    """优先使用玩家个人出生点，否则回退到世界出生点。"""
+    """Personal spawn point (bed / /spawnpoint) if still usable, else near world spawn."""
     if conn.personal_spawn is not None:
         spawn_x, spawn_y, spawn_z = conn.personal_spawn
         if _is_safe_player_location(server, spawn_x, spawn_y, spawn_z):
             return spawn_x, spawn_y, spawn_z
-        return _resolve_spawn_location(server, spawn_x, spawn_z)
-
-    spawn_x, _, spawn_z = server.spawn_position
-    respawn_x, respawn_y, respawn_z = _resolve_spawn_location(server, spawn_x, spawn_z)
-    server.spawn_position = (int(respawn_x), int(respawn_y), int(respawn_z))
-    return respawn_x, respawn_y, respawn_z
+    return fudge_spawn_location(server, server.spawn_position)

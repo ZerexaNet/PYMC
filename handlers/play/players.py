@@ -50,8 +50,8 @@ SKIN_PARTS_ALL = 0x7F
 
 
 def _supports_player_spawn(conn: Connection) -> bool:
-    """仅原生 1.21.1 路径支持玩家实体生成。"""
-    return conn.version_handler is None
+    """仅原生 1.21.1 协议路径支持玩家实体生成。"""
+    return getattr(conn, "protocol_version", 767) == 767
 
 
 def build_spawn_player_payload(player: Connection) -> bytes:
@@ -73,15 +73,105 @@ def build_spawn_player_payload(player: Connection) -> bytes:
     return bytes(payload)
 
 
+# 实体 metadata: index 0 = 状态标志 (Byte), index 6 = 姿势 (Pose)
+ENTITY_FLAG_ON_FIRE = 0x01
+ENTITY_FLAG_SNEAKING = 0x02
+ENTITY_FLAG_SPRINTING = 0x08
+POSE_STANDING = 0
+POSE_SNEAKING = 5
+METADATA_TYPE_BYTE = 0
+METADATA_TYPE_POSE = 21
+
+
+def player_entity_flags(player: Connection) -> int:
+    flags = 0
+    if getattr(player, "fire_ticks", 0) > 0:
+        flags |= ENTITY_FLAG_ON_FIRE
+    if getattr(player, "sneaking", False):
+        flags |= ENTITY_FLAG_SNEAKING
+    if getattr(player, "sprinting", False):
+        flags |= ENTITY_FLAG_SPRINTING
+    return flags
+
+
 def build_player_metadata_payload(player: Connection) -> bytes:
-    """构建 Set Entity Data 负载: 显示全部皮肤层 (披风/帽子/袖子等)。"""
+    """
+    构建 Set Entity Data 负载:
+      index 0  状态标志 (着火/潜行/疾跑)
+      index 6  姿势 (站立/潜行)
+      index 17 皮肤层 (来自客户端设置, 披风/帽子/袖子等)
+    """
     payload = bytearray()
     payload.extend(write_varint(player.entity_id))
+    payload.extend(write_ubyte(0))
+    payload.extend(write_varint(METADATA_TYPE_BYTE))
+    payload.extend(write_ubyte(player_entity_flags(player)))
+    payload.extend(write_ubyte(6))
+    payload.extend(write_varint(METADATA_TYPE_POSE))
+    payload.extend(write_varint(
+        POSE_SNEAKING if getattr(player, "sneaking", False) else POSE_STANDING))
     payload.extend(write_ubyte(SKIN_PARTS_INDEX))
-    payload.extend(write_varint(0))  # metadata type 0 = Byte
-    payload.extend(write_ubyte(SKIN_PARTS_ALL))
+    payload.extend(write_varint(METADATA_TYPE_BYTE))
+    payload.extend(write_ubyte(getattr(player, "skin_parts", SKIN_PARTS_ALL) & 0x7F))
     payload.extend(write_ubyte(0xFF))  # terminator
     return bytes(payload)
+
+
+async def broadcast_player_metadata(server, player: Connection):
+    """把玩家的姿态/皮肤层变化同步给能看到他的玩家。"""
+    payload = build_player_metadata_payload(player)
+    for observer in server.get_online_players():
+        if observer is player or player.entity_id not in observer.tracked_players:
+            continue
+        await observer.send_packet(SET_ENTITY_DATA_PID, payload)
+
+
+def build_equipment_payload(player: Connection) -> bytes | None:
+    """构建 Set Equipment 负载 (主手/副手/护甲)。"""
+    from world.inventory import encode_slot_entry
+    inventory = getattr(player, "inventory_obj", None)
+    if inventory is None:
+        return None
+    held = inventory.get_slot(int(getattr(player, "selected_hotbar_slot", 0)))
+    entries = [
+        (0, held),                       # main hand
+        (1, inventory.get_slot(40)),     # off hand
+        (2, inventory.get_slot(36)),     # boots
+        (3, inventory.get_slot(37)),     # leggings
+        (4, inventory.get_slot(38)),     # chestplate
+        (5, inventory.get_slot(39)),     # helmet
+    ]
+    payload = bytearray(write_varint(player.entity_id))
+    for i, (slot, item) in enumerate(entries):
+        last = i == len(entries) - 1
+        payload.append(slot | (0 if last else 0x80))
+        payload.extend(encode_slot_entry(item))
+    return bytes(payload)
+
+
+async def broadcast_player_equipment(server, player: Connection, only: Connection | None = None):
+    """同步玩家手持物品与护甲给其他玩家。"""
+    payload = build_equipment_payload(player)
+    if payload is None:
+        return
+    observers = [only] if only is not None else server.get_online_players()
+    for observer in observers:
+        if observer is player or player.entity_id not in observer.tracked_players:
+            continue
+        pid = get_clientbound_packet(observer.protocol_version, "entity_equipment")
+        if pid is not None:
+            await observer.send_packet(pid, payload)
+
+
+async def broadcast_player_animation(server, player: Connection, animation: int):
+    """Entity Animation: 0 = 挥动主手, 3 = 挥动副手。"""
+    payload = write_varint(player.entity_id) + write_ubyte(animation)
+    for observer in server.get_online_players():
+        if observer is player or player.entity_id not in observer.tracked_players:
+            continue
+        pid = get_clientbound_packet(observer.protocol_version, "animation")
+        if pid is not None:
+            await observer.send_packet(pid, payload)
 
 
 def build_rotate_head_payload(player: Connection) -> bytes:
@@ -105,6 +195,11 @@ async def send_player_spawn(observer: Connection, player: Connection):
     await observer.send_packet(SPAWN_ENTITY_PID, build_spawn_player_payload(player))
     await observer.send_packet(SET_ENTITY_DATA_PID, build_player_metadata_payload(player))
     observer.tracked_players.add(player.entity_id)
+    equipment = build_equipment_payload(player)
+    if equipment is not None:
+        pid = get_clientbound_packet(observer.protocol_version, "entity_equipment")
+        if pid is not None:
+            await observer.send_packet(pid, equipment)
 
 
 async def sync_player_visibility(server, new_conn: Connection):
@@ -128,7 +223,7 @@ def _player_within_tracking_range(player: Connection, observer: Connection,
     return dx * dx + dz * dz <= max_distance
 
 
-async def relay_player_movement(server, moved: Connection):
+async def relay_player_movement(server, moved: Connection, force: bool = False):
     """
     将玩家的位置和视角转发给视距内的其他玩家。
 
@@ -139,7 +234,7 @@ async def relay_player_movement(server, moved: Connection):
         return
 
     optimizer = getattr(server, "network_optimizer", None)
-    if optimizer is not None and not optimizer.should_send_movement(moved):
+    if not force and optimizer is not None and not optimizer.should_send_movement(moved):
         return
 
     rotate_payload = build_rotate_head_payload(moved)

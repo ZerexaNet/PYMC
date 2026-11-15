@@ -95,4 +95,4 @@ async def broadcast_weather_change(server, old_weather: str, new_weather: str):
         await _send_game_event(conn, GAME_EVENT_RAIN_LEVEL, rain_strength(new_weather))
         await _send_game_event(conn, GAME_EVENT_THUNDER_LEVEL, thunder_strength(new_weather))
 
-    logger.info(f"天气已变更: {old_weather} -> {new_weather}")
+    logger.debug(f"天气已变更: {old_weather} -> {new_weather}")

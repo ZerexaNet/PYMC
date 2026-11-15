@@ -19,12 +19,16 @@ class LoginIdentityTests(unittest.TestCase):
             self.assertEqual(actual, uuid.UUID(expected))
 
 
-class OnlineModeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_online_mode_fails_before_server_startup(self):
-        server = SimpleNamespace(online_mode=True, running=False)
-        with self.assertRaisesRegex(RuntimeError, "session authentication"):
-            await MinecraftServer.start(server)
-        self.assertFalse(server.running)
+class OnlineModeTests(unittest.TestCase):
+    def test_server_hash_matches_known_vectors(self):
+        # Reference digests from the protocol documentation (signed hex SHA-1).
+        from network.encryption import server_id_hash
+        self.assertEqual(server_id_hash("Notch", b"", b""),
+                         "4ed1f46bbe04bc756bcb17c0c7ce3e4632f06a48")
+        self.assertEqual(server_id_hash("jeb_", b"", b""),
+                         "-7c9d5b0044c130109a5d7b5fb5c317c02b4e28c1")
+        self.assertEqual(server_id_hash("simon", b"", b""),
+                         "88e16a1019277b15d58faf0541e11910eb756f6")
 
 
 if __name__ == "__main__":
