@@ -568,7 +568,17 @@ class EntityManager:
             if not _is_solid(self.server.get_block_at(x, y - 1, z)):
                 continue
 
-            mob_type = rng.choice(["zombie", "skeleton", "creeper", "spider"]) if is_night else rng.choice(["pig", "cow", "sheep"])
+            config = getattr(self.server, "config", {})
+            if is_night:
+                # spawn-monsters=false 或和平难度下不生成敌对生物
+                if (not config.get("spawn-monsters", True)
+                        or str(config.get("difficulty", "easy")).lower() == "peaceful"):
+                    continue
+                mob_type = rng.choice(["zombie", "skeleton", "creeper", "spider"])
+            else:
+                if not config.get("spawn-animals", True):
+                    continue
+                mob_type = rng.choice(["pig", "cow", "sheep"])
             self.create_mob(x + 0.5, y, z + 0.5, mob_type=mob_type)
             spawned += 1
 

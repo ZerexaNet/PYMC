@@ -1112,3 +1112,43 @@ def register(manager):
 
     _command(manager, "spawnpoint", _spawnpoint, "command.spawnpoint",
              "spawnpoint [<targets>] [<pos>]")
+
+    # ---------------- summon ----------------
+    async def _summon(ctx: CommandContext) -> int:
+        from world.entities import MOB_PROFILES
+        from handlers.play.entities import broadcast_entity_spawn
+        args = ctx.args
+        if not args:
+            return await _incomplete(ctx)
+        entity_type = args[0].lower().split(":", 1)[-1]
+        base = ctx.get_sender_position()
+        position = base
+        if len(args) >= 4:
+            position = ctx.parse_coordinates(args, 1)
+            if position is None:
+                return await ctx.fail(translate("argument.pos3d.incomplete"))
+        x, y, z = position
+        manager_ = ctx.server.entity_manager
+        if entity_type == "lightning_bolt":
+            entity = manager_.create_lightning(x, y, z)
+        elif entity_type in MOB_PROFILES:
+            entity = manager_.create_mob(x, y, z, mob_type=entity_type)
+        else:
+            from protocol.gamedata import entity_type_ids
+            if f"minecraft:{entity_type}" not in entity_type_ids():
+                return await ctx.fail(translate("argument.resource.invalid_type",
+                                                f"minecraft:{entity_type}",
+                                                "minecraft:entity_type", "minecraft:entity_type"))
+            return await ctx.fail(translate("commands.summon.failed"))
+        await broadcast_entity_spawn(ctx.server, entity)
+        try:
+            from plugins.bridge import hook_entity_spawn
+            hook_entity_spawn(ctx.server, entity.entity_id, entity_type, x, y, z)
+        except Exception:
+            pass
+        await ctx.success(translate(
+            "commands.summon.success",
+            {"translate": f"entity.minecraft.{entity_type}", "fallback": entity_type}))
+        return SUCCESS
+
+    _command(manager, "summon", _summon, "command.summon", "summon <entity> [<pos>]")

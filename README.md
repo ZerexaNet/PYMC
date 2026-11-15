@@ -28,6 +28,14 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] **战斗系统**：攻击生物（武器伤害表）、生物死亡掉落与经验球、骷髅等远程生物标记。
 - [x] **物品耐久与基础附魔**：工具/武器耐久消耗、耐久 (Unbreaking) 减免、锋利 (Sharpness) 增伤。
 - [x] **雷暴闪电**：雷暴期间在随机玩家附近落雷，对附近实体造成伤害。
+- [x] **原版服务端外壳**：控制台日志格式 (`[时间] [Server thread/INFO]: ...`)、`logs/latest.log` 自动归档为 `日期-N.log.gz`、启动顺序与 `Done (N s)! For help, type "help"`、`stop`/Ctrl+C/SIGTERM 优雅关闭、`Can't keep up!` 过载警告、控制台命令带不带 `/` 均可。
+- [x] **原版文件布局**：`server.properties`（原版键名与格式，自动补全缺失项）、`ops.json`、`whitelist.json`、`banned-players.json`、`banned-ips.json`、`usercache.json`、`<世界>/level.dat`（出生点、时间、天气、游戏规则、种子、难度）和 `session.lock`；旧版 `permissions.json` 中的 OP/封禁/白名单自动迁移。
+- [x] **RCON**（`enable-rcon`/`rcon.port`/`rcon.password`）与 **正版验证**（`online-mode=true`：RSA + AES/CFB8 加密、Mojang 会话服务器验证、真实 UUID 与皮肤）。
+- [x] **完整的 1.21.1 数据同步**：配置阶段发送全部 11 个原版注册表与标签（游泳、攀爬、工具挖掘速度依赖标签）、Feature Flags；主世界高度 -64..320；全量 1333 个物品 ID 表与堆叠/耐久数据；命令树 (`Commands` 包) 带原版语法提示与 Tab 补全。
+- [x] **原版消息**：所有聊天类消息使用文本组件（1.20.3+ 为 NBT），加入/离开/死亡/聊天/命令反馈使用原版翻译键，客户端按自身语言显示；OP 能看到灰色斜体的 `[某人: 操作]` 通知。
+- [x] **原版核心命令**：help、list、say、me、msg/tell/w、kick、ban/ban-ip/pardon/pardon-ip/banlist、op/deop、whitelist、stop、save-all/on/off、seed、time、weather、difficulty、gamerule、gamemode/defaultgamemode、tp/teleport、give、clear、kill、xp、setworldspawn、spawnpoint、summon；未知命令/无权限显示原版 `<--[HERE]` 错误。
+- [x] **登录检查**：用户名合法性、协议版本（过旧/过新客户端提示）、封禁、白名单、服务器已满、同名重复登录踢出旧连接、`player-idle-timeout`。
+- [x] **玩法细节**：死亡界面与原版死亡消息、掉落物品与经验、重生流程、`keepInventory`/`doImmediateRespawn`/`showDeathMessages` 等规则、受伤动画与击退、PvP（`pvp`）、潜行/疾跑/挥手/手持物品同步、生存/创造模式挖掘与放置确认、`spawn-protection`、天空光与方块光计算。
 - [x] 控制台和游戏内基础命令。
 - [x] Web 管理台、权限组、OP、封禁和白名单。
 - [x] 单元测试覆盖原生地形、原生 AI、种子解析和安全出生点。
@@ -57,7 +65,6 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [ ] 完整光照和客户端可见的区块更新细节。
 - [ ] 更完整的物品栏交互：创造模式物品栏、铁砧/附魔台完整界面、药水效果。
 - [ ] 更完整的生物系统：完整 A* 寻路、繁殖、村民、Boss、刷怪规则和 mob cap。
-- [ ] 正版登录验证、加密链路和更完整的权限模型。
 - [ ] 更完整的选择器、NBT 参数和 datapack/function 支持。
 
 ### 当前限制
@@ -128,8 +135,11 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 
 ```bash
 pip install -r requirements.txt
-python main.py
+python main.py --nogui
 ```
+
+与原版服务端一样，在一个单独的目录中运行即可，首次启动会生成 `server.properties`、`ops.json` 等文件；
+也支持 `--port`、`--world`、`--universe`、`--config` 参数。`online-mode=true` 需要 `cryptography` 包。
 
 默认监听:
 
@@ -146,7 +156,10 @@ python main.py
 主要配置在 `server.properties`：
 
 - `server-port`：Minecraft 服务端端口
-- `online-mode`：是否正版验证，目前默认 `false`
+- `online-mode`：是否正版验证（默认 `false`，开启需安装 `cryptography`）
+- `motd` / `max-players` / `difficulty` / `pvp` / `hardcore` / `white-list` / `enforce-whitelist` / `spawn-protection` / `player-idle-timeout` / `enable-status` / `hide-online-players` / `simulation-distance` / `spawn-animals` / `spawn-monsters` / `force-gamemode`：与原版含义相同
+- `enable-rcon` / `rcon.port` / `rcon.password`：RCON 远程控制台
+- 放置 64x64 的 `server-icon.png` 即可在服务器列表显示图标
 - `view-distance`：区块视距
 - `level-seed`：世界种子
 - `gamemode`：默认游戏模式
@@ -213,7 +226,8 @@ Linux/macOS 可参考 `build.sh` 和 `CMakeLists.txt`。
 
 以下内容是运行产物，默认不提交到仓库：
 
-- `pymc.log`
+- `logs/`、`ops.json`、`whitelist.json`、`banned-*.json`、`usercache.json`
+- `world/level.dat`、`world/session.lock`
 - `world/region/`
 - `world/playerdata/`
 - `__pycache__/`

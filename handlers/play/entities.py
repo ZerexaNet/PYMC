@@ -160,12 +160,14 @@ async def _send_visible_entities_to_player(conn: Connection, server):
 
 async def broadcast_entity_spawn(server, entity):
     for conn in server.get_online_players():
+        if entity.entity_id in conn.tracked_entities:
+            continue
         if not _entity_within_tracking_range(entity, conn, server.view_distance):
             continue
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob"}:
+        elif entity.kind in {"item", "mob", "lightning_bolt"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 
