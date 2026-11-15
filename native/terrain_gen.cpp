@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -37,6 +38,13 @@
 #include <vector>
 
 #ifdef _WIN32
+// windows.h must not define min/max macros: they break std::min / std::max.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>

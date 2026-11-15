@@ -62,7 +62,7 @@ if exist "C:\Program Files\Microsoft Visual Studio\Installer\vswhere.exe" (
 
 where cl >nul 2>&1
 if not errorlevel 1 (
-    cl /O2 /EHsc /std:c++17 /fp:precise /fp:contract- /Fe:native\terrain_gen.exe native\terrain_gen.cpp
+    cl /O2 /EHsc /std:c++17 /fp:precise /DNOMINMAX /Fe:native\terrain_gen.exe native\terrain_gen.cpp
 ) else (
     where g++ >nul 2>&1
     if errorlevel 1 (
