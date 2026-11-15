@@ -108,8 +108,8 @@ echo.
     --include-package=world ^
     --include-module=config ^
     --include-data-dir=native=native ^
-    --include-data-files=native/terrain_gen.exe=terrain_gen.exe ^
-    --include-data-files=native/mob_ai.exe=mob_ai.exe ^
+    --include-data-files=native/terrain_gen.exe=native/terrain_gen.exe ^
+    --include-data-files=native/mob_ai.exe=native/mob_ai.exe ^
     --include-data-files=world/blocks.json=world/blocks.json ^
     --include-data-dir=protocol/data=protocol/data ^
     --include-data-dir=world/data=world/data ^
@@ -118,7 +118,7 @@ echo.
     --windows-console-mode=force ^
     --company-name=PyMC ^
     --product-name="PyMC Minecraft Server" ^
-    --file-version=1.0.0 ^
+    --file-version=1.2.0 ^
     --product-version=1.21.1 ^
     --file-description="PyMC - Python Minecraft 1.21.1 服务端" ^
     main.py

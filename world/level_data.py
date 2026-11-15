@@ -71,6 +71,8 @@ class LevelData:
         self.hardcore: bool = False
         self.last_played: int = 0
         self.existed: bool = False
+        # vanilla "initialized": the world spawn has been chosen
+        self.initialized: bool = True
 
     # ------------------------------------------------------------------
 
@@ -96,7 +98,8 @@ class LevelData:
 
     def _apply(self, data: dict) -> None:
         self.level_name = str(data.get("LevelName", self.level_name))
-        if all(k in data for k in ("SpawnX", "SpawnY", "SpawnZ")):
+        self.initialized = bool(data.get("initialized", 1))
+        if self.initialized and all(k in data for k in ("SpawnX", "SpawnY", "SpawnZ")):
             self.spawn = (int(data["SpawnX"]), int(data["SpawnY"]), int(data["SpawnZ"]))
         self.spawn_angle = float(data.get("SpawnAngle", 0.0))
         self.game_time = int(data.get("Time", 0))
@@ -137,7 +140,7 @@ class LevelData:
             "LevelName": self.level_name,
             "ServerBrands": ["PyMC"],
             "WasModded": NbtByte(1),
-            "initialized": NbtByte(1),
+            "initialized": NbtByte(1 if self.initialized else 0),
             "allowCommands": NbtByte(1),
             "hardcore": NbtByte(1 if self.hardcore else 0),
             "Difficulty": NbtByte(_DIFFICULTY_IDS.get(self.difficulty or "easy", 1)),

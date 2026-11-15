@@ -30,6 +30,14 @@ jobs:
           cmake --install . --prefix stage
       - name: Run tests
         run: python3 -m pytest tests/ -v
+      - name: Check native binaries
+        # Nuitka's --include-data-dir silently drops executables and shared
+        # libraries, so they are listed explicitly; make sure they exist.
+        run: |
+          ls -l build/stage/native
+          test -x build/stage/native/terrain_gen
+          test -x build/stage/native/mob_ai
+          build/stage/native/terrain_gen --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         run: |
           pip install nuitka
@@ -37,7 +45,7 @@ jobs:
             --include-data-file=world/blocks.json=world/blocks.json \
             --include-data-dir=protocol/data=protocol/data \
             --include-data-dir=world/data=world/data \
-            --include-data-dir=build/stage/native=native \
+            '--include-data-files=build/stage/native/*=native/' \
             main.py -o pymc-server-linux-x86_64
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -67,6 +75,14 @@ jobs:
           cmake --install . --prefix stage
       - name: Run tests
         run: python3 -m pytest tests/ -v
+      - name: Check native binaries
+        # Nuitka's --include-data-dir silently drops executables and shared
+        # libraries, so they are listed explicitly; make sure they exist.
+        run: |
+          ls -l build/stage/native
+          test -x build/stage/native/terrain_gen
+          test -x build/stage/native/mob_ai
+          build/stage/native/terrain_gen --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         run: |
           pip install nuitka
@@ -74,7 +90,7 @@ jobs:
             --include-data-file=world/blocks.json=world/blocks.json \
             --include-data-dir=protocol/data=protocol/data \
             --include-data-dir=world/data=world/data \
-            --include-data-dir=build/stage/native=native \
+            '--include-data-files=build/stage/native/*=native/' \
             main.py -o pymc-server-macos-arm64
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -118,6 +134,15 @@ jobs:
           cmake --install . --config Release --prefix stage
       - name: Run tests
         run: python -m pytest tests/ -v
+      - name: Check native binaries
+        # Nuitka's --include-data-dir silently drops .exe/.dll files, so they
+        # are listed explicitly; make sure they exist.
+        shell: bash
+        run: |
+          ls -l build/stage/native
+          test -f build/stage/native/terrain_gen.exe
+          test -f build/stage/native/mob_ai.exe
+          build/stage/native/terrain_gen.exe --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         # Nuitka on Windows defaults to MSVC. No --mingw64 flag, so it
         # picks up the MSVC environment set up by ilammy/msvc-dev-cmd above.
@@ -127,7 +152,7 @@ jobs:
             --include-data-file=world/blocks.json=world/blocks.json `
             --include-data-dir=protocol/data=protocol/data `
             --include-data-dir=world/data=world/data `
-            --include-data-dir=build/stage/native=native `
+            '--include-data-files=build/stage/native/*=native/' `
             main.py -o pymc-server-windows-x86_64.exe
       - name: Stage native binaries for separate download
         # Copy the MSVC-built, statically-linked /MT .exe files so users
