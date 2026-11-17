@@ -20,7 +20,28 @@ def normalize_block_name(spec: str) -> str:
 
 
 def resolve_block_state(spec: str) -> int | None:
-    return BLOCK_NAME_TO_DEFAULT_STATE.get(normalize_block_name(spec))
+    """Block state argument: ``name`` or ``name[prop=value,...]`` (vanilla /setblock syntax)."""
+    spec = spec.strip()
+    properties = {}
+    if "[" in spec and spec.endswith("]"):
+        spec, _, inner = spec[:-1].partition("[")
+        for part in inner.split(","):
+            if not part.strip():
+                continue
+            key, sep, value = part.partition("=")
+            if not sep:
+                return None
+            properties[key.strip().lower()] = value.strip().lower()
+    state = BLOCK_NAME_TO_DEFAULT_STATE.get(normalize_block_name(spec))
+    if state is None or not properties:
+        return state
+    from .chunk_io import BLOCK_KEY_TO_STATE_ID, STATE_ID_TO_BLOCK
+    name, defaults = STATE_ID_TO_BLOCK[state]
+    if any(key not in defaults for key in properties):
+        return None
+    merged = dict(defaults)
+    merged.update(properties)
+    return BLOCK_KEY_TO_STATE_ID.get((name, tuple(sorted(merged.items()))))
 
 
 def get_world_block(server, x: int, y: int, z: int) -> int | None:
@@ -65,8 +86,25 @@ def _save_dirty_chunks(
 ):
     for chunk_x, chunk_z in dirty_chunks:
         chunk_blocks = chunk_cache[(chunk_x, chunk_z)]
-        chunk_biomes = server.biome_sampler.build_chunk_biome_sections(chunk_x, chunk_z, chunk_blocks)
+        biome_sampler = getattr(server, "biome_sampler", None)
+        chunk_biomes = (biome_sampler.build_chunk_biome_sections(chunk_x, chunk_z, chunk_blocks)
+                        if biome_sampler is not None else None)
         server.world_storage.save_generated_chunk(chunk_x, chunk_z, chunk_blocks, chunk_biomes)
+    _notify_redstone(server, chunk_cache.pop(_CHANGES, None))
+
+
+# every edit made through this module, as (x, y, z, old, new), so the redstone
+# engine can run the vanilla setBlock side effects (block/shape updates)
+_CHANGES = "__changes__"
+NOTIFY_LIMIT = 32768
+
+
+def _notify_redstone(server, changes):
+    engine = getattr(server, "redstone_engine", None)
+    if engine is None or not changes or len(changes) > NOTIFY_LIMIT:
+        return
+    for x, y, z, old, new in changes:
+        engine.on_block_change(x, y, z, old, new)
 
 
 def _set_block_in_cache(
@@ -88,10 +126,12 @@ def _set_block_in_cache(
     y_index = y - MIN_Y
     if y_index < 0 or y_index >= len(chunk_blocks):
         return False
-    if chunk_blocks[y_index][local_z][local_x] == int(block_state):
+    old = int(chunk_blocks[y_index][local_z][local_x])
+    if old == int(block_state):
         return False
     chunk_blocks[y_index][local_z][local_x] = int(block_state)
     dirty_chunks.add((chunk_x, chunk_z))
+    chunk_cache.setdefault(_CHANGES, []).append((x, y, z, old, int(block_state)))
     return True
 
 

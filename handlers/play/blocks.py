@@ -201,9 +201,10 @@ def _get_held_item_for_placement(conn: Connection) -> tuple[int, str | None]:
         held = inv.get_held_item_from_slot(conn.selected_hotbar_slot)
         if held is not None and not held.is_empty:
             # Check if this item corresponds to a placeable block
-            block_state = BLOCK_NAME_TO_DEFAULT_STATE.get(held.item_id)
-            if block_state is not None:
-                return (block_state, held.item_id)
+            from world.placement import block_for_item
+            block_name = block_for_item(held.item_id)
+            if block_name is not None:
+                return (BLOCK_NAME_TO_DEFAULT_STATE[block_name], held.item_id)
 
     return (0, None)
 
@@ -312,9 +313,10 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
         from world.item_properties import damage_held_item
         await damage_held_item(conn, server)
 
-    # Notify redstone engine of block change
+    # (the redstone engine is notified by world.editing)
     if server.redstone_engine:
-        server.redstone_engine.on_block_change(x, y, z, current, AIR)
+        for ux, uy, uz, new_state in server.redstone_engine.get_visual_updates():
+            await _broadcast_block_change(server, ux, uy, uz, new_state)
 
     # Notify fluid system
     if hasattr(server, 'fluid_system') and server.fluid_system:
@@ -557,22 +559,24 @@ async def _handle_block_place(conn: Connection, payload: bytes, server):
     hand, offset = read_varint(payload, offset)
     (target_x, target_y, target_z), offset = read_position(payload, offset)
     face, offset = read_varint(payload, offset)
-    _, offset = read_float(payload, offset)  # cursorX
-    _, offset = read_float(payload, offset)  # cursorY
-    _, offset = read_float(payload, offset)  # cursorZ
+    cursor_x, offset = read_float(payload, offset)
+    cursor_y, offset = read_float(payload, offset)
+    cursor_z, offset = read_float(payload, offset)
     _, offset = read_boolean(payload, offset)  # insideBlock
     if conn.protocol_version >= 768:
         _, offset = read_boolean(payload, offset)  # worldBorderHit (1.21.2+)
     sequence, offset = read_varint(payload, offset)
 
     try:
-        await _use_item_on(conn, server, hand, target_x, target_y, target_z, face)
+        await _use_item_on(conn, server, hand, target_x, target_y, target_z, face,
+                           (cursor_x, cursor_y, cursor_z))
     finally:
         await _acknowledge_block_change(conn, sequence)
 
 
 async def _use_item_on(conn: Connection, server, hand: int,
-                       target_x: int, target_y: int, target_z: int, face: int):
+                       target_x: int, target_y: int, target_z: int, face: int,
+                       cursor: tuple[float, float, float] = (0.5, 0.5, 0.5)):
     """Use Item On 的实际逻辑: 方块交互优先, 其次放置手持方块。"""
     from world.block_behavior import (
         get_block_behavior, get_block_name_from_state, container_manager,
@@ -633,7 +637,7 @@ async def _use_item_on(conn: Connection, server, hand: int,
 
     # Get the block to place from the player's held item
     block_state, item_name = _get_held_item_for_placement(conn)
-    if block_state == 0 or hand != 0:
+    if (block_state == 0 and item_name is None) or hand != 0:
         return  # Nothing to place
 
     async def _reject():
@@ -651,6 +655,17 @@ async def _use_item_on(conn: Connection, server, hand: int,
             or _collides_with_player(server, place_x, place_y, place_z, block_state)):
         await _reject()
         return
+
+    # vanilla getStateForPlacement: facing, attachment face, halves, doors, beds...
+    from world.placement import placement_states
+    placements = placement_states(
+        item_name, face, cursor, getattr(conn, "yaw", 0.0), getattr(conn, "pitch", 0.0),
+        (place_x, place_y, place_z), existing,
+        lambda bx, by, bz: _get_block_at(server, bx, by, bz))
+    if not placements:
+        await _reject()
+        return
+    block_state = placements[0][1]
 
     # Call block behavior on_place if available
     placed_name, _ = STATE_ID_TO_BLOCK.get(block_state, ("minecraft:air", {}))
@@ -672,15 +687,20 @@ async def _use_item_on(conn: Connection, server, hand: int,
         await _reject()
         return  # Cancelled by a plugin
 
-    changed_chunks = set_world_block(server, place_x, place_y, place_z, block_state)
+    changed_chunks = set()
+    for (bx, by, bz), state in placements:
+        before = existing if (bx, by, bz) == (place_x, place_y, place_z) else _get_block_at(server, bx, by, bz)
+        changed = set_world_block(server, bx, by, bz, state)
+        if not changed:
+            continue
+        changed_chunks |= changed
+        await _broadcast_block_change(server, bx, by, bz, state)
     if not changed_chunks:
         await _reject()
         return
-    await _broadcast_block_change(server, place_x, place_y, place_z, block_state)
-
-    # Notify redstone engine of block change
     if server.redstone_engine:
-        server.redstone_engine.on_block_change(place_x, place_y, place_z, existing, block_state)
+        for ux, uy, uz, new_state in server.redstone_engine.get_visual_updates():
+            await _broadcast_block_change(server, ux, uy, uz, new_state)
 
     # Notify fluid system
     if hasattr(server, 'fluid_system') and server.fluid_system:
