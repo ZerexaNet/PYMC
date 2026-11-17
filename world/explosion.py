@@ -203,13 +203,7 @@ async def explode(server, x: float, y: float, z: float, power: float = 4.0,
                 drops.append((bx, by, bz, stack))
         if _set_block_in_cache(server, cache, dirty, bx, by, bz, 0):
             changes.append((bx, by, bz, 0))
-    _save_dirty_chunks(server, cache, dirty)
-    if hasattr(server, "redstone_engine") and server.redstone_engine is not None:
-        for bx, by, bz, _ in changes:
-            try:
-                server.redstone_engine.on_block_change(bx, by, bz, None, 0)
-            except Exception:
-                pass
+    _save_dirty_chunks(server, cache, dirty)   # also notifies the redstone engine
 
     # vanilla merges identical drops (up to a full stack) before popping them
     merged: list[list] = []          # [x, y, z, item_id, count]

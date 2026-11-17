@@ -958,6 +958,8 @@ class MinecraftServer:
         mc_logger.info("Saving worlds")
         mc_logger.info(
             f"Saving chunks for level 'ServerLevel[{self.level_name}]'/minecraft:overworld")
+        if self.redstone_engine is not None:
+            self.redstone_engine.save()
         container_manager.save(str(self.world_storage.world_dir))
         self.save_level_data()
         self.world_storage.close()
@@ -1150,6 +1152,8 @@ class MinecraftServer:
         # 自动保存世界数据 (原版同样静默进行)
         if self.autosave_enabled and tick_count % autosave_interval == 0:
             self.save_all_player_states()
+            if self.redstone_engine is not None:
+                self.redstone_engine.save()
             self.world_storage.flush()
             container_manager.save(str(self.world_storage.world_dir))
             self.save_level_data()
@@ -1171,9 +1175,8 @@ class MinecraftServer:
         if tick_count % 10 == 0:
             await self._tick_entity_sync()
 
-        # Redstone tick (every 2 game ticks = 0.1s)
-        if tick_count % 2 == 0:
-            await self._tick_redstone()
+        # Redstone: scheduled block ticks, block events, moving pistons (every game tick)
+        await self._tick_redstone()
 
         # 雷暴落雷 (每 5 秒一次判定)
         if tick_count % 100 == 0:
@@ -1252,41 +1255,91 @@ class MinecraftServer:
                     damage_mob(self, entity, 5.0)
 
     async def _tick_redstone(self):
-        """Process a redstone tick and broadcast visual changes to players."""
+        """Run one redstone game tick and send the results to the players."""
         if self.redstone_engine is None:
             return
-
         self.redstone_engine.tick()
+        await self.flush_redstone_output()
 
-        # Broadcast block changes from redstone engine
-        from handlers.play import _broadcast_block_change
-        updates = self.redstone_engine.get_visual_updates()
-        for x, y, z, new_state in updates:
-            await _broadcast_block_change(self, x, y, z, new_state)
-
-        # Process effects that require async work (note sounds, explosions,
-        # item-drop broadcasts).
-        for kind, payload in self.redstone_engine.drain_pending_effects():
+    async def flush_redstone_output(self):
+        """Block changes, block actions (piston animations, notes) and effects from the engine."""
+        engine = self.redstone_engine
+        if engine is None:
+            return
+        updates = engine.get_visual_updates()
+        if updates:
+            from handlers.play.blocks import _broadcast_block_change, _broadcast_multi_block_changes
+            if len(updates) == 1:
+                x, y, z, state = updates[0]
+                await _broadcast_block_change(self, x, y, z, state)
+            else:
+                await _broadcast_multi_block_changes(self, updates)
+        for pos, block, event_id, param in engine.drain_block_actions():
+            await self._send_block_action(pos, block, event_id, param)
+        for kind, payload in engine.drain_pending_effects():
             try:
-                if kind == "note":
-                    from world.block_behavior import NoteBlockBehavior
-                    await NoteBlockBehavior._play_note(
-                        self,
-                        payload["x"], payload["y"], payload["z"],
-                        payload.get("note", 0),
-                    )
-                elif kind == "explosion":
-                    from world.block_behavior import TNTBehavior
-                    await TNTBehavior._create_explosion(
-                        self, payload["x"], payload["y"], payload["z"]
-                    )
-                elif kind == "entity_spawn":
-                    entity = self.entity_manager.get_entity(payload.get("entity_id"))
-                    if entity is not None:
-                        from handlers.play.entities import broadcast_entity_spawn
-                        await broadcast_entity_spawn(self, entity)
+                await self._redstone_effect(kind, payload)
             except Exception as e:
                 logger.warning(f"红石效果处理失败 ({kind}): {e}")
+
+    async def _send_block_action(self, pos, block: str, event_id: int, param: int):
+        from protocol.data_types import write_position, write_ubyte, write_varint
+        from protocol.packet_map import get_clientbound_packet
+        from world.rs.core import block_registry_id
+        x, y, z = pos
+        payload = (write_position(x, y, z) + write_ubyte(event_id & 0xFF) + write_ubyte(param & 0xFF)
+                   + write_varint(block_registry_id(block)))
+        for player in self.get_online_players():
+            if player.protocol_version != 767 or (x >> 4, z >> 4) not in player.loaded_chunks:
+                continue
+            pid = get_clientbound_packet(player.protocol_version, "block_action")
+            if pid is not None:
+                await player.send_packet(pid, payload)
+
+    async def _redstone_effect(self, kind: str, payload: dict):
+        if kind == "note":
+            from world.block_behavior import NoteBlockBehavior
+            await NoteBlockBehavior._play_note(self, payload["x"], payload["y"], payload["z"], payload.get("note", 0))
+        elif kind == "sound":
+            await self.play_sound(payload["pos"], payload["sound"], payload.get("volume", 1.0), payload.get("pitch", 1.0))
+        elif kind == "torch_burnout":
+            await self.play_sound(payload["pos"], "minecraft:block.redstone_torch.burnout", 0.5, 2.6)
+        elif kind == "drop":
+            from world.block_behavior import get_block_drops
+            from world.chunk_io import STATE_ID_TO_BLOCK
+            from handlers.play.entities import broadcast_entity_spawn
+            name, props = STATE_ID_TO_BLOCK.get(payload["state"], ("minecraft:air", {}))
+            x, y, z = payload["pos"]
+            for stack in get_block_drops(name, None, props):
+                item = self.entity_manager.create_item(x + 0.5, y + 0.25, z + 0.5, stack.item_id, stack.count)
+                item.pickup_delay = 10
+                await broadcast_entity_spawn(self, item)
+        elif kind == "entity_spawn":
+            entity = self.entity_manager.get_entity(payload.get("entity_id"))
+            if entity is not None:
+                from handlers.play.entities import broadcast_entity_spawn
+                await broadcast_entity_spawn(self, entity)
+        elif kind == "explosion":
+            self.queue_explosion(payload["x"] + 0.5, payload["y"] + 0.0625, payload["z"] + 0.5, 4.0)
+
+    async def play_sound(self, pos, sound: str, volume: float = 1.0, pitch: float = 1.0, category: int = 4):
+        """Sound Effect packet with an inline sound event (no registry id needed)."""
+        from protocol.data_types import (write_boolean, write_float, write_int, write_long, write_string,
+                                         write_varint)
+        from protocol.packet_map import get_clientbound_packet
+        import random as _random
+        x, y, z = pos
+        payload = (write_varint(0) + write_string(sound) + write_boolean(False) + write_varint(category)
+                   + write_int(int((x + 0.5) * 8)) + write_int(int((y + 0.5) * 8)) + write_int(int((z + 0.5) * 8))
+                   + write_float(volume) + write_float(pitch) + write_long(_random.getrandbits(63)))
+        for player in self.get_online_players():
+            if player.protocol_version != 767:
+                continue
+            if (player.x - x) ** 2 + (player.y - y) ** 2 + (player.z - z) ** 2 > 48 * 48:
+                continue
+            pid = get_clientbound_packet(player.protocol_version, "sound_effect")
+            if pid is not None:
+                await player.send_packet(pid, payload)
 
     async def _tick_fluids(self, tick_count: int):
         """Process fluid flow updates and broadcast visual changes."""

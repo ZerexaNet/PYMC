@@ -88,6 +88,7 @@ async def _handle_player_position(conn: Connection, payload: bytes, server):
     _schedule_chunk_stream_update(conn, server)
     from handlers.play.players import relay_player_movement
     await relay_player_movement(server, conn)
+    await _notify_block_inside(conn, server)
 
 
 async def _handle_player_position_rotation(conn: Connection, payload: bytes,
@@ -115,6 +116,7 @@ async def _handle_player_position_rotation(conn: Connection, payload: bytes,
     _schedule_chunk_stream_update(conn, server)
     from handlers.play.players import relay_player_movement
     await relay_player_movement(server, conn)
+    await _notify_block_inside(conn, server)
 
 
 async def _handle_player_rotation(conn: Connection, payload: bytes, server):
@@ -133,6 +135,7 @@ async def _handle_player_rotation(conn: Connection, payload: bytes, server):
     conn.on_ground = on_ground
     from handlers.play.players import relay_player_movement
     await relay_player_movement(server, conn)
+    await _notify_block_inside(conn, server)
 
 
 async def _handle_player_on_ground(conn: Connection, payload: bytes, server):
@@ -150,3 +153,19 @@ def _handle_held_item_slot(conn: Connection, payload: bytes):
     slot = struct.unpack_from(">h", payload, 0)[0]
     if 0 <= slot < 9:
         conn.selected_hotbar_slot = slot
+
+
+async def _notify_block_inside(conn: Connection, server):
+    """Pressure plates and similar: tell the redstone engine which block the player stands in."""
+    engine = getattr(server, "redstone_engine", None)
+    if engine is None or getattr(conn, "gamemode", "") == "spectator":
+        return
+    import math
+    cell = (math.floor(conn.x), math.floor(conn.y), math.floor(conn.z))
+    if getattr(conn, "_redstone_cell", None) == cell:
+        return
+    conn._redstone_cell = cell
+    engine.on_entity_move(*cell)
+    if hasattr(server, "flush_redstone_output"):
+        await server.flush_redstone_output()
+
