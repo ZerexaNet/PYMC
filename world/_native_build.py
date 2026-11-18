@@ -86,3 +86,68 @@ def build_native_generator(force: bool = False) -> str | None:
         logger.warning(f"Building terrain_gen with {compiler[0]} failed:\n"
                        + result.stdout.decode("utf-8", errors="replace")[-2000:])
     return None
+
+
+# ------------------------------------------------------------------
+# In-process engine library (redstone / block updates, hoppers, explosions)
+# ------------------------------------------------------------------
+
+VANILLA_DIR = ROOT / "native" / "vanilla"
+VANILLA_SOURCE = VANILLA_DIR / "api.cpp"
+
+
+def vanilla_library_name() -> str:
+    if os.name == "nt":
+        return "pymc_vanilla.dll"
+    if sys.platform == "darwin":
+        return "libpymc_vanilla.dylib"
+    return "libpymc_vanilla.so"
+
+
+def _vanilla_sources() -> list[Path]:
+    files = sorted(VANILLA_DIR.glob("*.h")) + [VANILLA_SOURCE, ROOT / "native" / "worldgen" / "json.h"]
+    return [p for p in files if p.exists()]
+
+
+def build_vanilla_library(force: bool = False) -> str | None:
+    """Compile native/vanilla/api.cpp into a shared library; returns its path or None."""
+    if not VANILLA_SOURCE.exists():
+        return None
+    out_dir = build_cache_dir()
+    library = out_dir / vanilla_library_name()
+    newest_source = max(p.stat().st_mtime for p in _vanilla_sources())
+    if library.exists() and not force and library.stat().st_mtime >= newest_source:
+        return str(library)
+    compilers = _compilers()
+    if not compilers:
+        logger.info("No C++ compiler found; the Python redstone engine will be used")
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # build to a temporary name: a loaded library must not be overwritten in place
+    tmp = out_dir / ("tmp_" + str(os.getpid()) + "_" + library.name)
+    for compiler in compilers:
+        if compiler[0] == "cl":
+            cmd = ["cl", "/nologo", "/O2", "/EHsc", "/std:c++17", "/LD", "/MT", "/DNOMINMAX",
+                   f"/Fe:{tmp}", str(VANILLA_SOURCE)]
+        else:
+            cmd = compiler + ["-O2", "-std=c++17", "-shared", "-fPIC", "-fvisibility=hidden", "-o", str(tmp),
+                              str(VANILLA_SOURCE)]
+            if sys.platform == "win32":
+                cmd[1:1] = ["-static-libgcc", "-static-libstdc++", "-static"]
+        logger.info("Building the native redstone/hopper/explosion engine (one-time, ~10 s)...")
+        try:
+            result = subprocess.run(cmd, cwd=str(out_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    timeout=600)
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.debug(f"{compiler[0]} failed: {e}")
+            continue
+        if result.returncode == 0 and tmp.exists():
+            try:
+                os.replace(tmp, library)
+            except OSError:
+                return str(tmp)      # the old library is in use (Windows): use the new one under its temp name
+            logger.info(f"Native engine built: {library}")
+            return str(library)
+        logger.warning(f"Building the native engine with {compiler[0]} failed:\n"
+                       + result.stdout.decode("utf-8", errors="replace")[-2000:])
+    return None

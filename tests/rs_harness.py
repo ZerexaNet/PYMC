@@ -38,7 +38,9 @@ class MemoryStorage:
 class World:
     """Place blocks like a player (side effects included) and step game ticks."""
 
-    def __init__(self):
+    native = False      # class default; tests/test_native_engine.py runs everything with True
+
+    def __init__(self, native=None):
         self.storage = MemoryStorage()
         self.entities = []
         manager = SimpleNamespace(list_entities=lambda: list(self.entities),
@@ -47,7 +49,11 @@ class World:
                                   create_item=lambda *a, **k: SimpleNamespace(entity_id=0, vx=0, vy=0, vz=0))
         self.server = SimpleNamespace(world_storage=self.storage, entity_manager=manager,
                                       get_online_players=lambda: [])
-        self.engine = RedstoneEngine(self.server)
+        if self.native if native is None else native:
+            from world.rs.native import NativeRedstoneEngine
+            self.engine = NativeRedstoneEngine(self.server)
+        else:
+            self.engine = RedstoneEngine(self.server)
 
     def get(self, x, y, z):
         return self.storage.load_generated_chunk(x >> 4, z >> 4)[y + 64][z & 15][x & 15]
@@ -63,6 +69,14 @@ class World:
         old = self.get(x, y, z)
         self.storage.load_generated_chunk(x >> 4, z >> 4)[y + 64][z & 15][x & 15] = state
         self.engine.on_block_change(x, y, z, old, state)
+
+    def poke(self, x, y, z, state):
+        """Write a block without any update (a 'budded' setup)."""
+        self.storage.load_generated_chunk(x >> 4, z >> 4)[y + 64][z & 15][x & 15] = state
+        if hasattr(self.engine, "mirror_block"):
+            self.engine.mirror_block(x, y, z, state)
+        else:
+            self.engine.level._chunks.clear()
 
     def use(self, x, y, z):
         return self.engine.on_player_interact(x, y, z, None)

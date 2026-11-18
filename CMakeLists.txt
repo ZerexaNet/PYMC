@@ -230,6 +230,16 @@ elseif(UNIX)
 endif()
 
 # ===========================================================
+# Vanilla engine library: redstone / block updates, hoppers, explosions
+# (loaded in-process by world/rs/native.py through ctypes)
+# ===========================================================
+add_library(pymc_vanilla SHARED native/vanilla/api.cpp)
+target_compile_features(pymc_vanilla PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(pymc_vanilla PRIVATE /DNOMINMAX)
+endif()
+
+# ===========================================================
 # Install targets
 # ===========================================================
 install(TARGETS
@@ -239,6 +249,7 @@ install(TARGETS
     pymc_native
     pymc_plugin_loader
     pymc_mod_loader
+    pymc_vanilla
     RUNTIME DESTINATION native
     LIBRARY DESTINATION native
 )
@@ -262,4 +273,5 @@ if(MINGW)
     target_link_options(terrain_gen        PRIVATE ${MINGW_STATIC_LINK_FLAGS})
     target_link_options(mob_ai             PRIVATE ${MINGW_STATIC_LINK_FLAGS})
     target_link_options(pymc_native_server PRIVATE ${MINGW_STATIC_LINK_FLAGS})
+    target_link_options(pymc_vanilla       PRIVATE ${MINGW_STATIC_LINK_FLAGS})
 endif()

@@ -101,7 +101,14 @@ NOTIFY_LIMIT = 32768
 
 def _notify_redstone(server, changes):
     engine = getattr(server, "redstone_engine", None)
-    if engine is None or not changes or len(changes) > NOTIFY_LIMIT:
+    if engine is None or not changes:
+        return
+    if len(changes) > NOTIFY_LIMIT:
+        # too many to update one by one: at least make the native engine re-read those chunks
+        invalidate = getattr(engine, "invalidate_chunk", None)
+        if invalidate is not None:
+            for cx, cz in {(x >> 4, z >> 4) for x, _, z, _, _ in changes}:
+                invalidate(cx, cz)
         return
     for x, y, z, old, new in changes:
         engine.on_block_change(x, y, z, old, new)

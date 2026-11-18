@@ -93,6 +93,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [信息] 正在编译原生红石/漏斗/爆炸引擎...
+where cl >nul 2>&1
+if not errorlevel 1 (
+    cl /nologo /O2 /EHsc /std:c++17 /LD /MT /DNOMINMAX /Fe:native\pymc_vanilla.dll native\vanilla\api.cpp
+) else (
+    g++ -O2 -std=c++17 -shared -static-libgcc -static-libstdc++ -static -o native\pymc_vanilla.dll native\vanilla\api.cpp
+)
+
+if errorlevel 1 (
+    echo [错误] pymc_vanilla.dll 编译失败。
+    pause
+    exit /b 1
+)
+
 echo [信息] 开始编译 PyMC 服务端...
 echo.
 
@@ -110,6 +124,7 @@ echo.
     --include-data-dir=native=native ^
     --include-data-files=native/terrain_gen.exe=native/terrain_gen.exe ^
     --include-data-files=native/mob_ai.exe=native/mob_ai.exe ^
+    --include-data-files=native/pymc_vanilla.dll=native/pymc_vanilla.dll ^
     --include-data-files=world/blocks.json=world/blocks.json ^
     --include-data-dir=protocol/data=protocol/data ^
     --include-data-dir=world/data=world/data ^

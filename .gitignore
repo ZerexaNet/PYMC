@@ -21,6 +21,9 @@ native/pymc_native_server
 native/pymc_native_server.exe
 native/libpymc_native.so
 native/pymc_native.dll
+native/libpymc_vanilla.so
+native/libpymc_vanilla.dylib
+native/pymc_vanilla.dll
 
 # 服务端运行时文件 (原版布局)
 /logs/
