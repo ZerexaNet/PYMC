@@ -1101,9 +1101,59 @@ class LeveledAnalog(Block):
 # powered / activator rails
 # --------------------------------------------------------------------------
 
-class PoweredRail(Block):
-    def __init__(self, name: str):
+class BaseRail(Block):
+    """BaseRailBlock: rails pop without support; straight rails update their surroundings when removed."""
+
+    def __init__(self, name: str, straight: bool):
         self.name = name
+        self.straight = straight
+
+    @staticmethod
+    def _ascending_support(shape):
+        return {"ascending_east": "east", "ascending_west": "west",
+                "ascending_north": "north", "ascending_south": "south"}.get(shape)
+
+    def should_be_removed(self, level, pos, state) -> bool:
+        if not is_face_sturdy(level.get(rel(pos, "down")), "up"):
+            return True
+        side = self._ascending_support(prop(state, "shape", ""))
+        return side is not None and not is_face_sturdy(level.get(rel(pos, side)), "up")
+
+    def update_state(self, level, state, pos, source):
+        if self.straight:
+            level.neighbor_changed(pos, self.name, pos)
+
+    def on_place(self, level, state, pos, old, moved):
+        if name_of(old) != self.name:
+            self.update_state(level, state, pos, self.name)
+
+    def neighbor_changed(self, level, state, pos, source, from_pos, moved):
+        if name_of(level.get(pos)) != self.name:
+            return
+        if self.should_be_removed(level, pos, state):
+            level.drop_resources(state, pos)
+            level.remove_block(pos, moved)
+        else:
+            self.rail_neighbor_update(level, state, pos, source)
+
+    def rail_neighbor_update(self, level, state, pos, source):
+        pass
+
+    def on_remove(self, level, state, pos, new, moved):
+        if moved:
+            return
+        if prop(state, "shape", "").startswith("ascending"):
+            level.update_neighbors_at(rel(pos, "up"), self.name)
+        if self.straight:
+            level.update_neighbors_at(pos, self.name)
+            level.update_neighbors_at(rel(pos, "down"), self.name)
+
+
+class PoweredRail(BaseRail):
+    """PoweredRailBlock (powered and activator rails)."""
+
+    def __init__(self, name: str):
+        super().__init__(name, True)
 
     def _find_signal(self, level, pos, state, forward: bool, distance: int) -> bool:
         if distance >= 8:
@@ -1158,7 +1208,7 @@ class PoweredRail(Block):
             return False
         return level.has_neighbor_signal(pos) or self._find_signal(level, pos, state, forward, distance + 1)
 
-    def neighbor_changed(self, level, state, pos, source, from_pos, moved):
+    def rail_neighbor_update(self, level, state, pos, source):
         powered = prop(state, "powered") == "true"
         should = level.has_neighbor_signal(pos) or self._find_signal(level, pos, state, True, 0) \
             or self._find_signal(level, pos, state, False, 0)
@@ -1167,6 +1217,50 @@ class PoweredRail(Block):
             level.update_neighbors_at(rel(pos, "down"), self.name)
             if prop(state, "shape", "").startswith("ascending"):
                 level.update_neighbors_at(rel(pos, "up"), self.name)
+
+
+class DetectorRail(BaseRail):
+    """DetectorRailBlock: a source while a minecart is on it (no minecarts yet: unpowered)."""
+
+    def __init__(self, name: str):
+        super().__init__(name, True)
+
+    def get_signal(self, level, state, pos, direction) -> int:
+        return 15 if prop(state, "powered") == "true" else 0
+
+    def get_direct_signal(self, level, state, pos, direction) -> int:
+        return 15 if prop(state, "powered") == "true" and direction == "up" else 0
+
+    def is_signal_source(self, state) -> bool:
+        return True
+
+    def on_remove(self, level, state, pos, new, moved):
+        if moved:
+            return
+        super().on_remove(level, state, pos, new, moved)
+        if prop(state, "powered") == "true":
+            level.update_neighbors_at(pos, self.name)
+            level.update_neighbors_at(rel(pos, "down"), self.name)
+
+    def has_analog_output(self, state) -> bool:
+        return True
+
+
+class CoralFan(Block):
+    """Coral fans: pop when their support goes (and are pushable, see piston.push_reaction)."""
+
+    def __init__(self, name: str, wall: bool):
+        self.name = name
+        self.wall = wall
+
+    def support_direction(self, state) -> str:
+        return OPP[prop(state, "facing")] if self.wall else "down"
+
+    def update_shape(self, level, state, direction, neighbor_state, pos, neighbor_pos):
+        support = self.support_direction(state)
+        if direction == support and not is_face_sturdy(neighbor_state, OPP[support]):
+            return AIR
+        return state
 
 
 # --------------------------------------------------------------------------
@@ -1419,6 +1513,14 @@ def build_registry() -> dict:
             add(Dispenser(name))
         elif short in ("powered_rail", "activator_rail"):
             add(PoweredRail(name))
+        elif short == "detector_rail":
+            add(DetectorRail(name))
+        elif short == "rail":
+            add(BaseRail(name, False))
+        elif short.endswith("_coral_wall_fan"):
+            add(CoralFan(name, True))
+        elif short.endswith("_coral_fan"):
+            add(CoralFan(name, False))
         elif short in ("chest", "trapped_chest", "barrel", "furnace", "blast_furnace", "smoker",
                        "brewing_stand", "crafter") or short.endswith("shulker_box"):
             add(Container(name))
@@ -1431,7 +1533,7 @@ def build_registry() -> dict:
         elif short == "respawn_anchor":
             add(LeveledAnalog(name, "charges", lambda c: int(c / 4 * 15)))
         elif short in ("torch", "soul_torch", "redstone_wire_dummy") or short.endswith("_carpet") \
-                or short in ("rail", "detector_rail") or short.endswith("_sapling") or short in (
+                or short.endswith("_sapling") or short in (
                     "short_grass", "fern", "dandelion", "poppy", "sugar_cane", "wheat", "carrots", "potatoes"):
             add(NeedsSupportBelow(name))
         elif short in ("wall_torch", "soul_wall_torch", "ladder") or short.endswith("_wall_sign"):

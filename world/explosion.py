@@ -13,6 +13,8 @@ Vanilla 1.21.1 explosions (net.minecraft.world.level.Explosion):
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import math
 import random
@@ -119,60 +121,95 @@ def _clear_line(get_block, passable, start, end) -> bool:
     return True
 
 
-async def explode(server, x: float, y: float, z: float, power: float = 4.0,
-                  source=None, destroy_blocks: bool = True):
-    """Run a vanilla explosion at (x, y, z)."""
-    from handlers.play.blocks import _broadcast_multi_block_changes
-    from .block_behavior import get_block_drops
-    from .chunk_io import BLOCK_NAME_TO_DEFAULT_STATE, STATE_ID_TO_BLOCK
-    from .editing import _get_block_from_cache, _save_dirty_chunks, _set_block_in_cache
+# Explosions are computed off the event loop, whether or not the server's
+# multithreaded chunk generation is enabled: rays, exposure and loot rolls only
+# read the world; applying the result happens back on the server thread.
+_EXPLOSION_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="Explosion")
 
-    rng = random.Random()
+
+def _plan_explosion(server, x, y, z, power, destroy, targets, seed):
+    """Worker thread: what the explosion destroys, drops and does to each target (read only)."""
+    from .block_behavior import get_block_drops
+    from .chunk_io import STATE_ID_TO_BLOCK
+    from .editing import _get_block_from_cache
+    rng = random.Random(seed)
     cache: dict = {}
 
     def get_block(bx, by, bz):
         return _get_block_from_cache(server, cache, bx, by, bz)
 
+    positions = affected_blocks(get_block, x, y, z, power, rng) if destroy else []
+    rng.shuffle(positions)
+    blocks = []
+    for pos in positions:
+        state = get_block(*pos)
+        if not state:
+            continue
+        name, props = STATE_ID_TO_BLOCK.get(state, ("minecraft:air", {}))
+        drops = [] if name == "minecraft:tnt" else [
+            (stack.item_id, stack.count) for stack in get_block_drops(name, None, props, explosion_radius=power)]
+        blocks.append((pos, state, name, drops, rng.randrange(20) + 10))
+    reach = power * 2.0
+    impacts = []
+    for key, box_min, box_max, eye in targets:
+        impact, direction = _impact(get_block, (x, y, z), reach, box_min, box_max, eye)
+        if impact > 0:
+            impacts.append((key, impact, direction))
+    return blocks, impacts
+
+
+async def explode(server, x: float, y: float, z: float, power: float = 4.0,
+                  source=None, destroy_blocks: bool = True):
+    """Run a vanilla explosion at (x, y, z)."""
+    from handlers.play.blocks import _broadcast_multi_block_changes
+    from .editing import _get_block_from_cache, _save_dirty_chunks, _set_block_in_cache
+
     mob_griefing = server.gamerules.get("mobGriefing", True) if hasattr(server, "gamerules") else True
     from_creeper = getattr(source, "mob_type", None) == "creeper"
-    blocks = affected_blocks(get_block, x, y, z, power, rng) if destroy_blocks and (mob_griefing or not from_creeper) else []
+    destroy = destroy_blocks and (mob_griefing or not from_creeper)
 
-    # --- entities: damage + knockback -------------------------------------
-    knockback: dict = {}
-    reach = power * 2.0
-    for player in list(server.get_online_players()):
-        if getattr(player, "_dead", False) or player.gamemode == "spectator":
-            continue
-        impact, direction = _impact(get_block, (x, y, z), reach,
-                                    (player.x - 0.3, player.y, player.z - 0.3),
-                                    (player.x + 0.3, player.y + 1.8, player.z + 0.3),
-                                    (player.x, player.y + 1.62, player.z))
-        if impact <= 0:
-            continue
-        damage = (impact * impact + impact) / 2.0 * 7.0 * reach + 1.0
-        from handlers.play.join import _damage_player
-        await _damage_player(player, damage, "爆炸", server)
-        if player.gamemode != "creative" or not getattr(player, "flying", False):
-            blast = sum(_blast_protection(item) for item in (player.inventory_obj.slots[36:40]
-                                                               if getattr(player, "inventory_obj", None) else ()))
-            factor = impact * max(0.0, 1.0 - blast * 0.15)
-            knockback[player] = tuple(d * factor for d in direction)
-
-    from handlers.play.combat import damage_mob, _broadcast_entity_hurt
-    for entity in list(server.entity_manager.list_entities()):
-        if entity is source or not getattr(entity, "alive", True):
-            continue
+    # snapshot of who can be hit (positions as of now)
+    players = [p for p in server.get_online_players()
+               if not getattr(p, "_dead", False) and p.gamemode != "spectator"]
+    entities = [e for e in server.entity_manager.list_entities()
+                if e is not source and getattr(e, "alive", True)]
+    targets = []
+    for i, player in enumerate(players):
+        targets.append((("player", i), (player.x - 0.3, player.y, player.z - 0.3),
+                        (player.x + 0.3, player.y + 1.8, player.z + 0.3), (player.x, player.y + 1.62, player.z)))
+    for i, entity in enumerate(entities):
         height = float(getattr(entity, "profile", {}).get("height", 0.98 if entity.kind == "tnt" else 0.25))
         half = 0.49 if entity.kind == "tnt" else 0.3
         eye = entity.y if entity.kind == "tnt" else entity.y + height * 0.85
-        impact, direction = _impact(get_block, (x, y, z), reach,
-                                    (entity.x - half, entity.y, entity.z - half),
-                                    (entity.x + half, entity.y + height, entity.z + half),
-                                    (entity.x, eye, entity.z))
-        if impact <= 0:
+        targets.append((("entity", i), (entity.x - half, entity.y, entity.z - half),
+                        (entity.x + half, entity.y + height, entity.z + half), (entity.x, eye, entity.z)))
+
+    loop = asyncio.get_running_loop()
+    blocks, impacts = await loop.run_in_executor(
+        _EXPLOSION_POOL, _plan_explosion, server, x, y, z, power, destroy, targets, random.getrandbits(48))
+
+    # --- entities: damage + knockback (server thread) ----------------------
+    reach = power * 2.0
+    knockback: dict = {}
+    from handlers.play.combat import damage_mob, _broadcast_entity_hurt
+    from handlers.play.join import _damage_player
+    for (kind, index), impact, direction in impacts:
+        damage = (impact * impact + impact) / 2.0 * 7.0 * reach + 1.0
+        if kind == "player":
+            player = players[index]
+            if getattr(player, "_dead", False):
+                continue
+            await _damage_player(player, damage, "爆炸", server)
+            if player.gamemode != "creative" or not getattr(player, "flying", False):
+                blast = sum(_blast_protection(item) for item in (player.inventory_obj.slots[36:40]
+                                                                   if getattr(player, "inventory_obj", None) else ()))
+                factor = impact * max(0.0, 1.0 - blast * 0.15)
+                knockback[player] = tuple(d * factor for d in direction)
+            continue
+        entity = entities[index]
+        if not getattr(entity, "alive", True):
             continue
         if entity.kind == "mob":
-            damage = (impact * impact + impact) / 2.0 * 7.0 * reach + 1.0
             killed = damage_mob(server, entity, damage)
             await _broadcast_entity_hurt(server, entity.entity_id, entity.x, entity.z,
                                          damage_type="minecraft:explosion", dead=killed)
@@ -184,37 +221,36 @@ async def explode(server, x: float, y: float, z: float, power: float = 4.0,
         entity.vz += direction[2] * impact
         entity.on_ground = False
 
-    # --- blocks -------------------------------------------------------------
-    tnt_state = BLOCK_NAME_TO_DEFAULT_STATE.get("minecraft:tnt")
-    rng.shuffle(blocks)
+    # --- blocks (server thread) ---------------------------------------------
+    cache: dict = {}
     dirty: set = set()
     changes = []
     drops = []
-    for bx, by, bz in blocks:
-        state = get_block(bx, by, bz)
-        if not state:
-            continue
-        name, props = STATE_ID_TO_BLOCK.get(state, ("minecraft:air", {}))
-        if state == tnt_state or name == "minecraft:tnt":
+    destroyed = []
+    for (bx, by, bz), state, name, block_drops, fuse in blocks:
+        if _get_block_from_cache(server, cache, bx, by, bz) != state:
+            continue          # changed while the explosion was being computed
+        destroyed.append((bx, by, bz))
+        if name == "minecraft:tnt":
             # chain reaction: primed with a short random fuse
-            server.entity_manager.create_tnt(bx + 0.5, by, bz + 0.5, fuse=rng.randrange(20) + 10)
+            server.entity_manager.create_tnt(bx + 0.5, by, bz + 0.5, fuse=fuse)
         else:
-            for stack in get_block_drops(name, None, props, explosion_radius=power):
-                drops.append((bx, by, bz, stack))
+            drops.extend((bx, by, bz, item_id, count) for item_id, count in block_drops)
         if _set_block_in_cache(server, cache, dirty, bx, by, bz, 0):
             changes.append((bx, by, bz, 0))
     _save_dirty_chunks(server, cache, dirty)   # also notifies the redstone engine
 
     # vanilla merges identical drops (up to a full stack) before popping them
     merged: list[list] = []          # [x, y, z, item_id, count]
-    for bx, by, bz, stack in drops:
+    for bx, by, bz, item_id, count in drops:
         for pile in merged:
-            if pile[3] == stack.item_id and pile[4] + stack.count <= 64:
-                pile[4] += stack.count
+            if pile[3] == item_id and pile[4] + count <= 64:
+                pile[4] += count
                 break
         else:
-            merged.append([bx, by, bz, stack.item_id, stack.count])
+            merged.append([bx, by, bz, item_id, count])
     from handlers.play.entities import broadcast_entity_spawn
+    rng = random.Random()
     for bx, by, bz, item_id, count in merged:
         item = server.entity_manager.create_item(bx + 0.5, by + 0.25, bz + 0.5, item_id, count)
         item.vx, item.vy, item.vz = rng.uniform(-0.1, 0.1), 0.2, rng.uniform(-0.1, 0.1)
@@ -222,10 +258,10 @@ async def explode(server, x: float, y: float, z: float, power: float = 4.0,
         await broadcast_entity_spawn(server, item)
 
     # --- packets ------------------------------------------------------------
-    await _send_explosion_packets(server, x, y, z, power, blocks, knockback)
+    await _send_explosion_packets(server, x, y, z, power, destroyed, knockback)
     if changes:
         await _broadcast_multi_block_changes(server, changes)
-    return blocks
+    return destroyed
 
 
 def _blast_protection(item) -> int:
