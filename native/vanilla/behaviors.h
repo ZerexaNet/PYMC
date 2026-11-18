@@ -729,6 +729,45 @@ struct Container : Behavior {
     int analog_output(Level& L, int, Pos pos) override { return container_signal(L, pos); }
 };
 
+// ChestBlock: double chests join and split through shape updates
+struct ChestBlock : Container {
+    int self;
+    explicit ChestBlock(int s) : self(s) {}
+    static Dir connected(Level& L, int st) {
+        Dir f = facing(L, st);
+        if (f == NODIR || f == UP || f == DOWN) return NODIR;
+        return L.table.is(st, "type", "left") ? cw(f) : ccw(f);
+    }
+    int update_shape(Level& L, int st, Dir d, int ns, Pos, Pos) override {
+        if (L.is_block(ns, self) && d >= NORTH) {
+            const std::string& other = L.table.prop(ns, "type");
+            if (L.table.is(st, "type", "single") && other != "single" && facing(L, st) == facing(L, ns) &&
+                connected(L, ns) == OPPD[d])
+                return L.table.with(st, "type", other == "left" ? "right" : "left");
+        } else if (connected(L, st) == d) {
+            return L.table.with(st, "type", "single");
+        }
+        return st;
+    }
+};
+
+// ComposterBlock: level 7 turns ready (8) after 20 ticks
+struct Composter : Behavior {
+    int self;
+    explicit Composter(int s) : self(s) {}
+    void on_place(Level& L, int st, Pos pos, int, bool) override {
+        if (L.table.prop_int(st, "level") == 7) L.schedule_tick(pos, self, 20);
+    }
+    void tick(Level& L, int st, Pos pos) override {
+        if (L.table.prop_int(st, "level") == 7) {
+            L.set_block(pos, L.table.with(st, "level", 8), UPDATE_ALL);
+            L.effect(FX_SOUND, pos, SND_COMPOSTER_READY, 100);
+        }
+    }
+    bool has_analog_output(int) override { return true; }
+    int analog_output(Level& L, int st, Pos) override { return L.table.prop_int(st, "level"); }
+};
+
 struct LeveledAnalog : Behavior {
     const char* key;
     int mode;  // 0 raw, 1 cake, 2 anchor
@@ -1395,10 +1434,12 @@ inline void build_registry(Level& L) {
         else if (s == "rail") add(i, new BaseRail(i, false));
         else if (ends_with(s, "_coral_wall_fan")) add(i, new CoralFan(true));
         else if (ends_with(s, "_coral_fan")) add(i, new CoralFan(false));
-        else if (s == "chest" || s == "trapped_chest" || s == "barrel" || s == "furnace" || s == "blast_furnace" ||
+        else if (s == "chest" || s == "trapped_chest") add(i, new ChestBlock(i));
+        else if (s == "composter") add(i, new Composter(i));
+        else if (s == "barrel" || s == "furnace" || s == "blast_furnace" ||
                  s == "smoker" || s == "brewing_stand" || s == "crafter" || ends_with(s, "shulker_box"))
             add(i, new Container());
-        else if (s == "composter" || s == "water_cauldron" || s == "powder_snow_cauldron") add(i, new LeveledAnalog("level", 0));
+        else if (s == "water_cauldron" || s == "powder_snow_cauldron") add(i, new LeveledAnalog("level", 0));
         else if (s == "cake") add(i, new LeveledAnalog("bites", 1));
         else if (s == "respawn_anchor") add(i, new LeveledAnalog("charges", 2));
         else if (s == "torch" || s == "soul_torch" || ends_with(s, "_carpet") || ends_with(s, "_sapling") ||

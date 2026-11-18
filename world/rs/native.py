@@ -27,24 +27,28 @@ from .core import DIRECTIONS, name_of
 
 logger = logging.getLogger("PyMC.红石")
 
-ABI_VERSION = 2
+ABI_VERSION = 3
 
 LOAD_CHUNK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_uint16))
 CONTAINER_SIGNAL = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
 ENTITY_COUNT = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
-INV_GET = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+INV_GET = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                            ctypes.POINTER(ctypes.c_int32), ctypes.c_int)
-CAN_PLACE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                             ctypes.c_int)
-TRANSFER = ctypes.CFUNCTYPE(None, *([ctypes.c_int] * 9))
-PICKUP = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
+CAN_PLACE = ctypes.CFUNCTYPE(ctypes.c_int, *([ctypes.c_int] * 7))
+TAKE = ctypes.CFUNCTYPE(None, *([ctypes.c_int] * 6))
+GIVE = ctypes.CFUNCTYPE(None, *([ctypes.c_int] * 7))
+PICKUP = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
+COMPOST = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_int)
 
 CHUNK_BYTES = 384 * 16 * 16 * 2
 
 FX_DROP, FX_SOUND, FX_NOTE, FX_DISPENSE, FX_PRIME_TNT, FX_BURNOUT = 1, 2, 3, 4, 5, 6
 SOUNDS = {1: "minecraft:block.lever.click", 2: "minecraft:block.stone_button.click_on",
           3: "minecraft:block.wooden_button.click_on", 4: "minecraft:block.piston.extend",
-          5: "minecraft:block.piston.contract"}
+          5: "minecraft:block.piston.contract", 6: "minecraft:block.composter.fill",
+          7: "minecraft:block.composter.fill_success", 8: "minecraft:block.composter.empty",
+          9: "minecraft:block.composter.ready"}
+FURNACES = ("furnace", "blast_furnace", "smoker")
 DIR_NAMES = ("down", "up", "north", "south", "west", "east")
 
 # ----------------------------------------------------------------- loading
@@ -85,7 +89,8 @@ def _declare(lib):
     i, i32p, d = ctypes.c_int, ctypes.POINTER(ctypes.c_int32), ctypes.c_double
     lib.vrs_init.argtypes = [ctypes.c_char_p]
     lib.vrs_set_callbacks.argtypes = [LOAD_CHUNK, CONTAINER_SIGNAL, ENTITY_COUNT]
-    lib.vrs_set_hopper_callbacks.argtypes = [INV_GET, CAN_PLACE, TRANSFER, PICKUP]
+    lib.vrs_set_hopper_callbacks.argtypes = [INV_GET, CAN_PLACE, TAKE, GIVE, PICKUP, COMPOST, i]
+    lib.vrs_tick_hopper_minecarts.argtypes = [i32p, ctypes.POINTER(d), ctypes.POINTER(ctypes.c_uint8), i]
     for name in ("vrs_drain_changes", "vrs_drain_effects", "vrs_drain_actions", "vrs_drain_hopper_changes",
                  "vrs_export_ticks", "vrs_export_comparators"):
         getattr(lib, name).argtypes = [i32p, i]
@@ -215,14 +220,17 @@ class NativeRedstoneEngine(RedstoneEngine):
         self.pending_effects: list = []
         self.block_actions: list = []
         self._item_keys: dict = {}
-        self._item_by_key: list = [None]
+        self._item_proto: list = [None]
         self._ticks_since_refresh = 0
         self._buf = (ctypes.c_int32 * (6 * 4096))()
+        from ..inventory import ItemStack
+        bone_meal = self._item_key(ItemStack("minecraft:bone_meal", 1))
         self._callbacks = (LOAD_CHUNK(self._cb_load_chunk), CONTAINER_SIGNAL(self._cb_container_signal),
                            ENTITY_COUNT(self._cb_entity_count), INV_GET(self._cb_inv_get),
-                           CAN_PLACE(self._cb_can_place), TRANSFER(self._cb_transfer), PICKUP(self._cb_pickup))
+                           CAN_PLACE(self._cb_can_place), TAKE(self._cb_take), GIVE(self._cb_give),
+                           PICKUP(self._cb_pickup), COMPOST(self._cb_compost))
         lib.vrs_set_callbacks(*self._callbacks[:3])
-        lib.vrs_set_hopper_callbacks(*self._callbacks[3:])
+        lib.vrs_set_hopper_callbacks(*self._callbacks[3:], bone_meal)
         self._block_names = self._registry_names()
         self._load_ticks()
 
@@ -268,107 +276,178 @@ class NativeRedstoneEngine(RedstoneEngine):
             return 0
 
     def _item_key(self, stack) -> int:
+        """Small integer for an item kind (id + damage + components); equal keys stack together."""
         ident = (stack.item_id, stack.damage, repr(sorted(stack.nbt.items())) if stack.nbt else "")
         key = self._item_keys.get(ident)
         if key is None:
-            key = len(self._item_by_key)
+            key = len(self._item_proto)
             self._item_keys[ident] = key
-            self._item_by_key.append(ident)
+            proto = stack.copy()
+            proto.count = 1
+            self._item_proto.append(proto)
         return key
 
-    def _cb_inv_get(self, x, y, z, face, out, cap):
+    def _owner_container(self, kind, a, b, c):
+        """The ContainerData holding an owner's slots (kind 0: block at a,b,c; kind 1: entity a)."""
+        if kind == 1:
+            manager = getattr(self.server, "entity_manager", None)
+            entity = manager.get_entity(a) if manager is not None else None
+            if entity is None or not getattr(entity, "alive", True):
+                return None
+            return getattr(entity, "container", None)
+        from ..block_behavior import container_manager
+        return container_manager.get_container(a, b, c)
+
+    def _cb_inv_get(self, kind, a, b, c, face, out, cap):
+        """Slots of the container at a block (block container, else a container minecart there) or of an entity."""
         try:
-            from ..block_behavior import container_manager
-            container = container_manager.get_container(x, y, z)
-            if container is None:
-                return -1
-            items = container.items
-            if container.type in ("furnace", "blast_furnace", "smoker") and len(items) >= 3:
-                slots = {0: [2, 1], 1: [0], 6: [0, 1, 2]}.get(face, [1])
+            records = []          # (owner kind, a, b, c, slot, stack, flags)
+            if kind == 1:
+                container = self._owner_container(1, a, 0, 0)
+                if container is None:
+                    return -1
+                records = [(1, a, 0, 0, i, stack, 5) for i, stack in enumerate(container.items)]
             else:
-                slots = range(len(items))
+                from ..block_behavior import container_view
+                view = container_view(a, b, c)
+                if view is not None:
+                    records = self._block_slots(view, (a, b, c), face)
+                else:
+                    from ..minecart import container_minecarts_at
+                    carts = container_minecarts_at(self.server, a, b, c)
+                    if not carts:
+                        return -1
+                    cart = carts[0]
+                    records = [(1, cart.entity_id, 0, 0, i, stack, 5) for i, stack in enumerate(cart.container.items)]
             n = 0
-            for slot in slots:
-                if n >= cap:
-                    break
-                stack = items[slot] if slot < len(items) else None
+            for okind, oa, ob, oc, slot, stack, flags in records[:cap]:
                 empty = stack is None or stack.is_empty
-                flags = 1 | 4
-                if container.type in ("furnace", "blast_furnace", "smoker"):
-                    if slot == 2:
-                        flags = 4                       # result: take only
-                    elif slot == 1:
-                        flags = 2                       # fuel: fuel items only; buckets come out downwards
-                        if face == 0 and not empty and stack.item_id in ("minecraft:bucket", "minecraft:water_bucket"):
-                            flags |= 4
-                base = n * 5
-                out[base] = slot
-                out[base + 1] = 0 if empty else self._item_key(stack)
-                out[base + 2] = 0 if empty else stack.count
-                out[base + 3] = 64 if empty else stack.max_stack_size
-                out[base + 4] = flags
+                base = n * 9
+                out[base] = okind
+                out[base + 1] = oa
+                out[base + 2] = ob
+                out[base + 3] = oc
+                out[base + 4] = slot
+                out[base + 5] = 0 if empty else self._item_key(stack)
+                out[base + 6] = 0 if empty else stack.count
+                out[base + 7] = 64 if empty else stack.max_stack_size
+                out[base + 8] = flags
                 n += 1
             return n
         except Exception:
             logger.exception("native engine: container read failed")
             return -1
 
-    def _cb_can_place(self, x, y, z, slot, item, face):
+    @staticmethod
+    def _block_slots(view, pos, face):
+        items = view.items
+        if getattr(view, "type", "") in FURNACES and len(items) >= 3:
+            # AbstractFurnaceBlockEntity.getSlotsForFace
+            records = []
+            for slot in {0: [2, 1], 1: [0], 6: [0, 1, 2]}.get(face, [1]):
+                stack = items[slot]
+                if slot == 2:
+                    flags = 4                           # result: take only
+                elif slot == 1:
+                    flags = 2                           # fuel: fuel items only; empty buckets come out downwards
+                    if face == 0 and stack is not None and not stack.is_empty \
+                            and stack.item_id in ("minecraft:bucket", "minecraft:water_bucket"):
+                        flags |= 4
+                else:
+                    flags = 1 | 4
+                records.append((0, pos[0], pos[1], pos[2], slot, stack, flags))
+            return records
+        owner_of = getattr(view, "owner_of", None)
+        records = []
+        for index in range(len(items)):
+            if owner_of is not None:
+                (ox, oy, oz), slot = owner_of(index)
+            else:
+                (ox, oy, oz), slot = pos, index
+            records.append((0, ox, oy, oz, slot, items[index], 1 | 4))
+        return records
+
+    def _cb_can_place(self, kind, a, b, c, slot, item, face):
         try:
             from ..crafting import FUEL_VALUES
-            ident = self._item_by_key[item]
-            return 1 if ident is not None and (FUEL_VALUES.get(ident[0], 0) > 0 or ident[0] == "minecraft:bucket") else 0
+            proto = self._item_proto[item]
+            return 1 if proto is not None and (FUEL_VALUES.get(proto.item_id, 0) > 0
+                                               or proto.item_id == "minecraft:bucket") else 0
         except Exception:
             return 0
 
-    def _cb_transfer(self, sx, sy, sz, sslot, dx, dy, dz, dslot, count):
+    def _cb_take(self, kind, a, b, c, slot, count):
         try:
-            from ..block_behavior import container_manager
-            source = container_manager.get_container(sx, sy, sz)
-            target = container_manager.get_container(dx, dy, dz)
-            if source is None or target is None:
+            container = self._owner_container(kind, a, b, c)
+            if container is None:
                 return
-            stack = source.items[sslot]
+            stack = container.items[slot]
             if stack is None or stack.is_empty:
                 return
-            existing = target.items[dslot]
-            if existing is None or existing.is_empty:
-                moved = stack.copy()
-                moved.count = count
-                target.items[dslot] = moved
-            else:
-                existing.count += count
             stack.count -= count
             if stack.count <= 0:
-                source.items[sslot] = None
+                container.items[slot] = None
         except Exception:
-            logger.exception("native engine: hopper transfer failed")
+            logger.exception("native engine: hopper take failed")
 
-    def _cb_pickup(self, x, y, z):
-        """HopperBlockEntity.addItem(container, ItemEntity) for items in the hopper's suck area."""
+    def _cb_give(self, kind, a, b, c, slot, item, count):
         try:
-            from ..block_behavior import container_manager
+            container = self._owner_container(kind, a, b, c)
+            proto = self._item_proto[item] if 0 < item < len(self._item_proto) else None
+            if container is None or proto is None:
+                return
+            existing = container.items[slot]
+            if existing is None or existing.is_empty:
+                stack = proto.copy()
+                stack.count = count
+                container.items[slot] = stack
+            else:
+                existing.count += count
+        except Exception:
+            logger.exception("native engine: hopper give failed")
+
+    def _cb_compost(self, item):
+        proto = self._item_proto[item] if 0 < item < len(self._item_proto) else None
+        if proto is None:
+            return 0.0
+        from ..composter import compost_chance
+        return compost_chance(proto.item_id)
+
+    def _cb_pickup(self, kind, a, b, c):
+        """HopperBlockEntity.addItem(container, ItemEntity) for the items in the suck area."""
+        try:
             from ..inventory import ItemStack
             manager = getattr(self.server, "entity_manager", None)
-            hopper = container_manager.get_container(x, y, z)
-            if manager is None or hopper is None:
+            if manager is None:
                 return 0
+            if kind == 1:
+                cart = manager.get_entity(a)
+                container = getattr(cart, "container", None)
+                if container is None:
+                    return 0
+                (x0, y0, z0), (x1, y1, z1) = cart.bounding_box()
+                box = (x0 - 0.25, y0, z0 - 0.25, x1 + 0.25, y1, z1 + 0.25)
+            else:
+                from ..block_behavior import container_manager
+                container = container_manager.get_container(a, b, c)
+                if container is None:
+                    return 0
+                box = (a, b + 0.6875, c, a + 1, b + 2, c + 1)       # Hopper.SUCK shape
             absorbed = False
             for entity in manager.list_entities():
                 if entity.kind != "item" or not getattr(entity, "alive", True):
                     continue
-                if not (x <= entity.x < x + 1 and z <= entity.z < z + 1 and y + 0.6875 <= entity.y < y + 2):
+                if not (box[0] <= entity.x < box[3] and box[1] <= entity.y < box[4] and box[2] <= entity.z < box[5]):
                     continue
                 item_name = getattr(entity, "item_name", None) or entity.metadata.get("item_name")
                 remaining = int(getattr(entity, "count", entity.metadata.get("count", 1)))
-                probe = ItemStack(item_name, 1)
-                max_size = probe.max_stack_size
-                for index, stack in enumerate(hopper.items):
+                max_size = ItemStack(item_name, 1).max_stack_size
+                for index, stack in enumerate(container.items):
                     if remaining <= 0:
                         break
                     if stack is None or stack.is_empty:
                         put = min(remaining, max_size)
-                        hopper.items[index] = ItemStack(item_name, put)
+                        container.items[index] = ItemStack(item_name, put)
                         remaining -= put
                     elif stack.item_id == item_name and not stack.nbt and stack.count < max_size:
                         put = min(remaining, max_size - stack.count)
@@ -400,6 +479,17 @@ class NativeRedstoneEngine(RedstoneEngine):
         if hoppers:
             arr = (ctypes.c_int32 * (len(hoppers) * 3))(*chain.from_iterable(hoppers))
             lib.vrs_tick_hoppers(arr, len(hoppers))
+        try:
+            from ..minecart import hopper_minecarts
+            carts = hopper_minecarts(self.server)
+        except Exception:
+            carts = []
+        if carts:
+            n = len(carts)
+            ids = (ctypes.c_int32 * n)(*[c.entity_id for c in carts])
+            xyz = (ctypes.c_double * (3 * n))(*chain.from_iterable((c.x, c.y, c.z) for c in carts))
+            enabled = (ctypes.c_uint8 * n)(*[1 if c.enabled else 0 for c in carts])
+            lib.vrs_tick_hopper_minecarts(ids, xyz, enabled, n)
         self._finish_step()
 
     def _hopper_positions(self) -> list:
@@ -480,8 +570,11 @@ class NativeRedstoneEngine(RedstoneEngine):
                                 "block": "minecraft:dropper" if b else "minecraft:dispenser"})
         for x, y, z, block_id, event, param in self._drain(lib.vrs_drain_actions, 6):
             self.block_actions.append(((x, y, z), self._block_names.get(block_id, "minecraft:air"), event, param))
-        for x, y, z in self._drain(lib.vrs_drain_hopper_changes, 3):
-            self.pending_effects.append(("container_changed", {"pos": (x, y, z)}))
+        for kind, a, b, c in self._drain(lib.vrs_drain_hopper_changes, 4):
+            if kind == 0:
+                self.pending_effects.append(("container_changed", {"pos": (a, b, c)}))
+            else:
+                self.pending_effects.append(("container_changed", {"entity_id": a}))
         changes = self._drain(lib.vrs_drain_changes, 4)
         if changes:
             self._apply_changes(changes)

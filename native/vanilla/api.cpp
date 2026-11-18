@@ -31,7 +31,7 @@ static std::recursive_mutex M;
 
 static Pos P(int x, int y, int z) { return Pos{x, y, z}; }
 
-VRS_API int vrs_version() { return 2; }
+VRS_API int vrs_version() { return 3; }
 
 VRS_API int vrs_init(const char* blocks_json) {
     LOCK;
@@ -46,6 +46,7 @@ VRS_API int vrs_init(const char* blocks_json) {
     delete H;
     G = L;
     H = new Hoppers();
+    H->B_COMPOSTER = L->table.index_of("minecraft:composter");
     return 1;
 }
 
@@ -72,12 +73,16 @@ VRS_API void vrs_set_callbacks(LoadChunkFn load, ContainerSignalFn signal, Entit
     G->entity_count = entities;
 }
 
-VRS_API void vrs_set_hopper_callbacks(InvGetFn get, CanPlaceFn can_place, TransferFn transfer, PickupFn pickup) {
+VRS_API void vrs_set_hopper_callbacks(InvGetFn get, CanPlaceFn can_place, TakeFn take, GiveFn give, PickupFn pickup,
+                                      CompostFn compost, int bone_meal_item) {
     LOCK;
     H->inv_get = get;
     H->can_place = can_place;
-    H->transfer = transfer;
+    H->take = take;
+    H->give = give;
     H->pickup = pickup;
+    H->compost = compost;
+    H->bone_meal = bone_meal_item;
 }
 
 // ---------------------------------------------------------------- chunks
@@ -104,6 +109,15 @@ VRS_API int vrs_tick_hoppers(const int32_t* xyz, int n) {
     list.reserve(n);
     for (int i = 0; i < n; i++) list.push_back(P(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]));
     return guarded([&] { H->tick(*G, list); });
+}
+
+// hopper minecarts: ids[n], xyz[3n] (entity position), enabled[n]
+VRS_API int vrs_tick_hopper_minecarts(const int32_t* ids, const double* xyz, const uint8_t* enabled, int n) {
+    LOCK;
+    std::vector<MinecartTick> carts;
+    carts.reserve(n);
+    for (int i = 0; i < n; i++) carts.push_back({ids[i], xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2], enabled[i] != 0});
+    return guarded([&] { H->tick_minecarts(*G, carts); });
 }
 
 VRS_API int64_t vrs_game_time() { LOCK; return G->game_time; }
@@ -219,12 +233,13 @@ VRS_API int vrs_drain_actions(int32_t* out, int cap) {
     return n;
 }
 
-// containers changed by hoppers: x, y, z
+// inventories changed by hoppers: owner kind, a, b, c (0: block container at a,b,c; 1: entity a)
 VRS_API int vrs_drain_hopper_changes(int32_t* out, int cap) {
     LOCK;
     int n = std::min((int)H->changed.size(), cap);
     for (int i = 0; i < n; i++) {
-        out[i * 3] = H->changed[i].x; out[i * 3 + 1] = H->changed[i].y; out[i * 3 + 2] = H->changed[i].z;
+        const Owner& o = H->changed[i];
+        out[i * 4] = o.kind; out[i * 4 + 1] = o.a; out[i * 4 + 2] = o.b; out[i * 4 + 3] = o.c;
     }
     H->changed.erase(H->changed.begin(), H->changed.begin() + n);
     return n;

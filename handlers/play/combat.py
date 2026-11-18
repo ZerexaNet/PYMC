@@ -128,9 +128,13 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
     if parsed is None:
         return
     entity_id, action_type = parsed
-    if action_type != INTERACT_TYPE_ATTACK:
-        return
     if conn.gamemode == "spectator":
+        return
+    minecart = server.entity_manager.get_entity(entity_id)
+    if minecart is not None and minecart.kind == "minecart":
+        await _interact_minecart(conn, server, minecart, action_type)
+        return
+    if action_type != INTERACT_TYPE_ATTACK:
         return
 
     # 原版不丢弃快速攻击, 而是按蓄力程度降低伤害 (最低 20%)
@@ -185,6 +189,37 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
     if conn.gamemode in ("survival", "adventure"):
         from world.item_properties import damage_held_item
         await damage_held_item(conn, server)
+
+
+async def _interact_minecart(conn: Connection, server, cart, action_type: int):
+    """Hit a minecart (it breaks after a few hits) or open a hopper minecart (interact)."""
+    if cart.distance_squared_to(conn.x, conn.y, conn.z) > ATTACK_RANGE_SQUARED:
+        return
+    if action_type == INTERACT_TYPE_ATTACK:
+        from world.minecart import hurt_minecart
+        dropped = hurt_minecart(server, cart, get_attack_damage(conn), conn.gamemode == "creative")
+        if dropped is not None:
+            from handlers.play.entities import broadcast_entity_remove, broadcast_entity_spawn
+            for item in dropped:
+                await broadcast_entity_spawn(server, item)
+            await broadcast_entity_remove(server, [cart.entity_id])
+        return
+    if action_type == 0 and cart.container is not None and not getattr(conn, "sneaking", False):
+        if getattr(conn, "_open_entity_container", None) is cart.container:
+            return                  # interact and interact_at both arrive for one click
+        from world.block_behavior import container_manager
+        from world.inventory import send_open_container, send_container_content
+        window_id = container_manager.allocate_window_id()
+        conn._open_window_id = window_id
+        conn._open_container_pos = None
+        conn._open_container_type = 'entity'
+        conn._open_entity_container = cart.container
+        await send_open_container(conn, window_id, "minecraft:hopper", {"translate": "entity.minecraft.hopper_minecart"})
+        slots = list(cart.container.items)
+        inv = getattr(conn, 'inventory_obj', None)
+        if inv is not None:
+            slots += [inv.get_slot(i) for i in range(9, 36)] + [inv.get_slot(i) for i in range(9)]
+        await send_container_content(conn, window_id, slots)
 
 
 def damage_mob(server, entity, amount: float, source=None) -> bool:

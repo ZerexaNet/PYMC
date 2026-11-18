@@ -62,7 +62,8 @@ enum Flags { UPDATE_NEIGHBORS = 1, UPDATE_CLIENTS = 2, UPDATE_INVISIBLE = 4, UPD
              UPDATE_SUPPRESS_DROPS = 32, UPDATE_MOVE_BY_PISTON = 64, UPDATE_ALL = 3 };
 enum Priority { EXTREMELY_HIGH = -3, VERY_HIGH = -2, HIGH = -1, NORMAL = 0 };
 enum EffectKind { FX_DROP = 1, FX_SOUND = 2, FX_NOTE = 3, FX_DISPENSE = 4, FX_PRIME_TNT = 5, FX_BURNOUT = 6 };
-enum Sound { SND_LEVER = 1, SND_STONE_BUTTON = 2, SND_WOOD_BUTTON = 3, SND_PISTON_OUT = 4, SND_PISTON_IN = 5 };
+enum Sound { SND_LEVER = 1, SND_STONE_BUTTON = 2, SND_WOOD_BUTTON = 3, SND_PISTON_OUT = 4, SND_PISTON_IN = 5,
+             SND_COMPOSTER_FILL = 6, SND_COMPOSTER_FILL_SUCCESS = 7, SND_COMPOSTER_EMPTY = 8, SND_COMPOSTER_READY = 9 };
 
 // Java BlockPos.hashCode and HashSet/HashMap iteration order
 inline int32_t blockpos_hash(const Pos& p) {

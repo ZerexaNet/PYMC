@@ -433,11 +433,14 @@ async def _handle_close_container(conn: Connection, payload: bytes, server=None)
     if getattr(conn, '_open_window_id', None) != window_id:
         return
 
-    from world.block_behavior import container_manager
+    from world.block_behavior import container_manager, container_view
     pos = getattr(conn, '_open_container_pos', None)
     if pos is not None and getattr(conn, '_open_container_type', 'block') == 'block':
-        container_manager.remove_viewer(*pos, conn.entity_id)
+        view = container_view(*pos)
+        for part in getattr(view, "positions", (pos,)):
+            container_manager.remove_viewer(*part, conn.entity_id)
 
+    conn._open_entity_container = None
     conn._open_window_id = None
     conn._open_container_pos = None
     conn._open_container_type = None

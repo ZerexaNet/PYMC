@@ -169,7 +169,7 @@ async def _send_visible_entities_to_player(conn: Connection, server):
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob", "tnt"}:
+        elif entity.kind in {"item", "mob", "tnt", "minecart"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 
@@ -183,7 +183,7 @@ async def broadcast_entity_spawn(server, entity):
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob", "lightning_bolt", "tnt"}:
+        elif entity.kind in {"item", "mob", "lightning_bolt", "tnt", "minecart"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 

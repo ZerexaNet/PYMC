@@ -83,7 +83,8 @@ def _state_for(name: str) -> int | None:
 
 def placement_states(item_id: str, face: int, cursor: tuple[float, float, float],
                      yaw: float, pitch: float, place_pos: tuple[int, int, int],
-                     existing_state: int, get_block) -> list[tuple[tuple[int, int, int], int]] | None:
+                     existing_state: int, get_block,
+                     sneaking: bool = False) -> list[tuple[tuple[int, int, int], int]] | None:
     """
     States to place for using ``item_id`` on ``face`` (cursor = hit position
     inside the clicked block). Returns [(pos, state), ...] (the first entry is
@@ -147,6 +148,9 @@ def placement_states(item_id: str, face: int, cursor: tuple[float, float, float]
         else:
             changes["facing"] = OPPOSITE[horizontal]
 
+    if short in ("chest", "trapped_chest") and "type" in props:
+        changes.update(_chest_type(name, changes.get("facing", "north"), face_name, place_pos, get_block, sneaking))
+
     if "axis" in props:
         changes["axis"] = {"up": "y", "down": "y", "north": "z", "south": "z",
                            "west": "x", "east": "x"}[face_name]
@@ -191,6 +195,37 @@ def placement_states(item_id: str, face: int, cursor: tuple[float, float, float]
             return None
         result = [(place_pos, with_props(state, half="lower")), ((x, y + 1, z), with_props(state, half="upper"))]
     return result
+
+
+def _chest_type(name, facing, face_name, pos, get_block, sneaking) -> dict:
+    """ChestBlock.getStateForPlacement: join a single chest beside it (sneaking: only the clicked one)."""
+    ccw = {v: k for k, v in CLOCKWISE.items()}
+
+    def partner_facing(direction):
+        dx, dy, dz = DIR_VECTORS[direction]
+        state = get_block(pos[0] + dx, pos[1] + dy, pos[2] + dz)
+        other_name, other_props = STATE_ID_TO_BLOCK.get(state or 0, ("", {}))
+        if other_name == name and other_props.get("type") == "single":
+            return other_props.get("facing")
+        return None
+
+    kind = "single"
+    horizontal_face = face_name in CLOCKWISE
+    if horizontal_face and sneaking:
+        candidate = partner_facing(OPPOSITE[face_name])
+        if candidate is not None and _axis(candidate) != _axis(face_name):
+            facing = candidate
+            kind = "right" if ccw[facing] == OPPOSITE[face_name] else "left"
+    if kind == "single" and not sneaking:
+        if facing == partner_facing(CLOCKWISE[facing]):
+            kind = "left"
+        elif facing == partner_facing(ccw[facing]):
+            kind = "right"
+    return {"facing": facing, "type": kind}
+
+
+def _axis(direction: str) -> str:
+    return "x" if direction in ("east", "west") else ("z" if direction in ("north", "south") else "y")
 
 
 def _values(name: str, prop: str) -> set[str]:
