@@ -621,6 +621,22 @@ async def _use_item_on(conn: Connection, server, hand: int,
         except Exception as e:
             logger.warning(f"Block behavior error for {target_name}: {e}")
 
+    # 2b. Minecarts go onto rails (MinecartItem.useOn)
+    inv = getattr(conn, "inventory_obj", None)
+    held = inv.get_held_item_from_slot(conn.selected_hotbar_slot) if inv is not None else None
+    if held is not None and not held.is_empty:
+        from world.minecart import MINECART_ITEMS, RAIL_NAMES, spawn_minecart
+        if held.item_id in MINECART_ITEMS:
+            if target_name in RAIL_NAMES:
+                cart = spawn_minecart(server, held.item_id, target_x, target_y, target_z, getattr(conn, "yaw", 0.0))
+                if cart is not None:
+                    from handlers.play.entities import broadcast_entity_spawn
+                    await broadcast_entity_spawn(server, cart)
+                    _consume_placement_item(conn, held.item_id)
+                    from world.inventory import send_inventory_sync
+                    await send_inventory_sync(conn)
+            return
+
     # 3. Attempt block placement
     # Clicking a replaceable block (grass, fern, a single snow layer...) puts
     # the new block in its place, like vanilla BlockPlaceContext.
@@ -661,7 +677,7 @@ async def _use_item_on(conn: Connection, server, hand: int,
     placements = placement_states(
         item_name, face, cursor, getattr(conn, "yaw", 0.0), getattr(conn, "pitch", 0.0),
         (place_x, place_y, place_z), existing,
-        lambda bx, by, bz: _get_block_at(server, bx, by, bz))
+        lambda bx, by, bz: _get_block_at(server, bx, by, bz), getattr(conn, "sneaking", False))
     if not placements:
         await _reject()
         return

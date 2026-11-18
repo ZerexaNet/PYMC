@@ -66,7 +66,12 @@ def _random_state(rng):
         "comparator", "observer", "piston", "sticky_piston", "slime_block", "honey_block", "stone", "stone",
         "glass", "redstone_block", "lever", "stone_button", "oak_button", "redstone_lamp", "note_block",
         "oak_trapdoor", "target", "rail", "powered_rail", "detector_rail", "dead_tube_coral_fan",
-        "dead_tube_coral_wall_fan", "tnt", "stone_slab", "oak_stairs", "stone_pressure_plate", "air"))
+        "dead_tube_coral_wall_fan", "tnt", "stone_slab", "oak_stairs", "stone_pressure_plate", "chest", "chest",
+        "composter", "air"))
+    if kind == "chest":
+        return S(kind, facing=rng.choice(HORIZ), type=rng.choice(("single", "single", "left", "right")))
+    if kind == "composter":
+        return S(kind, level=str(rng.choice((0, 3, 6, 7, 8))))
     if kind in ("repeater",):
         return S(kind, facing=rng.choice(HORIZ), delay=str(rng.randint(1, 4)))
     if kind == "comparator":
@@ -197,8 +202,7 @@ class NativeExplosions(unittest.TestCase):
 
 # ---------------------------------------------------------------------- hoppers
 
-@unittest.skipUnless(HAVE_NATIVE, "native engine not built")
-class NativeHoppers(unittest.TestCase):
+class _ContainerWorld:
     BASE = (200, 64, 200)
 
     def setUp(self):
@@ -224,6 +228,9 @@ class NativeHoppers(unittest.TestCase):
     def count(container, item="minecraft:stone"):
         return sum(s.count for s in container.items if s is not None and not s.is_empty and s.item_id == item)
 
+
+@unittest.skipUnless(HAVE_NATIVE, "native engine not built")
+class NativeHoppers(_ContainerWorld, unittest.TestCase):
     def test_chest_to_hopper_to_chest(self):
         from world.inventory import ItemStack
         top = self.place(0, 1, 0, "chest", "chest")
@@ -302,3 +309,172 @@ class NativeHoppers(unittest.TestCase):
         self.w.tick(1)
         self.assertEqual(self.count(hopper), 3)
         self.assertFalse(item.alive)
+
+
+# ------------------------------------------------- double chests, composters, hopper minecarts
+
+@unittest.skipUnless(HAVE_NATIVE, "native engine not built")
+class NativeContainersPlus(_ContainerWorld, unittest.TestCase):
+    def test_chests_join_and_split(self):
+        from world.placement import placement_states
+        x, y, z = self.BASE
+        for native in (False, True):
+            w = World(native=native)
+            w.set(x, y, z, S("chest", facing="north"))
+            # a player looking south (chests face the player: north) places a chest east of it: the two join
+            (pos, state), = placement_states("minecraft:chest", 1, (0.5, 1.0, 0.5), 0.0, 0.0, (x + 1, y, z), 0,
+                                             w.get)
+            w.set(*pos, state)
+            self.assertEqual((w.props(x, y, z)["type"], w.props(x + 1, y, z)["type"]), ("left", "right"))
+            w.set(x + 1, y, z, 0)                       # breaking one half splits the other
+            self.assertEqual(w.props(x, y, z)["type"], "single")
+
+    def test_hopper_fills_double_chest_first_half_first(self):
+        from world.block_behavior import container_view
+        from world.inventory import ItemStack
+        x, y, z = self.BASE
+        left = self.place(0, 0, 0, "chest", "chest", facing="north", type="left")
+        right = self.place(1, 0, 0, "chest", "chest", facing="north", type="right")
+        view = container_view(x, y, z)
+        self.assertEqual(len(view.items), 54)
+        self.assertEqual(view.positions, ((x + 1, y, z), (x, y, z)))        # the RIGHT half comes first
+        for i in range(27):
+            right.items[i] = ItemStack("minecraft:stone", 64)
+        hopper = self.place(0, 1, 0, "hopper", "hopper", facing="down")      # above the LEFT half
+        hopper.items[0] = ItemStack("minecraft:dirt", 3)
+        self.place(0, 0, 1, "comparator", facing="north")                    # reads the whole double chest
+        self.w.tick(1 + 8 * 3 + 4)
+        self.assertEqual(self.count(left, "minecraft:dirt"), 3)              # right half full: into the left
+        self.assertEqual(self.w.engine.comparator_outputs().get((x, y, z + 1)), 8)   # 27.05/54 slots
+
+    def test_hopper_below_double_chest_pulls_from_both_halves(self):
+        from world.inventory import ItemStack
+        left = self.place(0, 1, 0, "chest", "chest", facing="north", type="left")
+        right = self.place(1, 1, 0, "chest", "chest", facing="north", type="right")
+        left.items[5] = ItemStack("minecraft:stone", 1)
+        right.items[3] = ItemStack("minecraft:dirt", 1)
+        hopper = self.place(0, 0, 0, "hopper", "hopper", facing="down")
+        self.place(0, -1, 0, "barrel", "barrel")
+        self.w.tick(1)
+        self.assertEqual(self.count(hopper, "minecraft:dirt"), 1)            # slot 3 of the first (right) half
+        self.w.tick(8)
+        self.assertEqual(self.count(right, "minecraft:dirt") + self.count(left), 0)
+
+    def test_composter_with_hoppers(self):
+        from world.inventory import ItemStack
+        x, y, z = self.BASE
+        top = self.place(0, 2, 0, "hopper", "hopper", facing="down")
+        top.items[0] = ItemStack("minecraft:pumpkin_pie", 7)                 # chance 1.0: one level per item
+        top.items[1] = ItemStack("minecraft:stone", 5)                       # not compostable: stays
+        self.place(0, 1, 0, "composter")
+        bottom = self.place(0, 0, 0, "hopper", "hopper", facing="east")
+        out = self.place(1, 0, 0, "chest", "chest")
+        self.place(1, 1, 1, "comparator", facing="north")                    # dummy, keeps chunk busy
+        levels = []
+        for _ in range(8 * 7 + 30):
+            self.w.tick(1)
+            levels.append(int(self.w.props(x, y + 1, z)["level"]))
+        # 7 items -> level 7; 20 ticks later it is ready (8) and the hopper below empties it in that same tick
+        # (block ticks run before block entities)
+        self.assertEqual(levels.count(7), 20)
+        self.assertEqual(levels[-1], 0)
+        self.assertEqual(self.count(bottom, "minecraft:bone_meal") + self.count(out, "minecraft:bone_meal"), 1)
+        self.assertEqual(self.count(top, "minecraft:stone"), 5)
+        self.assertEqual(self.count(top, "minecraft:pumpkin_pie"), 0)
+
+    def _cart(self, dx, dy, dz, variant="hopper_minecart"):
+        from world.minecart import MinecartEntity
+        x, y, z = self.BASE
+        cart = MinecartEntity(self.w.server.get_next_entity_id(), x + dx + 0.5, y + dy + 0.0625, z + dz + 0.5, variant)
+        self.w.entities.append(cart)
+        return cart
+
+    def test_hopper_minecart_sucks_every_tick(self):
+        from world.inventory import ItemStack
+        top = self.place(0, 1, 0, "chest", "chest")
+        top.items[0] = ItemStack("minecraft:stone", 10)
+        self.place(0, 0, 0, "rail")
+        cart = self._cart(0, 0, 0)
+        self.w.tick(4)
+        self.assertEqual(self.count(cart.container), 4)                     # no cooldown: one item per tick
+        # a powered activator rail locks it
+        self.place(0, 0, 1, "redstone_block")
+        self.w.set(self.BASE[0], self.BASE[1], self.BASE[2], S("activator_rail"))
+        self.assertEqual(self.w.props(*self.BASE)["powered"], "true")
+        cart.tick(self.w.server)
+        self.assertFalse(cart.enabled)
+        self.w.tick(4)
+        self.assertEqual(self.count(cart.container), 4)
+
+    def test_hoppers_push_into_and_pull_from_minecarts(self):
+        from world.inventory import ItemStack
+        self.place(0, 0, 0, "rail")
+        cart = self._cart(0, 0, 0)
+        feeder = self.place(-1, 0, 0, "hopper", "hopper", facing="east")    # pushes into the cart
+        feeder.items[0] = ItemStack("minecraft:stone", 2)
+        below = self.place(0, -1, 0, "hopper", "hopper", facing="down")     # pulls from the cart above
+        self.place(0, -2, 0, "chest", "chest")
+        self.w.tick(1)
+        self.assertEqual(self.count(cart.container) + self.count(below), 1)
+        self.w.tick(40)
+        self.assertEqual(self.count(feeder), 0)
+        self.assertEqual(self.count(cart.container), 0)
+
+    def test_hopper_minecart_picks_up_items(self):
+        from types import SimpleNamespace
+        x, y, z = self.BASE
+        self.place(0, 0, 0, "rail")
+        cart = self._cart(0, 0, 0)
+        item = SimpleNamespace(kind="item", entity_id=5, x=x + 0.6, y=y + 0.2, z=z + 0.4, alive=True,
+                               item_name="minecraft:dirt", count=70, metadata={"item_name": "minecraft:dirt",
+                                                                                "count": 70})
+        self.w.entities.append(item)
+        self.w.tick(1)
+        self.assertEqual(self.count(cart.container, "minecraft:dirt"), 70)
+        self.assertFalse(item.alive)
+
+
+class MinecartMovement(unittest.TestCase):
+    def test_rides_along_rails_and_curves(self):
+        from world.minecart import MinecartEntity
+        w = World(native=False)
+        for x in range(0, 4):
+            w.set(x, 64, 0, S("rail", shape="east_west"))
+        w.set(4, 64, 0, S("rail", shape="south_west"))
+        for z in range(1, 10):
+            w.set(4, 64, z, S("rail", shape="north_south"))
+        cart = MinecartEntity(1, 0.5, 64.0625, 0.5, "minecart")
+        cart.vx = 0.4
+        for _ in range(60):
+            cart.tick(w.server)
+        self.assertAlmostEqual(cart.x, 4.5, places=6)                        # turned the corner
+        self.assertGreater(cart.z, 1.0)
+
+    def test_powered_rail_starts_from_a_wall(self):
+        from world.minecart import MinecartEntity
+        w = World(native=False)
+        w.set(-1, 64, 0, S("stone"))
+        w.set(0, 64, 1, S("redstone_block"))
+        w.set(0, 64, 0, S("powered_rail", shape="east_west"))
+        for x in range(1, 20):
+            w.set(x, 64, 0, S("rail", shape="east_west"))
+        cart = MinecartEntity(1, 0.5, 64.0625, 0.5, "minecart")
+        for _ in range(40):
+            cart.tick(w.server)
+        self.assertGreater(cart.x, 3.0)
+
+    def test_save_and_load(self):
+        import tempfile
+        from world.inventory import ItemStack
+        from world.minecart import MinecartEntity, load_minecarts, save_minecarts
+        w = World(native=False)
+        cart = MinecartEntity(7, 3.5, 64.0625, 2.5, "hopper_minecart")
+        cart.container.items[2] = ItemStack("minecraft:diamond", 5)
+        w.entities.append(cart)
+        with tempfile.TemporaryDirectory() as d:
+            save_minecarts(w.server, d)
+            w2 = World(native=False)
+            self.assertEqual(load_minecarts(w2.server, d), 1)
+        loaded = w2.entities[0]
+        self.assertEqual((loaded.variant, loaded.x, loaded.container.items[2].item_id,
+                          loaded.container.items[2].count), ("hopper_minecart", 3.5, "minecraft:diamond", 5))

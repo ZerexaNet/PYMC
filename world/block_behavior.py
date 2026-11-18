@@ -956,6 +956,111 @@ container_manager = ContainerManager()
 
 
 # --------------------------------------------------
+# Double chests (ChestBlock / CompoundContainer)
+# --------------------------------------------------
+
+_CW = {"north": "east", "east": "south", "south": "west", "west": "north"}
+_CCW = {v: k for k, v in _CW.items()}
+_STEP = {"north": (0, 0, -1), "south": (0, 0, 1), "west": (-1, 0, 0), "east": (1, 0, 0)}
+
+
+def _read_block(x: int, y: int, z: int):
+    reader = getattr(container_manager, "block_reader", None)
+    if reader is None:
+        return None
+    try:
+        return reader(x, y, z)
+    except Exception:
+        return None
+
+
+def chest_halves(x: int, y: int, z: int):
+    """(first, second) positions of the double chest at (x, y, z), or None for a single chest.
+
+    ChestBlock.getBlockType: the RIGHT half is FIRST (slots 0-26), the LEFT half SECOND."""
+    from .chunk_io import STATE_ID_TO_BLOCK
+    state = _read_block(x, y, z)
+    if state is None:
+        return None
+    name, props = STATE_ID_TO_BLOCK.get(state, ("", {}))
+    if name not in ("minecraft:chest", "minecraft:trapped_chest"):
+        return None
+    kind, facing = props.get("type", "single"), props.get("facing", "north")
+    if kind == "single" or facing not in _CW:
+        return None
+    direction = _CW[facing] if kind == "left" else _CCW[facing]
+    dx, _, dz = _STEP[direction]
+    other = (x + dx, y, z + dz)
+    other_name, other_props = STATE_ID_TO_BLOCK.get(_read_block(*other) or 0, ("", {}))
+    if other_name != name or other_props.get("facing") != facing or other_props.get("type") == kind \
+            or other_props.get("type") == "single":
+        return None
+    return ((x, y, z), other) if kind == "right" else (other, (x, y, z))
+
+
+class CompoundItems:
+    """The slots of two containers seen as one list (CompoundContainer)."""
+
+    def __init__(self, first: list, second: list):
+        self.first = first
+        self.second = second
+
+    def __len__(self):
+        return len(self.first) + len(self.second)
+
+    def _locate(self, index: int):
+        if index < 0:
+            index += len(self)
+        if index < len(self.first):
+            return self.first, index
+        if index < len(self):
+            return self.second, index - len(self.first)
+        raise IndexError(index)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        store, i = self._locate(index)
+        return store[i]
+
+    def __setitem__(self, index, value):
+        store, i = self._locate(index)
+        store[i] = value
+
+    def __iter__(self):
+        yield from self.first
+        yield from self.second
+
+
+class CompoundContainer:
+    def __init__(self, first_pos, first: ContainerData, second_pos, second: ContainerData):
+        self.type = first.type
+        self.items = CompoundItems(first.items, second.items)
+        self.parts = [(first_pos, first), (second_pos, second)]
+        self.positions = (first_pos, second_pos)
+        self.viewers = first.viewers | second.viewers
+
+    def owner_of(self, index: int):
+        """(position, slot) holding the compound slot ``index``."""
+        size = len(self.parts[0][1].items)
+        return (self.parts[0][0], index) if index < size else (self.parts[1][0], index - size)
+
+
+def container_view(x: int, y: int, z: int):
+    """The inventory a player / hopper / comparator sees at a block: double chests are combined."""
+    container = container_manager.get_container(x, y, z)
+    halves = chest_halves(x, y, z)
+    if halves is None:
+        if container is not None and not hasattr(container, "positions"):
+            container.positions = ((x, y, z),)
+        return container
+    (p1, p2) = halves
+    first = container_manager.get_or_create(*p1, "chest")
+    second = container_manager.get_or_create(*p2, "chest")
+    return CompoundContainer(p1, first, p2, second)
+
+
+# --------------------------------------------------
 # Block Behavior Implementations
 # --------------------------------------------------
 
@@ -965,7 +1070,9 @@ class ChestBehavior(BlockBehavior):
     @staticmethod
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
-        container = container_manager.get_or_create(x, y, z, "chest")
+        container_manager.get_or_create(x, y, z, "chest")
+        container = container_view(x, y, z)
+        double = isinstance(container, CompoundContainer)
 
         from world.inventory import send_open_container, send_container_content
         window_id = container_manager.allocate_window_id()
@@ -973,10 +1080,14 @@ class ChestBehavior(BlockBehavior):
         conn._open_container_pos = (x, y, z)
         conn._open_container_type = 'block'
 
-        await send_open_container(conn, window_id, "minecraft:generic_9x3", {"translate": "container.chest"})
+        if double:
+            await send_open_container(conn, window_id, "minecraft:generic_9x6", {"translate": "container.chestDouble"})
+        else:
+            await send_open_container(conn, window_id, "minecraft:generic_9x3", {"translate": "container.chest"})
 
-        # Send container contents: 27 chest slots + 36 player inventory slots
-        all_slots = list(container.items) + [None] * (27 - len(container.items))
+        # Send container contents: 27 (54) chest slots + 36 player inventory slots
+        size = 54 if double else 27
+        all_slots = list(container.items) + [None] * (size - len(container.items))
         inv = getattr(conn, 'inventory_obj', None)
         if inv is not None:
             for slot_idx in range(9, 36):
@@ -986,7 +1097,8 @@ class ChestBehavior(BlockBehavior):
 
         await send_container_content(conn, window_id, all_slots)
 
-        container_manager.add_viewer(x, y, z, conn.entity_id)
+        for pos in getattr(container, "positions", ((x, y, z),)):
+            container_manager.add_viewer(*pos, conn.entity_id)
         return True
 
     @staticmethod
@@ -1151,6 +1263,57 @@ class EnderChestBehavior(BlockBehavior):
             all_slots.append(inv.get_slot(slot_idx))
 
         await send_container_content(conn, window_id, all_slots)
+        return True
+
+    @staticmethod
+    def is_interactive() -> bool:
+        return True
+
+
+class ComposterBehavior(BlockBehavior):
+    """ComposterBlock.useItemOn / useWithoutItem: compost the held item or take the bone meal out."""
+
+    @staticmethod
+    async def on_use(conn, server, x: int, y: int, z: int,
+                     face: int, hand: int) -> bool:
+        from world.chunk_io import STATE_ID_TO_BLOCK
+        from world.composter import compost_chance, insert_item
+        from world.editing import get_world_block, set_world_block
+        from world.rs.core import with_props
+        from handlers.play.blocks import _broadcast_block_change
+
+        state = get_world_block(server, x, y, z)
+        if state is None:
+            return False
+        level = int(STATE_ID_TO_BLOCK.get(state, ("", {}))[1].get("level", 0))
+        inv = getattr(conn, "inventory_obj", None)
+        held = inv.get_held_item_from_slot(conn.selected_hotbar_slot) if inv is not None else None
+        sound = None
+        if level == 8:
+            new_state = with_props(state, level="0")
+            item = server.entity_manager.create_item(x + 0.5, y + 1.01, z + 0.5, "minecraft:bone_meal", 1)
+            item.pickup_delay = 10
+            from handlers.play.entities import broadcast_entity_spawn
+            await broadcast_entity_spawn(server, item)
+            sound = "minecraft:block.composter.empty"
+        elif level < 7 and held is not None and not held.is_empty and compost_chance(held.item_id) > 0:
+            new_level = insert_item(level, held.item_id)
+            new_state = with_props(state, level=str(new_level))
+            sound = "minecraft:block.composter.fill_success" if new_level > level else "minecraft:block.composter.fill"
+            if conn.gamemode != "creative":
+                held.count -= 1
+                if held.count <= 0:
+                    inv.set_slot(conn.selected_hotbar_slot, None)
+                conn.inventory_state_id = getattr(conn, "inventory_state_id", 0) + 1
+                from world.inventory import send_inventory_sync
+                await send_inventory_sync(conn)
+        else:
+            return False
+        if new_state != state:
+            set_world_block(server, x, y, z, new_state)        # the redstone engine schedules 7 -> 8
+            await _broadcast_block_change(server, x, y, z, new_state)
+        if sound and hasattr(server, "play_sound"):
+            await server.play_sound((x, y, z), sound)
         return True
 
     @staticmethod
@@ -1614,6 +1777,7 @@ BLOCK_BEHAVIORS: dict[str, BlockBehavior] = {
     "minecraft:trapped_chest": ChestBehavior(),
     # Crafting
     "minecraft:crafting_table": CraftingTableBehavior(),
+    "minecraft:composter": ComposterBehavior(),
     # Furnaces
     "minecraft:furnace": FurnaceBehavior(),
     "minecraft:blast_furnace": BlastFurnaceBehavior(),

@@ -43,12 +43,31 @@ class World:
     def __init__(self, native=None):
         self.storage = MemoryStorage()
         self.entities = []
-        manager = SimpleNamespace(list_entities=lambda: list(self.entities),
+        self._next_id = [1000]
+
+        def next_id():
+            self._next_id[0] += 1
+            return self._next_id[0]
+
+        def create_item(x, y, z, item_name="minecraft:stone", count=1, *a, **k):
+            item = SimpleNamespace(kind="item", entity_id=next_id(), x=x, y=y, z=z, vx=0, vy=0, vz=0,
+                                   item_name=item_name, count=count, alive=True, pickup_delay=0,
+                                   metadata={"item_name": item_name, "count": count})
+            self.entities.append(item)
+            return item
+
+        manager = SimpleNamespace(list_entities=lambda: [e for e in self.entities if getattr(e, "alive", True)],
+                                  get_entity=lambda eid: next((e for e in self.entities
+                                                               if getattr(e, "entity_id", None) == eid), None),
+                                  add_entity=lambda e: self.entities.append(e),
                                   create_tnt=lambda x, y, z, *a, **k: self.entities.append(
                                       SimpleNamespace(kind="tnt", x=x, y=y, z=z, metadata={})),
-                                  create_item=lambda *a, **k: SimpleNamespace(entity_id=0, vx=0, vy=0, vz=0))
+                                  create_item=create_item)
         self.server = SimpleNamespace(world_storage=self.storage, entity_manager=manager,
-                                      get_online_players=lambda: [])
+                                      get_online_players=lambda: [], get_next_entity_id=next_id,
+                                      get_block_at=lambda x, y, z: self.get(x, y, z))
+        from world.block_behavior import container_manager
+        container_manager.block_reader = self.get
         if self.native if native is None else native:
             from world.rs.native import NativeRedstoneEngine
             self.engine = NativeRedstoneEngine(self.server)

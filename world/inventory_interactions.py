@@ -38,11 +38,15 @@ def _open_container(conn, window_id: int):
     if kind == 'crafting':
         return ('crafting', conn)
 
-    from .block_behavior import container_manager
+    if kind == 'entity':
+        container = getattr(conn, '_open_entity_container', None)
+        return None if container is None else ('block', container)
+
+    from .block_behavior import container_view
     pos = getattr(conn, '_open_container_pos', None)
     if pos is None:
         return None
-    container = container_manager.get_container(*pos)
+    container = container_view(*pos)
     if container is None:
         return None
     return ('block', container)

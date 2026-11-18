@@ -462,6 +462,9 @@ class MinecraftServer:
         # 初始化世界存储 (Anvil -> Linear 自动转换)
         self.world_storage.initialize()
         container_manager.load(str(self.world_storage.world_dir))
+        container_manager.block_reader = self.get_block_at        # double chests read their block states
+        from world.minecart import load_minecarts
+        load_minecarts(self, self.world_storage.world_dir)
         self._initialize_terrain_generator()
         await self._pregenerate_spawn_area()
         if self.stop_requested:
@@ -964,6 +967,8 @@ class MinecraftServer:
         if self.redstone_engine is not None:
             self.redstone_engine.save()
         container_manager.save(str(self.world_storage.world_dir))
+        from world.minecart import save_minecarts
+        save_minecarts(self, self.world_storage.world_dir)
         self.save_level_data()
         self.world_storage.close()
         mc_logger.info(f"ThreadedAnvilChunkStorage ({self.level_name}): All chunks are saved")
@@ -1159,6 +1164,8 @@ class MinecraftServer:
                 self.redstone_engine.save()
             self.world_storage.flush()
             container_manager.save(str(self.world_storage.world_dir))
+            from world.minecart import save_minecarts
+            save_minecarts(self, self.world_storage.world_dir)
             self.save_level_data()
 
         if self.autosave_enabled and tick_count % world_flush_interval == 0:
@@ -1323,16 +1330,26 @@ class MinecraftServer:
                 from handlers.play.entities import broadcast_entity_spawn
                 await broadcast_entity_spawn(self, entity)
         elif kind == "container_changed":
-            # a hopper moved items: refresh the windows of players looking into the container
-            from world.block_behavior import container_manager
-            from world.inventory import send_container_content
-            pos = tuple(payload["pos"])
-            container = container_manager.get_container(*pos)
-            if container is not None:
+            # a hopper moved items: refresh the windows of players looking into that inventory
+            from world.block_behavior import container_view
+            from world.inventory_interactions import _sync_open_container
+            if "entity_id" in payload:
+                cart = self.entity_manager.get_entity(payload["entity_id"])
+                target = getattr(cart, "container", None)
                 for player in self.get_online_players():
-                    if getattr(player, "_open_container_pos", None) == pos \
+                    if target is not None and getattr(player, "_open_entity_container", None) is target \
                             and getattr(player, "_open_window_id", None) is not None:
-                        await send_container_content(player, player._open_window_id, container.items)
+                        await _sync_open_container(player, player._open_window_id)
+                return
+            pos = tuple(payload["pos"])
+            for player in self.get_online_players():
+                open_pos = getattr(player, "_open_container_pos", None)
+                if open_pos is None or getattr(player, "_open_window_id", None) is None \
+                        or getattr(player, "_open_container_type", "block") != "block":
+                    continue
+                view = container_view(*open_pos)
+                if view is not None and pos in getattr(view, "positions", (open_pos,)):
+                    await _sync_open_container(player, player._open_window_id)
         elif kind == "explosion":
             self.queue_explosion(payload["x"] + 0.5, payload["y"] + 0.0625, payload["z"] + 0.5, 4.0)
 
@@ -1539,7 +1556,7 @@ class MinecraftServer:
         live_entities = {
             entity.entity_id: entity
             for entity in entities
-            if entity.kind in {"orb", "item", "mob", "lightning_bolt", "tnt"}
+            if entity.kind in {"orb", "item", "mob", "lightning_bolt", "tnt", "minecart"}
         }
 
         for conn in self.get_online_players():

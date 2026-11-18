@@ -1064,11 +1064,57 @@ class Container(Block):
         return container_signal(pos)
 
 
+_CHEST_CW = {"north": "east", "east": "south", "south": "west", "west": "north"}
+_CHEST_CCW = {v: k for k, v in _CHEST_CW.items()}
+
+
+class ChestBlock(Container):
+    """ChestBlock.updateShape: double chests join and split through shape updates."""
+
+    @staticmethod
+    def connected_direction(state):
+        facing = prop(state, "facing")
+        if facing not in _CHEST_CW:
+            return None
+        return _CHEST_CW[facing] if prop(state, "type") == "left" else _CHEST_CCW[facing]
+
+    def update_shape(self, level, state, direction, neighbor_state, pos, neighbor_pos):
+        if name_of(neighbor_state) == self.name and direction in _CHEST_CW:
+            other = prop(neighbor_state, "type")
+            if prop(state, "type") == "single" and other != "single" \
+                    and prop(state, "facing") == prop(neighbor_state, "facing") \
+                    and self.connected_direction(neighbor_state) == OPP[direction]:
+                return with_props(state, type="right" if other == "left" else "left")
+        elif self.connected_direction(state) == direction:
+            return with_props(state, type="single")
+        return state
+
+
+class Composter(Block):
+    """ComposterBlock: level 7 becomes ready (8) after 20 ticks; comparators read the level."""
+    name = "minecraft:composter"
+
+    def on_place(self, level, state, pos, old, moved):
+        if prop(state, "level") == "7":
+            level.schedule_tick(pos, self.name, 20)
+
+    def tick(self, level, state, pos):
+        if prop(state, "level") == "7":
+            level.set_block(pos, with_props(state, level="8"), UPDATE_ALL)
+            level.effects.append(("sound", {"pos": pos, "sound": "minecraft:block.composter.ready"}))
+
+    def has_analog_output(self, state) -> bool:
+        return True
+
+    def analog_output(self, level, state, pos) -> int:
+        return int(prop(state, "level", 0))
+
+
 def container_signal(pos) -> int:
-    """AbstractContainerMenu.getRedstoneSignalFromContainer."""
-    from ..block_behavior import container_manager
-    container = container_manager.get_container(*pos)
-    if container is None or not container.items:
+    """AbstractContainerMenu.getRedstoneSignalFromContainer (double chests count as one)."""
+    from ..block_behavior import container_view
+    container = container_view(*pos)
+    if container is None or not len(container.items):
         return 0
     fill = 0.0
     any_items = False
@@ -1521,11 +1567,13 @@ def build_registry() -> dict:
             add(CoralFan(name, True))
         elif short.endswith("_coral_fan"):
             add(CoralFan(name, False))
-        elif short in ("chest", "trapped_chest", "barrel", "furnace", "blast_furnace", "smoker",
+        elif short in ("chest", "trapped_chest"):
+            add(ChestBlock(name))
+        elif short == "composter":
+            add(Composter())
+        elif short in ("barrel", "furnace", "blast_furnace", "smoker",
                        "brewing_stand", "crafter") or short.endswith("shulker_box"):
             add(Container(name))
-        elif short in ("composter",):
-            add(LeveledAnalog(name, "level"))
         elif short in ("water_cauldron", "powder_snow_cauldron"):
             add(LeveledAnalog(name, "level"))
         elif short == "cake":
