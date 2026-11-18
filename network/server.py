@@ -159,6 +159,8 @@ class MinecraftServer:
         self.connections: list[Connection] = []
         self.next_entity_id = 1
         self._pending_explosions: list = []
+        self._explosion_tasks: set = set()
+        self._explosion_lock = asyncio.Lock()
         self._pending_entity_spawns: list[int] = []
 
         # 服务器状态
@@ -1416,11 +1418,18 @@ class MinecraftServer:
             entity = self.entity_manager.get_entity(self._pending_entity_spawns.pop(0))
             if entity is not None and entity.alive:
                 await broadcast_entity_spawn(self, entity)
-        rounds = 0
-        while self._pending_explosions and rounds < 64:
-            rounds += 1
+        # explosions run as background tasks (computed on the explosion thread pool),
+        # so the game tick never waits for them; a lock keeps them in queue order
+        while self._pending_explosions:
             x, y, z, power, source = self._pending_explosions.pop(0)
-            from world.explosion import explode
+            task = asyncio.create_task(self._run_explosion(x, y, z, power, source))
+            self._explosion_tasks.add(task)
+            task.add_done_callback(self._explosion_tasks.discard)
+
+    async def _run_explosion(self, x, y, z, power, source):
+        from world.explosion import explode
+        from handlers.play.entities import broadcast_entity_spawn
+        async with self._explosion_lock:
             try:
                 await explode(self, x, y, z, power, source)
             except Exception as e:

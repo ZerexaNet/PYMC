@@ -49,8 +49,7 @@ _DESTROY_NAMES = {
 }
 _DESTROY_SUFFIXES = ("_door", "_bed", "_carpet", "_button", "_pressure_plate", "_sapling", "_sign",
                      "_wall_sign", "_hanging_sign", "_banner", "_wall_banner", "_head", "_skull",
-                     "_wall_head", "_wall_skull", "_candle", "candle", "_cluster", "_bud", "_coral",
-                     "_coral_fan", "_coral_wall_fan", "torch", "_flower", "_tulip", "_mushroom", "_fungus",
+                     "_wall_head", "_wall_skull", "_candle", "candle", "_cluster", "_bud", "_coral", "torch", "_flower", "_tulip", "_mushroom", "_fungus",
                      "_roots", "_vines", "_vines_plant", "_leaves_dummy", "_rail_dummy", "_crop")
 
 
@@ -67,6 +66,10 @@ def push_reaction(state) -> str:
         return "push_only"
     if short in _DESTROY_NAMES or short.endswith(_DESTROY_SUFFIXES):
         return "destroy"
+    if short.endswith("rail"):
+        return "normal"   # rails can be pushed (rail-based TNT dupers)
+    if short.endswith("_coral_fan") or short.endswith("_coral_wall_fan"):
+        return "normal"   # vanilla: coral fans can be pushed (MC-133541), the base of TNT dupers
     from ..block_shapes import no_collision_states
     if state in no_collision_states():
         return "destroy"

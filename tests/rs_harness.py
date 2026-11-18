@@ -42,7 +42,8 @@ class World:
         self.storage = MemoryStorage()
         self.entities = []
         manager = SimpleNamespace(list_entities=lambda: list(self.entities),
-                                  create_tnt=lambda *a, **k: self.entities.append(("tnt", a)),
+                                  create_tnt=lambda x, y, z, *a, **k: self.entities.append(
+                                      SimpleNamespace(kind="tnt", x=x, y=y, z=z, metadata={})),
                                   create_item=lambda *a, **k: SimpleNamespace(entity_id=0, vx=0, vy=0, vz=0))
         self.server = SimpleNamespace(world_storage=self.storage, entity_manager=manager,
                                       get_online_players=lambda: [])

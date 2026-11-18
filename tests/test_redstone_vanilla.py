@@ -197,7 +197,7 @@ class Consumers(unittest.TestCase):
         w.set(0, 64, 0, S("tnt"))
         w.set(1, 64, 0, S("redstone_block"))
         self.assertEqual(w.name(0, 64, 0), "air")
-        self.assertEqual(w.entities[0][0], "tnt")
+        self.assertEqual(w.entities[0].kind, "tnt")
         w = World()
         w.set(0, 64, 0, S("oak_door", half="lower", facing="north"))
         w.set(0, 65, 0, S("oak_door", half="upper", facing="north"))
@@ -283,3 +283,22 @@ class Tripwire(unittest.TestCase):
         drops = [e for e in w.engine.drain_pending_effects() if e[0] == "drop"]
         self.assertEqual(len(drops), 1)
         self.assertEqual(w.props(0, 64, 0)["attached"], "false")
+
+
+class TntDuplication(unittest.TestCase):
+    def test_budded_tnt_moved_by_slime_is_duplicated(self):
+        """Vanilla TNT duping: states are captured before the push, an update primes the
+        budded TNT inside that window, and the moving piston still places the TNT."""
+        w = World()
+        w.set(0, 65, 0, S("sticky_piston", facing="east"))
+        w.set(1, 65, 0, S("slime_block"))
+        w.set(3, 65, 1, S("stone"))
+        w.set(2, 65, 1, S("dead_tube_coral_wall_fan", facing="west"))
+        w.set(1, 65, 1, S("tnt"))
+        # budded: powered by a redstone block that never updated it
+        w.storage.load_generated_chunk(0, 0)[65 + 64][1][0] = S("redstone_block")
+        w.engine.level._chunks.clear()
+        w.set(0, 66, 0, S("redstone_block"))
+        w.tick(4)
+        self.assertEqual(w.name(2, 65, 1), "tnt")                       # the block moved on
+        self.assertEqual([e.kind for e in w.entities], ["tnt"])         # and a primed copy exists
