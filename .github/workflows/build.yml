@@ -182,10 +182,46 @@ jobs:
             pymc_vanilla.dll
           retention-days: 1
 
-  # ── Auto pre-release for non-tagged pushes ──
+  # ── Was this push to main the merge of a "[release-vX.Y.Z] ..." pull request? ──
+  # Then the release job tags the merge commit vX.Y.Z and publishes a stable release
+  # (tags pushed with GITHUB_TOKEN would not start another workflow, so it is done here).
+  detect-release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.find.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Find release version in the merged pull request title
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=""
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            TITLES=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[].title' 2>/dev/null || true)
+            TITLES="${TITLES}
+          $(git log -1 --format=%B "${GITHUB_SHA}")"
+            VERSION=$(printf '%s\n' "$TITLES" \
+              | grep -oiE '\[release[- ]v?[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*\]' | head -1 \
+              | sed -E 's/^\[release[- ]v?//I; s/\]$//')
+            if [ -n "$VERSION" ] && git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+              echo "Tag v${VERSION} already exists; publishing a pre-release instead"
+              VERSION=""
+            fi
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${VERSION:-<none>}"
+
+  # ── Auto pre-release for other pushes ──
   auto-prerelease:
-    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-macos, build-windows]
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && needs.detect-release.outputs.version == ''
+    needs: [build-linux, build-macos, build-windows, detect-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -244,13 +280,17 @@ jobs:
       - name: Tag summary
         run: echo "Created pre-release tag ${{ steps.tag.outputs.tag }} with build artifacts"
 
-  # ── Stable release for version tags (v1.2.0, ...) ──
+  # ── Stable release: a pushed v* tag, or a merged "[release-vX.Y.Z]" pull request ──
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-macos, build-windows]
+    if: >-
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/v') || needs.detect-release.outputs.version != '')
+    needs: [build-linux, build-macos, build-windows, detect-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', needs.detect-release.outputs.version) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -270,12 +310,12 @@ jobs:
           ls -lh
       - name: Release notes
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           # Previous stable version tag (highest v* below this one, no pre-releases)
-          PREV=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' \
-                 | awk -v cur="$GITHUB_REF_NAME" 'seen { print; exit } $0 == cur { seen = 1 }')
+          PREV=$( (git tag --list 'v[0-9]*'; echo "$TAG") | sort -u | sort -rV | grep -v -- '-' \
+                 | awk -v cur="$TAG" 'seen { print; exit } $0 == cur { seen = 1 }')
           {
-            echo "## PyMC ${GITHUB_REF_NAME}"
+            echo "## PyMC ${TAG}"
             echo
             # The section of CHANGELOG.md for this version
             awk -v v="$VERSION" '
@@ -291,14 +331,16 @@ jobs:
             echo "Minecraft Java 1.21.1 客户端连接 \`ip:25565\`。"
             if [ -n "$PREV" ]; then
               echo
-              echo "**Full Changelog**: ${{ github.server_url }}/${{ github.repository }}/compare/${PREV}...${GITHUB_REF_NAME}"
+              echo "**Full Changelog**: ${{ github.server_url }}/${{ github.repository }}/compare/${PREV}...${TAG}"
             fi
           } > release-notes.md
           cat release-notes.md
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: PyMC ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: PyMC ${{ env.TAG }}
+          prerelease: ${{ contains(env.TAG, '-') }}
           body_path: release-notes.md
           files: release-assets/*

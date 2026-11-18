@@ -204,6 +204,12 @@ async def _interact_minecart(conn: Connection, server, cart, action_type: int):
                 await broadcast_entity_spawn(server, item)
             await broadcast_entity_remove(server, [cart.entity_id])
         return
+    if action_type == 0 and cart.container is None and not getattr(conn, "sneaking", False):
+        from world.minecart import mount
+        if mount(cart, conn):
+            from handlers.play.entities import broadcast_passengers
+            await broadcast_passengers(server, cart)
+        return
     if action_type == 0 and cart.container is not None and not getattr(conn, "sneaking", False):
         if getattr(conn, "_open_entity_container", None) is cart.container:
             return                  # interact and interact_at both arrive for one click

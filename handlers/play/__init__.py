@@ -294,6 +294,8 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
         await _handle_close_container(conn, payload, server)
     elif name == "interact":
         await _handle_interact(conn, payload, server)
+    elif name == "steer_vehicle":
+        await _handle_steer_vehicle(conn, payload, server)
     elif name == "set_creative_mode_slot":
         await _handle_creative_inventory_action(conn, payload, server)
         from handlers.play.players import broadcast_player_equipment
@@ -372,6 +374,24 @@ async def _handle_tab_complete(conn: Connection, payload: bytes, server):
         out.extend(write_string(suggestion))
         out.extend(write_boolean(False))  # no tooltip
     await conn.send_packet(pid, bytes(out))
+
+
+async def _handle_steer_vehicle(conn: Connection, payload: bytes, server):
+    """Player Input while riding: forward/sideways movement, sneak (0x02) gets off."""
+    import struct
+    if len(payload) < 9 or getattr(conn, "vehicle", None) is None:
+        return
+    sideways, forward = struct.unpack(">ff", payload[:8])
+    flags = payload[8]
+    conn.vehicle_input = (forward, sideways)
+    if flags & 0x02:
+        from world.minecart import dismount
+        from handlers.play.entities import broadcast_passengers
+        cart = dismount(conn)
+        if cart is not None:
+            await broadcast_passengers(server, cart)
+            from commands.vanilla.essentials import teleport
+            await teleport(server, conn, cart.x, cart.y + 0.7, cart.z)
 
 
 async def _handle_entity_action(conn: Connection, payload: bytes, server):

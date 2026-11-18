@@ -266,6 +266,11 @@ class NativeRedstoneEngine(RedstoneEngine):
 
     def _cb_entity_count(self, x, y, z, mode):
         try:
+            if mode in (4, 5):
+                from ..minecart import detector_minecarts, detector_signal
+                if mode == 4:
+                    return len(detector_minecarts(self.server, x, y, z))
+                return detector_signal(self.server, x, y, z)
             if mode == 3:
                 from types import SimpleNamespace
                 return int(registry().get("minecraft:tripwire")._entities_inside(
@@ -357,6 +362,16 @@ class NativeRedstoneEngine(RedstoneEngine):
                     flags = 1 | 4
                 records.append((0, pos[0], pos[1], pos[2], slot, stack, flags))
             return records
+        if getattr(view, "type", "") == "brewing_stand" and len(items) >= 5:
+            # BrewingStandBlockEntity.getSlotsForFace / canPlaceItem / canTakeItemThroughFace
+            records = []
+            for slot in {1: [3], 0: [0, 1, 2, 3], 6: [0, 1, 2, 3, 4]}.get(face, [0, 1, 2, 4]):
+                stack = items[slot]
+                flags = 2                                   # checked per item (and empty bottle slots)
+                if slot != 3 or (stack is not None and not stack.is_empty and stack.item_id == "minecraft:glass_bottle"):
+                    flags |= 4
+                records.append((0, pos[0], pos[1], pos[2], slot, stack, flags))
+            return records
         owner_of = getattr(view, "owner_of", None)
         records = []
         for index in range(len(items)):
@@ -371,6 +386,10 @@ class NativeRedstoneEngine(RedstoneEngine):
         try:
             from ..crafting import FUEL_VALUES
             proto = self._item_proto[item]
+            container = self._owner_container(kind, a, b, c)
+            if proto is not None and getattr(container, "type", "") == "brewing_stand":
+                from ..block_behavior import brewing_can_place
+                return 1 if brewing_can_place(container, slot, proto.item_id) else 0
             return 1 if proto is not None and (FUEL_VALUES.get(proto.item_id, 0) > 0
                                                or proto.item_id == "minecraft:bucket") else 0
         except Exception:

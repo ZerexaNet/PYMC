@@ -1178,6 +1178,8 @@ class MinecraftServer:
         # 基础玩家生存规则
         await self._tick_players(tick_count)
         self.entity_manager.tick()
+        from handlers.play.entities import sync_minecarts
+        await sync_minecarts(self)
         await self._process_world_effects()
         if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
             self.entity_manager.spawn_natural_mobs()
