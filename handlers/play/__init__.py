@@ -291,9 +291,11 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
         from handlers.play.players import broadcast_player_equipment
         await broadcast_player_equipment(server, conn)
     elif name == "close_container":
-        _handle_close_container(conn, payload)
+        await _handle_close_container(conn, payload, server)
     elif name == "interact":
         await _handle_interact(conn, payload, server)
+    elif name == "steer_vehicle":
+        await _handle_steer_vehicle(conn, payload, server)
     elif name == "set_creative_mode_slot":
         await _handle_creative_inventory_action(conn, payload, server)
         from handlers.play.players import broadcast_player_equipment
@@ -374,6 +376,24 @@ async def _handle_tab_complete(conn: Connection, payload: bytes, server):
     await conn.send_packet(pid, bytes(out))
 
 
+async def _handle_steer_vehicle(conn: Connection, payload: bytes, server):
+    """Player Input while riding: forward/sideways movement, sneak (0x02) gets off."""
+    import struct
+    if len(payload) < 9 or getattr(conn, "vehicle", None) is None:
+        return
+    sideways, forward = struct.unpack(">ff", payload[:8])
+    flags = payload[8]
+    conn.vehicle_input = (forward, sideways)
+    if flags & 0x02:
+        from world.minecart import dismount
+        from handlers.play.entities import broadcast_passengers
+        cart = dismount(conn)
+        if cart is not None:
+            await broadcast_passengers(server, cart)
+            from commands.vanilla.essentials import teleport
+            await teleport(server, conn, cart.x, cart.y + 0.7, cart.z)
+
+
 async def _handle_entity_action(conn: Connection, payload: bytes, server):
     """Player Command: 潜行/疾跑状态变化, 同步给其他玩家。"""
     from protocol.data_types import read_varint
@@ -421,23 +441,59 @@ async def _handle_click_container(conn: Connection, payload: bytes, server):
     await handle_container_click(conn, payload, server, _player_window_slot_to_inventory)
 
 
-def _handle_close_container(conn: Connection, payload: bytes):
+async def _handle_close_container(conn: Connection, payload: bytes, server=None):
     """Handle Close Container packet (0x0D)."""
     from protocol.data_types import read_varint
     offset = 0
     window_id, offset = read_varint(payload, offset)
 
+    if window_id == 0 or getattr(conn, '_open_container_type', None) == 'crafting':
+        await return_crafting_grid(conn, server, window_id)
+
     if getattr(conn, '_open_window_id', None) != window_id:
         return
 
-    from world.block_behavior import container_manager
+    from world.block_behavior import container_manager, container_view
     pos = getattr(conn, '_open_container_pos', None)
     if pos is not None and getattr(conn, '_open_container_type', 'block') == 'block':
-        container_manager.remove_viewer(*pos, conn.entity_id)
+        view = container_view(*pos)
+        for part in getattr(view, "positions", (pos,)):
+            container_manager.remove_viewer(*part, conn.entity_id)
 
+    conn._open_entity_container = None
     conn._open_window_id = None
     conn._open_container_pos = None
     conn._open_container_type = None
+
+
+async def return_crafting_grid(conn: Connection, server, window_id: int):
+    """Closing a crafting grid hands its items back (dropped when the inventory is full)."""
+    inv = getattr(conn, 'inventory_obj', None)
+    if inv is None:
+        return
+    from world.crafting_window import return_grid_items
+    from world.inventory_interactions import _drop_stack
+    from world.inventory import send_inventory_sync
+    leftovers = []
+
+    def give(stack):
+        left = inv.add_item(stack)
+        if left > 0:
+            extra = stack.copy()
+            extra.count = left
+            leftovers.append(extra)
+
+    if window_id != 0 and getattr(conn, '_crafting_grid', None) is None:
+        return
+    if window_id == 0 and not any(inv.slots[i] for i in (41, 42, 43, 44)):
+        inv.slots[45] = None
+        return
+    return_grid_items(conn, window_id, give)
+    if window_id != 0:
+        conn._crafting_grid = None
+    for stack in leftovers:
+        await _drop_stack(conn, server, stack, stack.count)
+    await send_inventory_sync(conn)
 
 
 async def _handle_respawn(conn: Connection, server):

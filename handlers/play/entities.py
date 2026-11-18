@@ -86,6 +86,28 @@ async def _send_generic_entity_spawn(conn: Connection, entity):
     payload.extend(write_short(_encode_entity_velocity_component(entity.vz)))
     await conn.send_packet(0x01, bytes(payload))
 
+    if entity.kind == "minecart" and getattr(entity, "passenger", None) is not None:
+        from protocol.packet_map import get_clientbound_packet
+        pid = get_clientbound_packet(conn.protocol_version, "set_passengers")
+        if pid is not None:
+            await conn.send_packet(pid, build_passengers_payload(entity))
+
+    if entity.kind == "tnt":
+        # PrimedTnt data: 8 = fuse (VarInt), 9 = block state (TNT)
+        from protocol.packet_map import get_clientbound_packet
+        from world.chunk_io import BLOCK_NAME_TO_DEFAULT_STATE
+        meta = bytearray()
+        meta.extend(write_varint(entity.entity_id))
+        meta.extend(write_ubyte(8))
+        meta.extend(write_varint(1))
+        meta.extend(write_varint(int(entity.metadata.get("fuse", 80))))
+        meta.extend(write_ubyte(9))
+        meta.extend(write_varint(14))
+        meta.extend(write_varint(BLOCK_NAME_TO_DEFAULT_STATE.get("minecraft:tnt", 0)))
+        meta.extend(write_ubyte(0xFF))
+        pid = get_clientbound_packet(conn.protocol_version, "entity_metadata") or 0x58
+        await conn.send_packet(pid, bytes(meta))
+
     # 生物不带自定义名称 (与原版一致): 客户端按实体类型显示本地化名称。
     # 物品实体需要 metadata index 8 (Slot) 才能渲染出具体物品。
     if entity.kind == "item":
@@ -153,7 +175,7 @@ async def _send_visible_entities_to_player(conn: Connection, server):
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob"}:
+        elif entity.kind in {"item", "mob", "tnt", "minecart"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 
@@ -167,7 +189,7 @@ async def broadcast_entity_spawn(server, entity):
         if entity.kind == "orb":
             await _send_experience_orb_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
-        elif entity.kind in {"item", "mob", "lightning_bolt"}:
+        elif entity.kind in {"item", "mob", "lightning_bolt", "tnt", "minecart"}:
             await _send_generic_entity_spawn(conn, entity)
             conn.tracked_entities.add(entity.entity_id)
 
@@ -176,3 +198,38 @@ async def broadcast_entity_remove(server, entity_ids: list[int]):
     for conn in server.get_online_players():
         conn.tracked_entities.difference_update(entity_ids)
         await _send_entity_remove(conn, entity_ids)
+
+
+def build_passengers_payload(vehicle) -> bytes:
+    passenger = getattr(vehicle, "passenger", None)
+    ids = [passenger.entity_id] if passenger is not None else []
+    return write_varint(vehicle.entity_id) + write_varint(len(ids)) + b"".join(write_varint(i) for i in ids)
+
+
+async def broadcast_passengers(server, vehicle):
+    """Set Passengers to everyone who sees the vehicle."""
+    from protocol.packet_map import get_clientbound_packet
+    payload = build_passengers_payload(vehicle)
+    for conn in server.get_online_players():
+        if vehicle.entity_id not in conn.tracked_entities and getattr(vehicle, "passenger", None) is not conn:
+            continue
+        pid = get_clientbound_packet(conn.protocol_version, "set_passengers")
+        if pid is not None:
+            await conn.send_packet(pid, payload)
+
+
+async def sync_minecarts(server):
+    """Minecarts move every tick: teleport them for their watchers (the rest syncs every 10 ticks)."""
+    from protocol.packet_map import get_clientbound_packet
+    from world.minecart import minecarts
+    carts = [c for c in minecarts(server)
+             if c.passenger is not None or abs(c.x - c.prev_x) + abs(c.z - c.prev_z) > 1e-4]
+    if not carts:
+        return
+    for conn in server.get_online_players():
+        pid = get_clientbound_packet(conn.protocol_version, "entity_teleport")
+        if pid is None:
+            continue
+        for cart in carts:
+            if cart.entity_id in conn.tracked_entities:
+                await conn.send_packet(pid, build_entity_teleport_payload(cart))

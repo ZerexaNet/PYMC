@@ -96,12 +96,27 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _passable_states() -> frozenset:
+    global _PASSABLE_CACHE
+    try:
+        return _PASSABLE_CACHE
+    except NameError:
+        pass
+    try:
+        from .block_shapes import no_collision_states
+        _PASSABLE_CACHE = no_collision_states() | frozenset(PASSABLE_BLOCKS)
+    except Exception:
+        _PASSABLE_CACHE = frozenset(PASSABLE_BLOCKS)
+    return _PASSABLE_CACHE
+
+
 def _is_passable(block_id: int | None) -> bool:
-    return block_id is not None and block_id in PASSABLE_BLOCKS
+    """No collision box: air, fluids, grass, flowers, torches, ... (from blocks.json)."""
+    return block_id is not None and block_id in _passable_states()
 
 
 def _is_solid(block_id: int | None) -> bool:
-    return block_id is None or block_id not in PASSABLE_BLOCKS
+    return block_id is None or block_id not in _passable_states()
 
 
 @dataclass
@@ -244,6 +259,10 @@ class MobEntity(Entity):
 
     def tick(self, server, native_ai=None):
         super().tick(server)
+        if getattr(self, "invulnerable_ticks", 0) > 0:
+            self.invulnerable_ticks -= 1
+            if self.invulnerable_ticks == 0:
+                self.last_hurt = 0.0
         if not self.ai_enabled:
             return
         if self.attack_cooldown > 0:
@@ -420,6 +439,75 @@ class MobEntity(Entity):
 
 
 @dataclass
+class TntEntity(Entity):
+    """
+    Primed TNT (net.minecraft.world.entity.item.PrimedTnt): falls, slides and
+    can be pushed; explodes with power 4 when the fuse (80 ticks) runs out.
+    """
+
+    fuse: int = 80
+
+    def __init__(self, entity_id: int, x: float, y: float, z: float, fuse: int = 80,
+                 random_push: bool = True):
+        super().__init__(entity_id=entity_id, kind="tnt", x=x, y=y, z=z)
+        self.fuse = int(fuse)
+        self.metadata = {"mob_type": "tnt", "fuse": self.fuse}
+        if random_push:
+            angle = random.random() * math.tau
+            self.vx = -math.sin(angle) * 0.02
+            self.vy = 0.2
+            self.vz = -math.cos(angle) * 0.02
+
+    def tick(self, server):
+        super().tick(server)
+        self.vy -= 0.04                      # applyGravity
+        self._move(server)
+        self.vx *= 0.98
+        self.vy *= 0.98
+        self.vz *= 0.98
+        if self.on_ground:
+            self.vx *= 0.7
+            self.vz *= 0.7
+            self.vy *= -0.5
+        self.fuse -= 1
+        self.metadata["fuse"] = self.fuse
+        if self.fuse <= 0:
+            self.alive = False
+            queue = getattr(server, "queue_explosion", None)
+            if queue is not None:
+                queue(self.x, self.y + 0.0625, self.z, 4.0, self)
+
+    # axis-separated movement of the 0.98 x 0.98 box (Entity.move, simplified)
+    def _box_free(self, server, x: float, y: float, z: float) -> bool:
+        half = 0.49
+        for bx in range(math.floor(x - half), math.floor(x + half) + 1):
+            for bz in range(math.floor(z - half), math.floor(z + half) + 1):
+                for by in range(math.floor(y), math.floor(y + 0.98) + 1):
+                    if _is_solid(server.get_block_at(bx, by, bz)):
+                        return False
+        return True
+
+    def _move(self, server):
+        if self._box_free(server, self.x, self.y + self.vy, self.z):
+            self.y += self.vy
+            self.on_ground = False
+        else:
+            if self.vy < 0:
+                self.y = math.floor(self.y + self.vy) + 1.0 if self._box_free(
+                    server, self.x, math.floor(self.y + self.vy) + 1.0, self.z) else self.y
+                self.on_ground = True
+            self.vy = 0.0 if self.vy > 0 else self.vy
+        if self._box_free(server, self.x + self.vx, self.y, self.z):
+            self.x += self.vx
+        else:
+            self.vx = 0.0
+        if self._box_free(server, self.x, self.y, self.z + self.vz):
+            self.z += self.vz
+        else:
+            self.vz = 0.0
+
+
+@dataclass
 class LightningBoltEntity(Entity):
     """闪电实体: 雷暴天气时生成, 数 tick 后自动消失。"""
 
@@ -499,6 +587,15 @@ class EntityManager:
     def create_experience_orb(self, x: float, y: float, z: float, count: int = 1) -> ExperienceOrbEntity:
         entity = ExperienceOrbEntity(self.server.get_next_entity_id(), x, y, z, count)
         self.add_entity(entity)
+        return entity
+
+    def create_tnt(self, x: float, y: float, z: float, fuse: int = 80,
+                   random_push: bool = True) -> TntEntity:
+        entity = TntEntity(self.server.get_next_entity_id(), x, y, z, fuse, random_push)
+        self.add_entity(entity)
+        pending = getattr(self.server, "_pending_entity_spawns", None)
+        if pending is not None:
+            pending.append(entity.entity_id)
         return entity
 
     def create_lightning(self, x: float, y: float, z: float) -> LightningBoltEntity:

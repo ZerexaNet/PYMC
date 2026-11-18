@@ -30,6 +30,15 @@ jobs:
           cmake --install . --prefix stage
       - name: Run tests
         run: python3 -m pytest tests/ -v
+      - name: Check native binaries
+        # Nuitka's --include-data-dir silently drops executables and shared
+        # libraries, so they are listed explicitly; make sure they exist.
+        run: |
+          ls -l build/stage/native
+          test -x build/stage/native/terrain_gen
+          test -x build/stage/native/mob_ai
+          test -f build/stage/native/libpymc_vanilla.*
+          build/stage/native/terrain_gen --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         run: |
           pip install nuitka
@@ -37,7 +46,7 @@ jobs:
             --include-data-file=world/blocks.json=world/blocks.json \
             --include-data-dir=protocol/data=protocol/data \
             --include-data-dir=world/data=world/data \
-            --include-data-dir=build/stage/native=native \
+            '--include-data-files=build/stage/native/*=native/' \
             main.py -o pymc-server-linux-x86_64
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -67,6 +76,15 @@ jobs:
           cmake --install . --prefix stage
       - name: Run tests
         run: python3 -m pytest tests/ -v
+      - name: Check native binaries
+        # Nuitka's --include-data-dir silently drops executables and shared
+        # libraries, so they are listed explicitly; make sure they exist.
+        run: |
+          ls -l build/stage/native
+          test -x build/stage/native/terrain_gen
+          test -x build/stage/native/mob_ai
+          test -f build/stage/native/libpymc_vanilla.*
+          build/stage/native/terrain_gen --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         run: |
           pip install nuitka
@@ -74,7 +92,7 @@ jobs:
             --include-data-file=world/blocks.json=world/blocks.json \
             --include-data-dir=protocol/data=protocol/data \
             --include-data-dir=world/data=world/data \
-            --include-data-dir=build/stage/native=native \
+            '--include-data-files=build/stage/native/*=native/' \
             main.py -o pymc-server-macos-arm64
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -118,6 +136,16 @@ jobs:
           cmake --install . --config Release --prefix stage
       - name: Run tests
         run: python -m pytest tests/ -v
+      - name: Check native binaries
+        # Nuitka's --include-data-dir silently drops .exe/.dll files, so they
+        # are listed explicitly; make sure they exist.
+        shell: bash
+        run: |
+          ls -l build/stage/native
+          test -f build/stage/native/terrain_gen.exe
+          test -f build/stage/native/mob_ai.exe
+          test -f build/stage/native/pymc_vanilla.dll
+          build/stage/native/terrain_gen.exe --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         # Nuitka on Windows defaults to MSVC. No --mingw64 flag, so it
         # picks up the MSVC environment set up by ilammy/msvc-dev-cmd above.
@@ -127,7 +155,7 @@ jobs:
             --include-data-file=world/blocks.json=world/blocks.json `
             --include-data-dir=protocol/data=protocol/data `
             --include-data-dir=world/data=world/data `
-            --include-data-dir=build/stage/native=native `
+            '--include-data-files=build/stage/native/*=native/' `
             main.py -o pymc-server-windows-x86_64.exe
       - name: Stage native binaries for separate download
         # Copy the MSVC-built, statically-linked /MT .exe files so users
@@ -137,7 +165,8 @@ jobs:
         run: |
           cp build/Release/terrain_gen.exe terrain_gen.exe
           cp build/Release/mob_ai.exe      mob_ai.exe
-          ls -lh terrain_gen.exe mob_ai.exe
+          cp build/Release/pymc_vanilla.dll pymc_vanilla.dll
+          ls -lh terrain_gen.exe mob_ai.exe pymc_vanilla.dll
           # Sanity check: list DLL dependencies. We expect only KERNEL32.dll
           # and the api-ms-win-crt-* stubs (which are part of Windows itself,
           # not the Visual C++ Redistributable).
@@ -150,12 +179,49 @@ jobs:
             pymc-server-windows-x86_64.exe
             terrain_gen.exe
             mob_ai.exe
+            pymc_vanilla.dll
           retention-days: 1
 
-  # ── Auto pre-release for non-tagged pushes ──
+  # ── Was this push to main the merge of a "[release-vX.Y.Z] ..." pull request? ──
+  # Then the release job tags the merge commit vX.Y.Z and publishes a stable release
+  # (tags pushed with GITHUB_TOKEN would not start another workflow, so it is done here).
+  detect-release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.find.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Find release version in the merged pull request title
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=""
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            TITLES=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[].title' 2>/dev/null || true)
+            TITLES="${TITLES}
+          $(git log -1 --format=%B "${GITHUB_SHA}")"
+            VERSION=$(printf '%s\n' "$TITLES" \
+              | grep -oiE '\[release[- ]v?[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*\]' | head -1 \
+              | sed -E 's/^\[release[- ]v?//I; s/\]$//')
+            if [ -n "$VERSION" ] && git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+              echo "Tag v${VERSION} already exists; publishing a pre-release instead"
+              VERSION=""
+            fi
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Release version: ${VERSION:-<none>}"
+
+  # ── Auto pre-release for other pushes ──
   auto-prerelease:
-    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-macos, build-windows]
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && needs.detect-release.outputs.version == ''
+    needs: [build-linux, build-macos, build-windows, detect-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -206,6 +272,7 @@ jobs:
             your local `native/` directory with these:
             - `terrain_gen.exe` — C++ terrain generator (statically linked, no DLL dependencies)
             - `mob_ai.exe` — C++ mob AI engine (statically linked, no DLL dependencies)
+            - `pymc_vanilla.dll` — C++ redstone / hopper / explosion engine (loaded in-process)
 
             These are built with MSVC (/MT) and have the C++ runtime baked in,
             so they run on stock Windows 10/11 without the Visual C++ Redistributable.
@@ -213,13 +280,17 @@ jobs:
       - name: Tag summary
         run: echo "Created pre-release tag ${{ steps.tag.outputs.tag }} with build artifacts"
 
-  # ── Stable release for version tags (v1.2.0, ...) ──
+  # ── Stable release: a pushed v* tag, or a merged "[release-vX.Y.Z]" pull request ──
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-macos, build-windows]
+    if: >-
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/v') || needs.detect-release.outputs.version != '')
+    needs: [build-linux, build-macos, build-windows, detect-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', needs.detect-release.outputs.version) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -239,12 +310,12 @@ jobs:
           ls -lh
       - name: Release notes
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           # Previous stable version tag (highest v* below this one, no pre-releases)
-          PREV=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' \
-                 | awk -v cur="$GITHUB_REF_NAME" 'seen { print; exit } $0 == cur { seen = 1 }')
+          PREV=$( (git tag --list 'v[0-9]*'; echo "$TAG") | sort -u | sort -rV | grep -v -- '-' \
+                 | awk -v cur="$TAG" 'seen { print; exit } $0 == cur { seen = 1 }')
           {
-            echo "## PyMC ${GITHUB_REF_NAME}"
+            echo "## PyMC ${TAG}"
             echo
             # The section of CHANGELOG.md for this version
             awk -v v="$VERSION" '
@@ -255,19 +326,21 @@ jobs:
             echo "- \`PyMC-windows.exe\`：Windows (x86_64)，双击运行"
             echo "- \`PyMC-linux\`：Linux (x86_64)，\`chmod +x PyMC-linux && ./PyMC-linux\`"
             echo "- \`PyMC-macos\`：macOS (ARM64)，\`chmod +x PyMC-macos && ./PyMC-macos\`"
-            echo "- \`terrain_gen.exe\` / \`mob_ai.exe\`：从 Python 源码在 Windows 上运行时放进 \`native/\` 的原生组件"
+            echo "- \`terrain_gen.exe\` / \`mob_ai.exe\` / \`pymc_vanilla.dll\`：从 Python 源码在 Windows 上运行时放进 \`native/\` 的原生组件"
             echo
             echo "Minecraft Java 1.21.1 客户端连接 \`ip:25565\`。"
             if [ -n "$PREV" ]; then
               echo
-              echo "**Full Changelog**: ${{ github.server_url }}/${{ github.repository }}/compare/${PREV}...${GITHUB_REF_NAME}"
+              echo "**Full Changelog**: ${{ github.server_url }}/${{ github.repository }}/compare/${PREV}...${TAG}"
             fi
           } > release-notes.md
           cat release-notes.md
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: PyMC ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: PyMC ${{ env.TAG }}
+          prerelease: ${{ contains(env.TAG, '-') }}
           body_path: release-notes.md
           files: release-assets/*

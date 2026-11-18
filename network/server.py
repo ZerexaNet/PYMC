@@ -158,6 +158,10 @@ class MinecraftServer:
         # 在线玩家列表
         self.connections: list[Connection] = []
         self.next_entity_id = 1
+        self._pending_explosions: list = []
+        self._explosion_tasks: set = set()
+        self._explosion_lock = asyncio.Lock()
+        self._pending_entity_spawns: list[int] = []
 
         # 服务器状态
         self.running = False
@@ -254,6 +258,8 @@ class MinecraftServer:
         level.level_name = self.level_name
         level.seed = self.seed
         level.spawn = tuple(int(v) for v in self.spawn_position)
+        # stopped before the spawn search finished: search again next start
+        level.initialized = bool(getattr(self, "_spawn_resolved", True))
         level.difficulty = str(self.config.get("difficulty", "easy")).lower()
         level.gamemode = str(self.config.get("gamemode", "survival")).lower()
         level.hardcore = bool(self.config.get("hardcore", False))
@@ -348,6 +354,14 @@ class MinecraftServer:
         """保存单个玩家存档。"""
         if not conn.username:
             return
+
+        # Items left in an open crafting table grid go back into the inventory
+        # (vanilla returns them when the menu closes, which logout also does).
+        inv = getattr(conn, 'inventory_obj', None)
+        if inv is not None and getattr(conn, '_crafting_grid', None):
+            from world.crafting_window import return_grid_items
+            return_grid_items(conn, -1, inv.add_item)
+            conn._crafting_grid = [None] * 9
 
         # 基础玩家状态
         player_data = {
@@ -448,13 +462,19 @@ class MinecraftServer:
         # 初始化世界存储 (Anvil -> Linear 自动转换)
         self.world_storage.initialize()
         container_manager.load(str(self.world_storage.world_dir))
+        container_manager.block_reader = self.get_block_at        # double chests read their block states
+        from world.minecart import load_minecarts
+        load_minecarts(self, self.world_storage.world_dir)
         self._initialize_terrain_generator()
         await self._pregenerate_spawn_area()
+        if self.stop_requested:
+            return  # stopped while the spawn area was being prepared; main() saves and exits
         self.save_level_data()
 
         # 初始化红石引擎
         if self.config.get("redstone-enabled", True):
-            self.redstone_engine = RedstoneEngine(self)
+            from world.rs.native import create_engine
+            self.redstone_engine = create_engine(self)
 
         # 初始化流体系统
         if self.config.get("fluid-flow-enabled", True):
@@ -533,6 +553,11 @@ class MinecraftServer:
     async def wait_until_ready(self):
         """等待服务器完成启动 (控制台命令在此之前排队)。"""
         await self._ready_event.wait()
+
+    @property
+    def stop_requested(self) -> bool:
+        """True once /stop, Ctrl+C or SIGTERM asked the server to shut down."""
+        return (not self.running) or (self._stop_event is not None and self._stop_event.is_set())
 
     def request_stop(self):
         """请求停止服务器 (/stop、Ctrl+C、SIGTERM、RCON 均走这里)。"""
@@ -815,7 +840,10 @@ class MinecraftServer:
         center_cx = int(spawn_x) >> 4
         center_cz = int(spawn_z) >> 4
 
-        pregen_radius = min(self.join_immediate_radius, 3)  # 最多 7x7 = 49 个
+        # 最多 7x7 = 49 个; the Python fallback generator needs seconds per chunk,
+        # so it only prepares 3x3 and the rest streams in once players join.
+        max_radius = 3 if self._use_native_terrain else 1
+        pregen_radius = min(self.join_immediate_radius, max_radius)
         chunk_coords = [
             (cx, cz)
             for cx in range(center_cx - pregen_radius, center_cx + pregen_radius + 1)
@@ -825,10 +853,10 @@ class MinecraftServer:
         progress = {"done": 0}
 
         def _generate_spawn_chunks():
-            # 分小批生成, 以便汇报进度
-            batch = max(1, total // 8)
+            # 分小批生成, 以便汇报进度 (慢速 Python 生成器逐个区块汇报)
+            batch = max(1, total // 8) if self._use_native_terrain else 1
             for index in range(0, total, batch):
-                if not self.running:
+                if self.stop_requested:
                     break
                 self.pregenerate_chunks(chunk_coords[index:index + batch])
                 progress["done"] = min(total, index + batch)
@@ -839,11 +867,15 @@ class MinecraftServer:
         last_report = 0.0
         while not future.done():
             await asyncio.wait([future], timeout=0.25)
+            if self.stop_requested:
+                break  # stopping: the worker exits after its current chunk
             now = time.time()
             if not future.done() and now - last_report >= 0.5:
                 last_report = now
                 worker_log.info(f"Preparing spawn area: {progress['done'] * 100 // total}%")
         await future
+        if self.stop_requested:
+            return
         mc_logger.info(f"Time elapsed: {int((time.time() - start) * 1000)} ms")
 
         if not getattr(self, "_spawn_resolved", False):
@@ -932,7 +964,11 @@ class MinecraftServer:
         mc_logger.info("Saving worlds")
         mc_logger.info(
             f"Saving chunks for level 'ServerLevel[{self.level_name}]'/minecraft:overworld")
+        if self.redstone_engine is not None:
+            self.redstone_engine.save()
         container_manager.save(str(self.world_storage.world_dir))
+        from world.minecart import save_minecarts
+        save_minecarts(self, self.world_storage.world_dir)
         self.save_level_data()
         self.world_storage.close()
         mc_logger.info(f"ThreadedAnvilChunkStorage ({self.level_name}): All chunks are saved")
@@ -1124,8 +1160,12 @@ class MinecraftServer:
         # 自动保存世界数据 (原版同样静默进行)
         if self.autosave_enabled and tick_count % autosave_interval == 0:
             self.save_all_player_states()
+            if self.redstone_engine is not None:
+                self.redstone_engine.save()
             self.world_storage.flush()
             container_manager.save(str(self.world_storage.world_dir))
+            from world.minecart import save_minecarts
+            save_minecarts(self, self.world_storage.world_dir)
             self.save_level_data()
 
         if self.autosave_enabled and tick_count % world_flush_interval == 0:
@@ -1138,15 +1178,17 @@ class MinecraftServer:
         # 基础玩家生存规则
         await self._tick_players(tick_count)
         self.entity_manager.tick()
+        from handlers.play.entities import sync_minecarts
+        await sync_minecarts(self)
+        await self._process_world_effects()
         if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
             self.entity_manager.spawn_natural_mobs()
         await self._tick_entity_interactions()
         if tick_count % 10 == 0:
             await self._tick_entity_sync()
 
-        # Redstone tick (every 2 game ticks = 0.1s)
-        if tick_count % 2 == 0:
-            await self._tick_redstone()
+        # Redstone: scheduled block ticks, block events, moving pistons (every game tick)
+        await self._tick_redstone()
 
         # 雷暴落雷 (每 5 秒一次判定)
         if tick_count % 100 == 0:
@@ -1225,41 +1267,112 @@ class MinecraftServer:
                     damage_mob(self, entity, 5.0)
 
     async def _tick_redstone(self):
-        """Process a redstone tick and broadcast visual changes to players."""
+        """Run one redstone game tick and send the results to the players."""
         if self.redstone_engine is None:
             return
-
         self.redstone_engine.tick()
+        await self.flush_redstone_output()
 
-        # Broadcast block changes from redstone engine
-        from handlers.play import _broadcast_block_change
-        updates = self.redstone_engine.get_visual_updates()
-        for x, y, z, new_state in updates:
-            await _broadcast_block_change(self, x, y, z, new_state)
-
-        # Process effects that require async work (note sounds, explosions,
-        # item-drop broadcasts).
-        for kind, payload in self.redstone_engine.drain_pending_effects():
+    async def flush_redstone_output(self):
+        """Block changes, block actions (piston animations, notes) and effects from the engine."""
+        engine = self.redstone_engine
+        if engine is None:
+            return
+        updates = engine.get_visual_updates()
+        if updates:
+            from handlers.play.blocks import _broadcast_block_change, _broadcast_multi_block_changes
+            if len(updates) == 1:
+                x, y, z, state = updates[0]
+                await _broadcast_block_change(self, x, y, z, state)
+            else:
+                await _broadcast_multi_block_changes(self, updates)
+        for pos, block, event_id, param in engine.drain_block_actions():
+            await self._send_block_action(pos, block, event_id, param)
+        for kind, payload in engine.drain_pending_effects():
             try:
-                if kind == "note":
-                    from world.block_behavior import NoteBlockBehavior
-                    await NoteBlockBehavior._play_note(
-                        self,
-                        payload["x"], payload["y"], payload["z"],
-                        payload.get("note", 0),
-                    )
-                elif kind == "explosion":
-                    from world.block_behavior import TNTBehavior
-                    await TNTBehavior._create_explosion(
-                        self, payload["x"], payload["y"], payload["z"]
-                    )
-                elif kind == "entity_spawn":
-                    entity = self.entity_manager.get_entity(payload.get("entity_id"))
-                    if entity is not None:
-                        from handlers.play.entities import broadcast_entity_spawn
-                        await broadcast_entity_spawn(self, entity)
+                await self._redstone_effect(kind, payload)
             except Exception as e:
                 logger.warning(f"红石效果处理失败 ({kind}): {e}")
+
+    async def _send_block_action(self, pos, block: str, event_id: int, param: int):
+        from protocol.data_types import write_position, write_ubyte, write_varint
+        from protocol.packet_map import get_clientbound_packet
+        from world.rs.core import block_registry_id
+        x, y, z = pos
+        payload = (write_position(x, y, z) + write_ubyte(event_id & 0xFF) + write_ubyte(param & 0xFF)
+                   + write_varint(block_registry_id(block)))
+        for player in self.get_online_players():
+            if player.protocol_version != 767 or (x >> 4, z >> 4) not in player.loaded_chunks:
+                continue
+            pid = get_clientbound_packet(player.protocol_version, "block_action")
+            if pid is not None:
+                await player.send_packet(pid, payload)
+
+    async def _redstone_effect(self, kind: str, payload: dict):
+        if kind == "note":
+            from world.block_behavior import NoteBlockBehavior
+            await NoteBlockBehavior._play_note(self, payload["x"], payload["y"], payload["z"], payload.get("note", 0))
+        elif kind == "sound":
+            await self.play_sound(payload["pos"], payload["sound"], payload.get("volume", 1.0), payload.get("pitch", 1.0))
+        elif kind == "torch_burnout":
+            await self.play_sound(payload["pos"], "minecraft:block.redstone_torch.burnout", 0.5, 2.6)
+        elif kind == "drop":
+            from world.block_behavior import get_block_drops
+            from world.chunk_io import STATE_ID_TO_BLOCK
+            from handlers.play.entities import broadcast_entity_spawn
+            name, props = STATE_ID_TO_BLOCK.get(payload["state"], ("minecraft:air", {}))
+            x, y, z = payload["pos"]
+            for stack in get_block_drops(name, None, props):
+                item = self.entity_manager.create_item(x + 0.5, y + 0.25, z + 0.5, stack.item_id, stack.count)
+                item.pickup_delay = 10
+                await broadcast_entity_spawn(self, item)
+        elif kind == "entity_spawn":
+            entity = self.entity_manager.get_entity(payload.get("entity_id"))
+            if entity is not None:
+                from handlers.play.entities import broadcast_entity_spawn
+                await broadcast_entity_spawn(self, entity)
+        elif kind == "container_changed":
+            # a hopper moved items: refresh the windows of players looking into that inventory
+            from world.block_behavior import container_view
+            from world.inventory_interactions import _sync_open_container
+            if "entity_id" in payload:
+                cart = self.entity_manager.get_entity(payload["entity_id"])
+                target = getattr(cart, "container", None)
+                for player in self.get_online_players():
+                    if target is not None and getattr(player, "_open_entity_container", None) is target \
+                            and getattr(player, "_open_window_id", None) is not None:
+                        await _sync_open_container(player, player._open_window_id)
+                return
+            pos = tuple(payload["pos"])
+            for player in self.get_online_players():
+                open_pos = getattr(player, "_open_container_pos", None)
+                if open_pos is None or getattr(player, "_open_window_id", None) is None \
+                        or getattr(player, "_open_container_type", "block") != "block":
+                    continue
+                view = container_view(*open_pos)
+                if view is not None and pos in getattr(view, "positions", (open_pos,)):
+                    await _sync_open_container(player, player._open_window_id)
+        elif kind == "explosion":
+            self.queue_explosion(payload["x"] + 0.5, payload["y"] + 0.0625, payload["z"] + 0.5, 4.0)
+
+    async def play_sound(self, pos, sound: str, volume: float = 1.0, pitch: float = 1.0, category: int = 4):
+        """Sound Effect packet with an inline sound event (no registry id needed)."""
+        from protocol.data_types import (write_boolean, write_float, write_int, write_long, write_string,
+                                         write_varint)
+        from protocol.packet_map import get_clientbound_packet
+        import random as _random
+        x, y, z = pos
+        payload = (write_varint(0) + write_string(sound) + write_boolean(False) + write_varint(category)
+                   + write_int(int((x + 0.5) * 8)) + write_int(int((y + 0.5) * 8)) + write_int(int((z + 0.5) * 8))
+                   + write_float(volume) + write_float(pitch) + write_long(_random.getrandbits(63)))
+        for player in self.get_online_players():
+            if player.protocol_version != 767:
+                continue
+            if (player.x - x) ** 2 + (player.y - y) ** 2 + (player.z - z) ** 2 > 48 * 48:
+                continue
+            pid = get_clientbound_packet(player.protocol_version, "sound_effect")
+            if pid is not None:
+                await player.send_packet(pid, payload)
 
     async def _tick_fluids(self, tick_count: int):
         """Process fluid flow updates and broadcast visual changes."""
@@ -1324,6 +1437,38 @@ class MinecraftServer:
                     and now - conn.last_active > idle_minutes * 60
                     and not self.permissions.is_op(conn.username)):
                 await conn.disconnect({"translate": "multiplayer.disconnect.idling"})
+
+    def queue_explosion(self, x: float, y: float, z: float, power: float = 4.0, source=None):
+        """Explosions requested from synchronous code (TNT fuses, redstone) run on the next tick step."""
+        self._pending_explosions.append((x, y, z, power, source))
+
+    async def _process_world_effects(self):
+        """Broadcast freshly created entities (primed TNT) and run queued explosions."""
+        from handlers.play.entities import broadcast_entity_spawn
+        while self._pending_entity_spawns:
+            entity = self.entity_manager.get_entity(self._pending_entity_spawns.pop(0))
+            if entity is not None and entity.alive:
+                await broadcast_entity_spawn(self, entity)
+        # explosions run as background tasks (computed on the explosion thread pool),
+        # so the game tick never waits for them; a lock keeps them in queue order
+        while self._pending_explosions:
+            x, y, z, power, source = self._pending_explosions.pop(0)
+            task = asyncio.create_task(self._run_explosion(x, y, z, power, source))
+            self._explosion_tasks.add(task)
+            task.add_done_callback(self._explosion_tasks.discard)
+
+    async def _run_explosion(self, x, y, z, power, source):
+        from world.explosion import explode
+        from handlers.play.entities import broadcast_entity_spawn
+        async with self._explosion_lock:
+            try:
+                await explode(self, x, y, z, power, source)
+            except Exception as e:
+                logger.warning(f"Explosion failed at ({x:.1f}, {y:.1f}, {z:.1f}): {e}", exc_info=True)
+            while self._pending_entity_spawns:
+                entity = self.entity_manager.get_entity(self._pending_entity_spawns.pop(0))
+                if entity is not None and entity.alive:
+                    await broadcast_entity_spawn(self, entity)
 
     async def _tick_entity_interactions(self):
         """处理实体与玩家的基础交互：拾取、经验、近战伤害。"""
@@ -1413,7 +1558,7 @@ class MinecraftServer:
         live_entities = {
             entity.entity_id: entity
             for entity in entities
-            if entity.kind in {"orb", "item", "mob", "lightning_bolt"}
+            if entity.kind in {"orb", "item", "mob", "lightning_bolt", "tnt", "minecart"}
         }
 
         for conn in self.get_online_players():

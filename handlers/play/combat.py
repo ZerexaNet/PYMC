@@ -59,16 +59,36 @@ def parse_interact(payload: bytes) -> tuple[int, int] | None:
         return None
 
 
-def get_attack_damage(conn: Connection) -> float:
-    """根据手持物品计算攻击伤害 (含锋利附魔加成)。"""
-    from world.item_properties import sharpness_damage_bonus
+def _held_item(conn: Connection):
     inventory = getattr(conn, "inventory_obj", None)
-    if inventory is not None:
-        held = inventory.get_held_item_from_slot(conn.selected_hotbar_slot)
-        if held is not None and not held.is_empty:
-            base = WEAPON_DAMAGE.get(held.item_id, 1.0)
-            return base + sharpness_damage_bonus(held)
-    return 1.0
+    if inventory is None:
+        return None
+    held = inventory.get_held_item_from_slot(conn.selected_hotbar_slot)
+    return None if held is None or held.is_empty else held
+
+
+def get_attack_damage(conn: Connection, strength: float = 1.0, critical: bool = False) -> float:
+    """手持物品的近战伤害: 原版武器数值、攻击冷却蓄力、暴击与锋利加成。"""
+    from world.combat_rules import melee_damage
+    from world.item_properties import sharpness_damage_bonus
+    held = _held_item(conn)
+    bonus = sharpness_damage_bonus(held) if held is not None else 0.0
+    return melee_damage(held.item_id if held is not None else None, bonus, strength, critical)
+
+
+def _attack_strength_and_crit(conn: Connection) -> tuple[float, bool]:
+    """Attack strength from the time since the last swing; crits need a full swing while falling."""
+    from world.combat_rules import attack_strength
+    now = time.monotonic()
+    last = getattr(conn, "_last_attack_time", None)
+    ticks = (now - last) * 20.0 if last is not None else 1000.0
+    conn._last_attack_time = now
+    held = _held_item(conn)
+    strength = attack_strength(held.item_id if held is not None else None, ticks)
+    falling = (not getattr(conn, "on_ground", True)
+               and getattr(conn, "fall_start_y", conn.y) > conn.y
+               and not getattr(conn, "sprinting", False))
+    return strength, strength > 0.9 and falling
 
 
 async def _broadcast_entity_hurt(server, entity_id: int, x: float, z: float,
@@ -108,17 +128,17 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
     if parsed is None:
         return
     entity_id, action_type = parsed
-    if action_type != INTERACT_TYPE_ATTACK:
-        return
     if conn.gamemode == "spectator":
         return
-
-    # 攻击冷却
-    now = time.monotonic()
-    last_attack = getattr(conn, "_last_attack_time", 0.0)
-    if now - last_attack < ATTACK_COOLDOWN_SECONDS:
+    minecart = server.entity_manager.get_entity(entity_id)
+    if minecart is not None and minecart.kind == "minecart":
+        await _interact_minecart(conn, server, minecart, action_type)
         return
-    conn._last_attack_time = now
+    if action_type != INTERACT_TYPE_ATTACK:
+        return
+
+    # 原版不丢弃快速攻击, 而是按蓄力程度降低伤害 (最低 20%)
+    strength, critical = _attack_strength_and_crit(conn)
 
     # --- PvP ---
     victim = next((p for p in server.get_online_players()
@@ -132,8 +152,8 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
         if dx * dx + dy * dy + dz * dz > ATTACK_RANGE_SQUARED:
             return
         from handlers.play.join import _damage_player
-        victim.damage_cooldown_ticks = 0
-        await _damage_player(victim, get_attack_damage(conn), f"player:{conn.username}", server)
+        await _damage_player(victim, get_attack_damage(conn, strength, critical),
+                             f"player:{conn.username}", server)
         # 击退: Set Entity Velocity 发给被攻击的玩家本人
         from protocol.data_types import write_varint, write_short
         from protocol.packet_map import get_clientbound_packet
@@ -153,8 +173,11 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
     if entity.distance_squared_to(conn.x, conn.y, conn.z) > ATTACK_RANGE_SQUARED:
         return
 
-    damage = get_attack_damage(conn)
+    damage = get_attack_damage(conn, strength, critical)
+    health_before = entity.health
     killed = damage_mob(server, entity, damage, source=conn)
+    if not killed and entity.health >= health_before:
+        return  # absorbed by the invulnerability window: no hurt effect, no knockback
     await _broadcast_entity_hurt(server, entity.entity_id, entity.x, entity.z,
                                  attacker=conn, dead=killed)
     if not killed:
@@ -168,6 +191,43 @@ async def _handle_interact(conn: Connection, payload: bytes, server):
         await damage_held_item(conn, server)
 
 
+async def _interact_minecart(conn: Connection, server, cart, action_type: int):
+    """Hit a minecart (it breaks after a few hits) or open a hopper minecart (interact)."""
+    if cart.distance_squared_to(conn.x, conn.y, conn.z) > ATTACK_RANGE_SQUARED:
+        return
+    if action_type == INTERACT_TYPE_ATTACK:
+        from world.minecart import hurt_minecart
+        dropped = hurt_minecart(server, cart, get_attack_damage(conn), conn.gamemode == "creative")
+        if dropped is not None:
+            from handlers.play.entities import broadcast_entity_remove, broadcast_entity_spawn
+            for item in dropped:
+                await broadcast_entity_spawn(server, item)
+            await broadcast_entity_remove(server, [cart.entity_id])
+        return
+    if action_type == 0 and cart.container is None and not getattr(conn, "sneaking", False):
+        from world.minecart import mount
+        if mount(cart, conn):
+            from handlers.play.entities import broadcast_passengers
+            await broadcast_passengers(server, cart)
+        return
+    if action_type == 0 and cart.container is not None and not getattr(conn, "sneaking", False):
+        if getattr(conn, "_open_entity_container", None) is cart.container:
+            return                  # interact and interact_at both arrive for one click
+        from world.block_behavior import container_manager
+        from world.inventory import send_open_container, send_container_content
+        window_id = container_manager.allocate_window_id()
+        conn._open_window_id = window_id
+        conn._open_container_pos = None
+        conn._open_container_type = 'entity'
+        conn._open_entity_container = cart.container
+        await send_open_container(conn, window_id, "minecraft:hopper", {"translate": "entity.minecraft.hopper_minecart"})
+        slots = list(cart.container.items)
+        inv = getattr(conn, 'inventory_obj', None)
+        if inv is not None:
+            slots += [inv.get_slot(i) for i in range(9, 36)] + [inv.get_slot(i) for i in range(9)]
+        await send_container_content(conn, window_id, slots)
+
+
 def damage_mob(server, entity, amount: float, source=None) -> bool:
     """
     对生物造成伤害。死亡时生成掉落物和经验球并移除实体。
@@ -177,6 +237,14 @@ def damage_mob(server, entity, amount: float, source=None) -> bool:
     """
     if entity.kind != "mob":
         return False
+    from world.combat_rules import damage_after_invulnerability
+    amount, last_hurt, reset = damage_after_invulnerability(
+        float(amount), getattr(entity, "invulnerable_ticks", 0), getattr(entity, "last_hurt", 0.0))
+    if amount <= 0:
+        return False
+    entity.last_hurt = last_hurt
+    if reset:
+        entity.invulnerable_ticks = 20
     entity.health -= float(amount)
     entity.metadata["health"] = entity.health
     if entity.health > 0:
@@ -184,10 +252,24 @@ def damage_mob(server, entity, amount: float, source=None) -> bool:
 
     profile = getattr(entity, "profile", {})
 
-    # 掉落物
-    for drop in profile.get("drops", []):
-        item_name, min_count, max_count = drop
-        count = _rng.randint(min_count, max_count)
+    # 掉落物: 原版生物战利品表 (抢夺附魔、仅玩家击杀掉落等), 没有表时用旧配置
+    from world.loot import LootContext, loot_tables
+    table = "entities/" + str(getattr(entity, "mob_type", "")).split(":")[-1]
+    killer = source if source is not None and hasattr(source, "inventory_obj") else None
+    if loot_tables.has(table):
+        tool = None
+        if killer is not None:
+            held = killer.inventory_obj.get_held_item_from_slot(killer.selected_hotbar_slot)
+            tool = None if held is None or held.is_empty else held
+        ctx = LootContext(tool=tool, killed_by_player=killer is not None,
+                          on_fire=getattr(entity, "fire_ticks", 0) > 0)
+        if table == "entities/sheep" and not getattr(entity, "sheared", False):
+            # a sheep's colour table (wool) includes the base sheep table (mutton)
+            table = f"entities/sheep/{getattr(entity, 'color', 'white')}"
+        drops = loot_tables.roll(table, ctx)
+    else:
+        drops = [(name, _rng.randint(lo, hi)) for name, lo, hi in profile.get("drops", [])]
+    for item_name, count in drops:
         if count <= 0:
             continue
         item = server.entity_manager.create_item(

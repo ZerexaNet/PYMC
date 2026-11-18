@@ -775,6 +775,34 @@ def player_window_slots(inv) -> list:
     return [inv.slots[window_slot_to_inventory(w)] for w in range(PLAYER_WINDOW_SLOTS)]
 
 
+def slot_snapshot(item) -> tuple | None:
+    """Comparable view of a slot (what the client is believed to show)."""
+    if item is None or item.is_empty:
+        return None
+    nbt = item.nbt or {}
+    try:
+        extra = repr(sorted(nbt.items())) if nbt else ""
+    except TypeError:
+        extra = repr(nbt)
+    return (item.item_id, int(item.count), int(item.damage or 0), extra)
+
+
+def remember_remote_window(conn, window_id: int, slots: list, carried) -> None:
+    """
+    Record what the client was just sent for a window, so later clicks can
+    answer with only the slots that differ (vanilla remoteSlots).
+    """
+    conn._remote_window = {
+        "window": window_id,
+        "slots": [slot_snapshot(item) for item in slots],
+        "carried": slot_snapshot(carried),
+    }
+
+
+def forget_remote_window(conn) -> None:
+    conn._remote_window = None
+
+
 async def send_inventory_sync(conn):
     """
     Send the full player inventory (Set Container Content, window 0).
@@ -789,12 +817,14 @@ async def send_inventory_sync(conn):
 
     from protocol.packet_map import get_clientbound_packet
 
+    slots = player_window_slots(inv)
     payload = build_set_container_content_payload(
         window_id=0,
         state_id=getattr(conn, 'inventory_state_id', 0),
-        slots=player_window_slots(inv),
+        slots=slots,
         carried_item=inv.carried_item,
     )
+    remember_remote_window(conn, 0, slots, inv.carried_item)
 
     pid = get_clientbound_packet(conn.protocol_version, "window_items")
     await conn.send_packet(pid if pid is not None else 0x13, payload)
@@ -818,6 +848,7 @@ async def send_slot_update(conn, slot: int):
         slot=slot,
         item=inv.get_slot(slot),
     )
+    forget_remote_window(conn)
     from protocol.packet_map import get_clientbound_packet
     set_slot_pid = get_clientbound_packet(conn.protocol_version, "set_slot")
     await conn.send_packet(set_slot_pid if set_slot_pid is not None else 0x15, payload)
@@ -857,6 +888,7 @@ async def send_container_content(conn, window_id: int, slots: list[ItemStack | N
         slots=slots,
         carried_item=inv.carried_item if inv else None,
     )
+    remember_remote_window(conn, window_id, slots, inv.carried_item if inv else None)
 
     from protocol.packet_map import get_clientbound_packet
     pid = get_clientbound_packet(conn.protocol_version, "window_items")
@@ -864,6 +896,19 @@ async def send_container_content(conn, window_id: int, slots: list[ItemStack | N
         await conn.send_packet(pid, payload)
     else:
         await conn.send_packet(0x13, payload)  # 0x13 = window_items in 1.21.1
+
+
+async def send_window_slot(conn, window_id: int, slot: int, item) -> None:
+    """Set Slot for one slot of a window (slot -1 with window -1: the cursor)."""
+    payload = build_set_slot_payload(
+        window_id=window_id,
+        state_id=getattr(conn, 'inventory_state_id', 0),
+        slot=slot,
+        item=item,
+    )
+    from protocol.packet_map import get_clientbound_packet
+    pid = get_clientbound_packet(conn.protocol_version, "set_slot")
+    await conn.send_packet(pid if pid is not None else 0x15, payload)
 
 
 def initialize_player_inventory(conn):

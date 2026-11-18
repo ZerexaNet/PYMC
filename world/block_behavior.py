@@ -357,13 +357,45 @@ def calculate_break_time(block_name: str, tool_item: ItemStack | None,
     return max(0.05, break_time)
 
 
+def _harvest_tools() -> dict[str, frozenset[int]]:
+    """Blocks that need the correct tool for drops -> protocol ids of the tools that work."""
+    global _HARVEST_TOOLS
+    try:
+        return _HARVEST_TOOLS
+    except NameError:
+        pass
+    import json
+    from .chunk_io import _find_blocks_json
+    table: dict[str, frozenset[int]] = {}
+    try:
+        with open(_find_blocks_json(), "r", encoding="utf-8") as f:
+            for block in json.load(f):
+                tools = block.get("harvestTools")
+                if tools:
+                    table["minecraft:" + block["name"]] = frozenset(int(k) for k in tools)
+    except (OSError, ValueError):
+        table = {}
+    _HARVEST_TOOLS = table
+    return table
+
+
 def can_harvest_block(block_name: str, tool_item: ItemStack | None) -> bool:
     """
-    Check if a block can be harvested (drops items) with the given tool.
-    Returns True if the block will drop items when broken.
+    Vanilla requiresCorrectToolForDrops: most blocks drop with any tool (or
+    none); stone, ores, metal blocks... only with a tool of the right type
+    and tier.
     """
     if block_name == "minecraft:air":
         return False
+    tools = _harvest_tools()
+    if tools:
+        required = tools.get(block_name)
+        if required is None:
+            return True
+        if tool_item is None or tool_item.is_empty:
+            return False
+        from .inventory import item_name_to_protocol_id
+        return item_name_to_protocol_id(tool_item.item_id) in required
 
     preferred_tool = get_block_tool(block_name)
     tier_required = get_block_tier_required(block_name)
@@ -476,7 +508,6 @@ BLOCK_DROPS: dict[str, list[tuple[str, int, int, bool]]] = {
     "minecraft:end_stone": [("minecraft:end_stone", 1, 1, True)],
 
     # Organic
-    "minecraft:oak_leaves": [("minecraft:oak_sapling", 1, 1, False)],  # 5% chance
     "minecraft:white_wool": [("minecraft:white_wool", 1, 1, False)],
     "minecraft:cactus": [("minecraft:cactus", 1, 1, False)],
 
@@ -511,11 +542,76 @@ BLOCK_DROPS: dict[str, list[tuple[str, int, int, bool]]] = {
 }
 
 
-def get_block_drops(block_name: str, tool_item: ItemStack | None = None) -> list[ItemStack]:
+# Vanilla leaves loot table: leaf type -> sapling-like drop (None: no sapling)
+LEAF_SAPLINGS: dict[str, str | None] = {
+    "minecraft:oak_leaves": "minecraft:oak_sapling",
+    "minecraft:spruce_leaves": "minecraft:spruce_sapling",
+    "minecraft:birch_leaves": "minecraft:birch_sapling",
+    "minecraft:jungle_leaves": "minecraft:jungle_sapling",
+    "minecraft:acacia_leaves": "minecraft:acacia_sapling",
+    "minecraft:dark_oak_leaves": "minecraft:dark_oak_sapling",
+    "minecraft:cherry_leaves": "minecraft:cherry_sapling",
+    "minecraft:azalea_leaves": "minecraft:azalea",
+    "minecraft:flowering_azalea_leaves": "minecraft:flowering_azalea",
+    "minecraft:mangrove_leaves": None,
+}
+# chance per Fortune level 0, 1, 2, 3 (4+ for sticks/apples), as in the loot tables
+_SAPLING_CHANCES = (1 / 20, 1 / 16, 1 / 12, 1 / 10)
+_JUNGLE_SAPLING_CHANCES = (1 / 40, 1 / 36, 1 / 32, 1 / 24)
+_STICK_CHANCES = (1 / 50, 1 / 45, 1 / 40, 1 / 30, 1 / 10)
+_APPLE_CHANCES = (1 / 200, 1 / 180, 1 / 160, 1 / 120, 1 / 40)
+
+
+def _enchantment(tool_item, name: str) -> int:
+    if tool_item is None:
+        return 0
+    from .item_properties import get_enchantment_level
+    return max(get_enchantment_level(tool_item, name),
+               get_enchantment_level(tool_item, "minecraft:" + name))
+
+
+def _leaf_drops(block_name: str, tool_item, rng=random) -> list[ItemStack]:
+    """Leaves: themselves with shears/Silk Touch, otherwise chance-based saplings, sticks, apples."""
+    tool_id = getattr(tool_item, "item_id", None) if tool_item is not None else None
+    if tool_id == "minecraft:shears" or _enchantment(tool_item, "silk_touch") > 0:
+        return [ItemStack(block_name, 1)]
+    fortune = min(_enchantment(tool_item, "fortune"), 4)
+    drops: list[ItemStack] = []
+    sapling = LEAF_SAPLINGS.get(block_name)
+    if sapling is not None:
+        chances = _JUNGLE_SAPLING_CHANCES if block_name == "minecraft:jungle_leaves" else _SAPLING_CHANCES
+        if rng.random() < chances[min(fortune, 3)]:
+            drops.append(ItemStack(sapling, 1))
+    if rng.random() < _STICK_CHANCES[fortune]:
+        drops.append(ItemStack("minecraft:stick", rng.randint(1, 2)))
+    if block_name in ("minecraft:oak_leaves", "minecraft:dark_oak_leaves"):
+        if rng.random() < _APPLE_CHANCES[fortune]:
+            drops.append(ItemStack("minecraft:apple", 1))
+    return drops
+
+
+def get_block_drops(block_name: str, tool_item: ItemStack | None = None,
+                    state_props: dict | None = None,
+                    explosion_radius: float | None = None) -> list[ItemStack]:
     """
-    Get the items dropped when a block is broken.
-    Returns a list of ItemStack objects.
+    Get the items dropped when a block is broken: the vanilla block loot
+    table (Fortune, Silk Touch, shears, chances, crop ages...), after the
+    vanilla "needs the correct tool" check.
     """
+    from .loot import LootContext, loot_tables
+    table = "blocks/" + block_name.split(":")[-1]
+    if loot_tables.has(table):
+        if explosion_radius is None and not can_harvest_block(block_name, tool_item):
+            return []
+        ctx = LootContext(tool=tool_item, block_state=dict(state_props or {}),
+                          block_name=block_name, explosion_radius=explosion_radius)
+        merged: dict[str, int] = {}
+        for item_id, count in loot_tables.roll(table, ctx):
+            merged[item_id] = merged.get(item_id, 0) + count
+        return [ItemStack(item_id, count) for item_id, count in merged.items() if count > 0]
+
+    if block_name in LEAF_SAPLINGS:
+        return _leaf_drops(block_name, tool_item)
     drops = BLOCK_DROPS.get(block_name, [])
 
     if not drops:
@@ -624,6 +720,8 @@ class ContainerData:
                 self.items = [None] * 3
             elif self.type == "hopper":
                 self.items = [None] * 5
+            elif self.type == "brewing_stand":
+                self.items = [None] * 5  # 0-2 bottles, 3 ingredient, 4 blaze powder
             elif self.type == "dropper" or self.type == "dispenser":
                 self.items = [None] * 9
             else:
@@ -860,6 +958,111 @@ container_manager = ContainerManager()
 
 
 # --------------------------------------------------
+# Double chests (ChestBlock / CompoundContainer)
+# --------------------------------------------------
+
+_CW = {"north": "east", "east": "south", "south": "west", "west": "north"}
+_CCW = {v: k for k, v in _CW.items()}
+_STEP = {"north": (0, 0, -1), "south": (0, 0, 1), "west": (-1, 0, 0), "east": (1, 0, 0)}
+
+
+def _read_block(x: int, y: int, z: int):
+    reader = getattr(container_manager, "block_reader", None)
+    if reader is None:
+        return None
+    try:
+        return reader(x, y, z)
+    except Exception:
+        return None
+
+
+def chest_halves(x: int, y: int, z: int):
+    """(first, second) positions of the double chest at (x, y, z), or None for a single chest.
+
+    ChestBlock.getBlockType: the RIGHT half is FIRST (slots 0-26), the LEFT half SECOND."""
+    from .chunk_io import STATE_ID_TO_BLOCK
+    state = _read_block(x, y, z)
+    if state is None:
+        return None
+    name, props = STATE_ID_TO_BLOCK.get(state, ("", {}))
+    if name not in ("minecraft:chest", "minecraft:trapped_chest"):
+        return None
+    kind, facing = props.get("type", "single"), props.get("facing", "north")
+    if kind == "single" or facing not in _CW:
+        return None
+    direction = _CW[facing] if kind == "left" else _CCW[facing]
+    dx, _, dz = _STEP[direction]
+    other = (x + dx, y, z + dz)
+    other_name, other_props = STATE_ID_TO_BLOCK.get(_read_block(*other) or 0, ("", {}))
+    if other_name != name or other_props.get("facing") != facing or other_props.get("type") == kind \
+            or other_props.get("type") == "single":
+        return None
+    return ((x, y, z), other) if kind == "right" else (other, (x, y, z))
+
+
+class CompoundItems:
+    """The slots of two containers seen as one list (CompoundContainer)."""
+
+    def __init__(self, first: list, second: list):
+        self.first = first
+        self.second = second
+
+    def __len__(self):
+        return len(self.first) + len(self.second)
+
+    def _locate(self, index: int):
+        if index < 0:
+            index += len(self)
+        if index < len(self.first):
+            return self.first, index
+        if index < len(self):
+            return self.second, index - len(self.first)
+        raise IndexError(index)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        store, i = self._locate(index)
+        return store[i]
+
+    def __setitem__(self, index, value):
+        store, i = self._locate(index)
+        store[i] = value
+
+    def __iter__(self):
+        yield from self.first
+        yield from self.second
+
+
+class CompoundContainer:
+    def __init__(self, first_pos, first: ContainerData, second_pos, second: ContainerData):
+        self.type = first.type
+        self.items = CompoundItems(first.items, second.items)
+        self.parts = [(first_pos, first), (second_pos, second)]
+        self.positions = (first_pos, second_pos)
+        self.viewers = first.viewers | second.viewers
+
+    def owner_of(self, index: int):
+        """(position, slot) holding the compound slot ``index``."""
+        size = len(self.parts[0][1].items)
+        return (self.parts[0][0], index) if index < size else (self.parts[1][0], index - size)
+
+
+def container_view(x: int, y: int, z: int):
+    """The inventory a player / hopper / comparator sees at a block: double chests are combined."""
+    container = container_manager.get_container(x, y, z)
+    halves = chest_halves(x, y, z)
+    if halves is None:
+        if container is not None and not hasattr(container, "positions"):
+            container.positions = ((x, y, z),)
+        return container
+    (p1, p2) = halves
+    first = container_manager.get_or_create(*p1, "chest")
+    second = container_manager.get_or_create(*p2, "chest")
+    return CompoundContainer(p1, first, p2, second)
+
+
+# --------------------------------------------------
 # Block Behavior Implementations
 # --------------------------------------------------
 
@@ -869,7 +1072,9 @@ class ChestBehavior(BlockBehavior):
     @staticmethod
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
-        container = container_manager.get_or_create(x, y, z, "chest")
+        container_manager.get_or_create(x, y, z, "chest")
+        container = container_view(x, y, z)
+        double = isinstance(container, CompoundContainer)
 
         from world.inventory import send_open_container, send_container_content
         window_id = container_manager.allocate_window_id()
@@ -877,10 +1082,14 @@ class ChestBehavior(BlockBehavior):
         conn._open_container_pos = (x, y, z)
         conn._open_container_type = 'block'
 
-        await send_open_container(conn, window_id, "minecraft:generic_9x3", {"translate": "container.chest"})
+        if double:
+            await send_open_container(conn, window_id, "minecraft:generic_9x6", {"translate": "container.chestDouble"})
+        else:
+            await send_open_container(conn, window_id, "minecraft:generic_9x3", {"translate": "container.chest"})
 
-        # Send container contents: 27 chest slots + 36 player inventory slots
-        all_slots = list(container.items) + [None] * (27 - len(container.items))
+        # Send container contents: 27 (54) chest slots + 36 player inventory slots
+        size = 54 if double else 27
+        all_slots = list(container.items) + [None] * (size - len(container.items))
         inv = getattr(conn, 'inventory_obj', None)
         if inv is not None:
             for slot_idx in range(9, 36):
@@ -890,12 +1099,58 @@ class ChestBehavior(BlockBehavior):
 
         await send_container_content(conn, window_id, all_slots)
 
+        for pos in getattr(container, "positions", ((x, y, z),)):
+            container_manager.add_viewer(*pos, conn.entity_id)
+        return True
+
+    @staticmethod
+    def is_interactive() -> bool:
+        return True
+
+
+class BrewingStandBehavior(BlockBehavior):
+    """Brewing stand window: 3 bottles, ingredient, blaze powder."""
+
+    @staticmethod
+    async def on_use(conn, server, x: int, y: int, z: int,
+                     face: int, hand: int) -> bool:
+        container_manager.get_or_create(x, y, z, "brewing_stand")
+        from world.inventory import send_open_container
+        from world.inventory_interactions import _sync_open_container
+        window_id = container_manager.allocate_window_id()
+        conn._open_window_id = window_id
+        conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'block'
+        await send_open_container(conn, window_id, "minecraft:brewing_stand", {"translate": "container.brewing"})
+        await _sync_open_container(conn, window_id)
         container_manager.add_viewer(x, y, z, conn.entity_id)
         return True
 
     @staticmethod
     def is_interactive() -> bool:
         return True
+
+
+# PotionBrewing ingredients (1.21.1) and what goes into the bottle slots
+BREWING_INGREDIENTS = {"minecraft:" + n for n in (
+    "nether_wart", "redstone", "glowstone_dust", "fermented_spider_eye", "gunpowder", "dragon_breath", "sugar",
+    "rabbit_foot", "glistering_melon_slice", "spider_eye", "pufferfish", "magma_cream", "golden_carrot",
+    "blaze_powder", "ghast_tear", "turtle_helmet", "phantom_membrane", "breeze_rod", "slime_block", "cobweb",
+    "stone")}
+BREWING_BOTTLES = {"minecraft:potion", "minecraft:splash_potion", "minecraft:lingering_potion",
+                   "minecraft:glass_bottle"}
+
+
+def brewing_can_place(container, slot: int, item_id: str) -> bool:
+    """BrewingStandBlockEntity.canPlaceItem."""
+    if slot == 3:
+        return item_id in BREWING_INGREDIENTS
+    if slot == 4:
+        return item_id == "minecraft:blaze_powder"
+    if slot in (0, 1, 2):
+        current = container.items[slot]
+        return item_id in BREWING_BOTTLES and (current is None or current.is_empty)
+    return False
 
 
 class CraftingTableBehavior(BlockBehavior):
@@ -905,11 +1160,15 @@ class CraftingTableBehavior(BlockBehavior):
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
         from world.inventory import send_open_container
+        from world.inventory_interactions import _sync_open_container
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'crafting'
+        conn._crafting_grid = [None] * 9
 
         await send_open_container(conn, window_id, "minecraft:crafting", {"translate": "container.crafting"})
+        await _sync_open_container(conn, window_id)
         return True
 
     @staticmethod
@@ -1051,6 +1310,57 @@ class EnderChestBehavior(BlockBehavior):
             all_slots.append(inv.get_slot(slot_idx))
 
         await send_container_content(conn, window_id, all_slots)
+        return True
+
+    @staticmethod
+    def is_interactive() -> bool:
+        return True
+
+
+class ComposterBehavior(BlockBehavior):
+    """ComposterBlock.useItemOn / useWithoutItem: compost the held item or take the bone meal out."""
+
+    @staticmethod
+    async def on_use(conn, server, x: int, y: int, z: int,
+                     face: int, hand: int) -> bool:
+        from world.chunk_io import STATE_ID_TO_BLOCK
+        from world.composter import compost_chance, insert_item
+        from world.editing import get_world_block, set_world_block
+        from world.rs.core import with_props
+        from handlers.play.blocks import _broadcast_block_change
+
+        state = get_world_block(server, x, y, z)
+        if state is None:
+            return False
+        level = int(STATE_ID_TO_BLOCK.get(state, ("", {}))[1].get("level", 0))
+        inv = getattr(conn, "inventory_obj", None)
+        held = inv.get_held_item_from_slot(conn.selected_hotbar_slot) if inv is not None else None
+        sound = None
+        if level == 8:
+            new_state = with_props(state, level="0")
+            item = server.entity_manager.create_item(x + 0.5, y + 1.01, z + 0.5, "minecraft:bone_meal", 1)
+            item.pickup_delay = 10
+            from handlers.play.entities import broadcast_entity_spawn
+            await broadcast_entity_spawn(server, item)
+            sound = "minecraft:block.composter.empty"
+        elif level < 7 and held is not None and not held.is_empty and compost_chance(held.item_id) > 0:
+            new_level = insert_item(level, held.item_id)
+            new_state = with_props(state, level=str(new_level))
+            sound = "minecraft:block.composter.fill_success" if new_level > level else "minecraft:block.composter.fill"
+            if conn.gamemode != "creative":
+                held.count -= 1
+                if held.count <= 0:
+                    inv.set_slot(conn.selected_hotbar_slot, None)
+                conn.inventory_state_id = getattr(conn, "inventory_state_id", 0) + 1
+                from world.inventory import send_inventory_sync
+                await send_inventory_sync(conn)
+        else:
+            return False
+        if new_state != state:
+            set_world_block(server, x, y, z, new_state)        # the redstone engine schedules 7 -> 8
+            await _broadcast_block_change(server, x, y, z, new_state)
+        if sound and hasattr(server, "play_sound"):
+            await server.play_sound((x, y, z), sound)
         return True
 
     @staticmethod
@@ -1336,96 +1646,16 @@ class TNTBehavior(BlockBehavior):
         from handlers.play.blocks import _broadcast_block_change
         from world.blocks import AIR
 
-        # Remove the TNT block
+        # Remove the TNT block and spawn primed TNT (80-tick fuse, like vanilla)
         set_world_block(server, x, y, z, AIR)
         await _broadcast_block_change(server, x, y, z, AIR)
-
-        # Create explosion effect
-        await TNTBehavior._create_explosion(server, x, y, z)
+        server.entity_manager.create_tnt(x + 0.5, y, z + 0.5)
 
     @staticmethod
     async def _create_explosion(server, cx: int, cy: int, cz: int, radius: float = 4.0):
-        """
-        Create an explosion at the given position.
-        Destroys blocks in radius, damages entities, creates particles.
-        """
-        from world.editing import get_world_block, set_world_block
-        from handlers.play.blocks import _broadcast_block_change
-        from world.blocks import AIR
-
-        # Ray-trace explosion (simplified - vanilla uses 1352 rays)
-        destroyed = set()
-        for dx in range(-int(radius), int(radius) + 1):
-            for dy in range(-int(radius), int(radius) + 1):
-                for dz in range(-int(radius), int(radius) + 1):
-                    bx, by, bz = cx + dx, cy + dy, cz + dz
-                    dist = (dx * dx + dy * dy + dz * dz) ** 0.5
-                    if dist > radius:
-                        continue
-
-                    state = get_world_block(server, bx, by, bz)
-                    if state is None or state == AIR:
-                        continue
-
-                    block_name, _ = STATE_ID_TO_BLOCK.get(state, ("minecraft:air", {}))
-
-                    # Some blocks resist explosions
-                    blast_resist = {
-                        "minecraft:bedrock": 18000000,
-                        "minecraft:obsidian": 1200,
-                        "minecraft:ender_chest": 600,
-                        "minecraft:anvil": 600,
-                        "minecraft:reinforced_deepslate": 18000000,
-                        "minecraft:command_block": 18000000,
-                        "minecraft:barrier": 18000000,
-                    }
-                    if blast_resist.get(block_name, 0) > 1200:
-                        continue
-
-                    # Random chance based on distance (vanilla-like)
-                    chance = (1.0 - dist / radius) * 0.7
-                    if random.random() < chance:
-                        destroyed.add((bx, by, bz))
-
-        # Destroy blocks and drop some items
-        for bx, by, bz in destroyed:
-            state = get_world_block(server, bx, by, bz)
-            if state is not None and state != AIR:
-                block_name, _ = STATE_ID_TO_BLOCK.get(state, ("minecraft:air", {}))
-
-                # 1/(power+1) chance to drop items (simplified)
-                if random.random() < 1.0 / (radius + 1):
-                    # Drop items at this location (simplified)
-                    drops = get_block_drops(block_name, None)
-                    # In a full implementation, we'd spawn item entities here
-
-            set_world_block(server, bx, by, bz, AIR)
-            await _broadcast_block_change(server, bx, by, bz, AIR)
-
-        # Send explosion particle effect to all nearby players
-        try:
-            from protocol.data_types import write_float, write_varint
-            payload = bytearray()
-            payload.extend(write_float(float(cx)))
-            payload.extend(write_float(float(cy)))
-            payload.extend(write_float(float(cz)))
-            payload.extend(write_float(radius))  # power
-            # Number of records (affected blocks)
-            payload.extend(write_varint(len(destroyed)))
-            # Record positions (relative offsets)
-            for bx, by, bz in destroyed:
-                payload.extend(bytes([bx - cx & 0xFF]))
-                payload.extend(bytes([by - cy & 0xFF]))
-                payload.extend(bytes([bz - cz & 0xFF]))
-            # Player motion (knockback)
-            payload.extend(write_float(0.0))
-            payload.extend(write_float(0.0))
-            payload.extend(write_float(0.0))
-
-            for player in server.get_online_players():
-                await player.send_packet(0x20, bytes(payload))  # Explosion packet (was 0x24 which is hurt_animation)
-        except Exception as e:
-            logger.warning(f"Failed to send explosion packet: {e}")
+        """Explosion at a block position (vanilla algorithm in world.explosion)."""
+        from world.explosion import explode
+        await explode(server, cx + 0.5, cy + 0.0625, cz + 0.5, radius)
 
     @staticmethod
     def is_interactive() -> bool:
@@ -1594,6 +1824,8 @@ BLOCK_BEHAVIORS: dict[str, BlockBehavior] = {
     "minecraft:trapped_chest": ChestBehavior(),
     # Crafting
     "minecraft:crafting_table": CraftingTableBehavior(),
+    "minecraft:composter": ComposterBehavior(),
+    "minecraft:brewing_stand": BrewingStandBehavior(),
     # Furnaces
     "minecraft:furnace": FurnaceBehavior(),
     "minecraft:blast_furnace": BlastFurnaceBehavior(),

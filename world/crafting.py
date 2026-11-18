@@ -1750,3 +1750,126 @@ class CraftingSystem:
 
 # Global crafting system instance
 crafting_system = CraftingSystem()
+
+
+# --------------------------------------------------
+# Vanilla 1.21.1 crafting recipes (world/data/recipes.json)
+# --------------------------------------------------
+
+# Items that leave something behind in the grid when crafted with
+# (Item.getCraftingRemainingItem in vanilla).
+CRAFTING_REMAINDERS = {
+    "minecraft:milk_bucket": "minecraft:bucket",
+    "minecraft:water_bucket": "minecraft:bucket",
+    "minecraft:lava_bucket": "minecraft:bucket",
+    "minecraft:powder_snow_bucket": "minecraft:bucket",
+    "minecraft:honey_bottle": "minecraft:glass_bottle",
+    "minecraft:dragon_breath": "minecraft:glass_bottle",
+}
+
+
+class VanillaRecipeBook:
+    """
+    Vanilla crafting-grid matching: shaped recipes match the trimmed grid,
+    directly or mirrored left-right; shapeless recipes match any arrangement.
+    Every ingredient is a set of acceptable items (tags already resolved).
+    """
+
+    def __init__(self, path=None):
+        import json
+        import os
+        if path is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "recipes.json")
+        self.shaped: dict[tuple[int, int], list] = {}
+        self.shapeless: dict[int, list] = {}
+        self.loaded = False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        for recipe in data.get("shaped", []):
+            pattern = self._trim(recipe["pattern"])
+            keys = {ch: frozenset(items) for ch, items in recipe["key"].items()}
+            cells = [[None if ch == " " else keys[ch] for ch in row.ljust(len(pattern[0]))]
+                     for row in pattern]
+            entry = (cells, tuple(recipe["result"]))
+            self.shaped.setdefault((len(cells), len(cells[0])), []).append(entry)
+        for recipe in data.get("shapeless", []):
+            ingredients = [frozenset(items) for items in recipe["ingredients"]]
+            self.shapeless.setdefault(len(ingredients), []).append((ingredients, tuple(recipe["result"])))
+        self.loaded = True
+
+    @staticmethod
+    def _trim(pattern: list[str]) -> list[str]:
+        rows = [row for row in pattern if row.strip()]
+        width = max(len(row) for row in pattern)
+        rows = [row.ljust(width) for row in rows]
+        cols = [c for c in range(width) if any(row[c] != " " for row in rows)]
+        return [row[cols[0]:cols[-1] + 1] for row in rows]
+
+    def match(self, items: list[str], width: int):
+        """
+        ``items``: the grid in row-major order ("" or air = empty), ``width``
+        2 or 3. Returns (result_item, count) or None.
+        """
+        cells = ["" if not item or item == "minecraft:air" else item for item in items]
+        height = len(cells) // width
+        rows = [cells[r * width:(r + 1) * width] for r in range(height)]
+        filled = [(r, c) for r in range(height) for c in range(width) if rows[r][c]]
+        if not filled:
+            return None
+        r0 = min(r for r, _ in filled)
+        r1 = max(r for r, _ in filled)
+        c0 = min(c for _, c in filled)
+        c1 = max(c for _, c in filled)
+        box = [row[c0:c1 + 1] for row in rows[r0:r1 + 1]]
+        for pattern, result in self.shaped.get((len(box), len(box[0])), ()):
+            if self._fits(box, pattern, False) or self._fits(box, pattern, True):
+                return result
+        present = [item for item in cells if item]
+        for ingredients, result in self.shapeless.get(len(present), ()):
+            if self._assign(present, ingredients):
+                return result
+        return None
+
+    @staticmethod
+    def _fits(box, pattern, mirrored: bool) -> bool:
+        w = len(box[0])
+        for r, row in enumerate(box):
+            for c, item in enumerate(row):
+                want = pattern[r][w - 1 - c if mirrored else c]
+                if want is None:
+                    if item:
+                        return False
+                elif item not in want:
+                    return False
+        return True
+
+    @staticmethod
+    def _assign(items: list[str], ingredients: list) -> bool:
+        """Can each item be given to a distinct ingredient? (tiny bipartite matching)"""
+        owner = [-1] * len(ingredients)
+
+        def place(i: int, seen: set) -> bool:
+            for j, ing in enumerate(ingredients):
+                if j in seen or items[i] not in ing:
+                    continue
+                seen.add(j)
+                if owner[j] == -1 or place(owner[j], seen):
+                    owner[j] = i
+                    return True
+            return False
+
+        return all(place(i, set()) for i in range(len(items)))
+
+
+vanilla_recipes = VanillaRecipeBook()
+
+
+def match_crafting_grid(items: list[str], width: int):
+    """(result_item, count) for a crafting grid, vanilla recipes first."""
+    if vanilla_recipes.loaded:
+        return vanilla_recipes.match(items, width)
+    rows = [list(items[r * width:(r + 1) * width]) for r in range(len(items) // width)]
+    return crafting_system.check_crafting(rows)

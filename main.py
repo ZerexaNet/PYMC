@@ -158,6 +158,10 @@ async def console_input_loop(server: MinecraftServer):
             command = command[1:]
         if not command:
             continue
+        if command.split()[0].lower() == "stop" and not server._ready_event.is_set():
+            # stop works even while the world is still being prepared
+            server.request_stop()
+            return
         # 启动完成前输入的命令排队等待 (与原版控制台一致)
         await server.wait_until_ready()
         if not server.running:

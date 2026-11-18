@@ -160,6 +160,7 @@ async def send_join_game(conn: Connection, server):
     target_x, target_y, target_z = _resolve_initial_player_location(
         server, player_state
     )
+    conn.spawn_protection_ticks = 60   # 原版进服后 3 秒无敌
     if player_state and all(k in player_state for k in ("x", "y", "z")):
         # 保留方块内的小数坐标, 仅当安全位置与存档方块一致时
         px, py, pz = (float(player_state["x"]), float(player_state["y"]),
@@ -617,11 +618,15 @@ async def _broadcast_damage_event(conn: Connection, server, damage_type: str):
 
 async def _damage_player(conn: Connection, amount: float, reason: str, server):
     """对玩家造成伤害; 生命值归零时进入死亡流程 (死亡界面 + 死亡消息)。"""
-    if not conn.alive or conn.gamemode in {"creative", "spectator"}:
+    if not conn.alive:
+        return
+    unblockable = reason in ("kill", "虚空")
+    if conn.gamemode == "spectator" or (conn.gamemode == "creative" and not unblockable):
         return
     if getattr(conn, "_dead", False) or amount <= 0:
         return
-    if conn.damage_cooldown_ticks > 0 and conn.last_damage_reason == reason:
+    # 3 s of spawn invulnerability after joining/respawning (ServerPlayer.spawnInvulnerableTime)
+    if getattr(conn, "spawn_protection_ticks", 0) > 0 and not unblockable:
         return
     gamerules = server.gamerules
     if reason == "摔落" and not gamerules.get("fallDamage", True):
@@ -635,8 +640,27 @@ async def _damage_player(conn: Connection, amount: float, reason: str, server):
 
     damage_type, death_message = resolve_damage_source(conn, reason)
 
+    # vanilla Player.hurt / LivingEntity.actuallyHurt: difficulty scaling for
+    # mob damage, armor + toughness, protection enchantments, then the
+    # invulnerability window (only a harder hit gets through, by the difference)
+    from world.combat_rules import damage_after_invulnerability, final_player_damage
+    if not unblockable:
+        inventory = getattr(conn, "inventory_obj", None)
+        armor_items = list(inventory.slots[36:40]) if inventory is not None else []
+        from_mob = (reason not in DAMAGE_SOURCES and not reason.startswith("player:")
+                    and damage_type in ("minecraft:mob_attack", "minecraft:arrow"))
+        difficulty = str(server.config.get("difficulty", "normal")).lower()
+        amount = final_player_damage(amount, reason, armor_items, difficulty, from_mob,
+                                     projectile=damage_type == "minecraft:arrow",
+                                     explosion=reason == "爆炸")
+        amount, last_hurt, reset = damage_after_invulnerability(
+            amount, conn.damage_cooldown_ticks, getattr(conn, "last_hurt_amount", 0.0))
+        if amount <= 0:
+            return
+        conn.last_hurt_amount = last_hurt
+        if reset:
+            conn.damage_cooldown_ticks = 20
     conn.health = max(0.0, conn.health - amount)
-    conn.damage_cooldown_ticks = 10
     conn.last_damage_reason = reason
     await _send_update_health(conn)
     await _broadcast_damage_event(conn, server, damage_type)
@@ -738,7 +762,8 @@ async def respawn_player(conn: Connection, server):
     conn.air_supply = 300
     conn.fire_ticks = 0
     conn.freeze_ticks = 0
-    conn.damage_cooldown_ticks = 60   # 重生保护
+    conn.damage_cooldown_ticks = 0
+    conn.spawn_protection_ticks = 60   # 重生保护 (原版 spawnInvulnerableTime)
     conn.last_damage_reason = ""
     conn._dead = False
 
@@ -853,6 +878,9 @@ async def _tick_damage_effects(conn: Connection, server, tick_count: int):
         conn.damage_cooldown_ticks -= 1
         if conn.damage_cooldown_ticks == 0:
             conn.last_damage_reason = ""
+            conn.last_hurt_amount = 0.0
+    if getattr(conn, "spawn_protection_ticks", 0) > 0:
+        conn.spawn_protection_ticks -= 1
 
     block_x, block_y, block_z = _player_block_position(conn)
     foot_block = _get_block_at(server, block_x, block_y, block_z)
