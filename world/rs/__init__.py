@@ -15,6 +15,7 @@ from functools import lru_cache
 
 from .core import (
     AIR, DIRECTIONS, Level, UPDATE_ALL, UPDATE_CLIENTS, UPDATE_KNOWN_SHAPE, name_of, prop, props_of, rel,
+    with_props,
 )
 
 logger = logging.getLogger("PyMC.红石")
@@ -93,8 +94,12 @@ class RedstoneEngine:
             return
         reg = registry()
         try:
-            if name_of(state) == "minecraft:redstone_wire" and name_of(old) != "minecraft:redstone_wire":
-                shaped = reg.get("minecraft:redstone_wire").placement_state(level, pos)
+            shaper = getattr(reg.get(name_of(state)), "placement_state", None)
+            if shaper is not None and name_of(state) != name_of(old):
+                # getStateForPlacement of wires/strings depends on the neighbours
+                shaped = shaper(level, pos)
+                if name_of(state) == "minecraft:redstone_wire":
+                    shaped = with_props(shaped, power=prop(state, "power", "0"))
                 level._write(pos, shaped)
                 level.client_changes[pos] = shaped
                 state = shaped

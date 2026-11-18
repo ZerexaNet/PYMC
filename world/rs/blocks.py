@@ -1170,6 +1170,187 @@ class PoweredRail(Block):
 
 
 # --------------------------------------------------------------------------
+# tripwire and tripwire hooks
+# --------------------------------------------------------------------------
+
+def _try_set(state, **changes):
+    """BlockState.trySetValue: only properties the block has."""
+    p = props_of(state)
+    return with_props(state, **{k: v for k, v in changes.items() if k in p})
+
+
+def _bool(value) -> str:
+    return "true" if value else "false"
+
+
+class TripwireHook(Block):
+    name = "minecraft:tripwire_hook"
+
+    def can_survive(self, level, state, pos):
+        facing = prop(state, "facing")
+        return is_face_sturdy(level.get(rel(pos, OPP[facing])), facing)
+
+    def update_shape(self, level, state, direction, neighbor_state, pos, neighbor_pos):
+        if OPP[direction] == prop(state, "facing") and not self.can_survive(level, state, pos):
+            return AIR
+        return state
+
+    def on_placed_by_player(self, level, state, pos):
+        self.calculate_state(level, pos, state, False, False, -1, None)
+
+    @staticmethod
+    def notify_neighbors(level, pos, direction):
+        level.update_neighbors_at(pos, TripwireHook.name)
+        level.update_neighbors_at(rel(pos, OPP[direction]), TripwireHook.name)
+
+    def calculate_state(self, level, pos, hook_state, attaching, notify, search_range, wire_state):
+        """TripWireHookBlock.calculateState."""
+        direction = prop(hook_state, "facing")
+        if direction is None:
+            return
+        was_attached = prop(hook_state, "attached") == "true"
+        was_powered = prop(hook_state, "powered") == "true"
+        attached = not attaching
+        powered = False
+        other = 0
+        cached = [None] * 42
+        for j in range(1, 42):
+            p = rel(pos, direction, j)
+            state = level.get(p)
+            if name_of(state) == self.name:
+                if prop(state, "facing") == OPP[direction]:
+                    other = j
+                break
+            if name_of(state) != Tripwire.name and j != search_range:
+                cached[j] = None
+                attached = False
+            else:
+                if j == search_range:
+                    state = wire_state if wire_state is not None else state
+                armed = prop(state, "disarmed") != "true"
+                pressed = prop(state, "powered") == "true"
+                powered |= armed and pressed
+                cached[j] = state
+                if j == search_range:
+                    level.schedule_tick(pos, self.name, 10)
+                    attached &= armed
+        attached &= other > 1
+        powered &= attached
+        new_hook = _try_set(default_state(self.name), attached=_bool(attached), powered=_bool(powered))
+        if other > 0:
+            other_pos = rel(pos, direction, other)
+            back = OPP[direction]
+            level.set_block(other_pos, with_props(new_hook, facing=back), UPDATE_ALL)
+            self.notify_neighbors(level, other_pos, back)
+        if not attaching:
+            level.set_block(pos, with_props(new_hook, facing=direction), UPDATE_ALL)
+            if notify:
+                self.notify_neighbors(level, pos, direction)
+        if was_attached != attached:
+            for k in range(1, other):
+                state = cached[k]
+                if state is not None:
+                    level.set_block(rel(pos, direction, k), _try_set(state, attached=_bool(attached)), UPDATE_ALL)
+
+    def tick(self, level, state, pos):
+        self.calculate_state(level, pos, state, False, True, -1, None)
+
+    def on_remove(self, level, state, pos, new, moved):
+        if not moved and name_of(new) != self.name:
+            attached = prop(state, "attached") == "true"
+            powered = prop(state, "powered") == "true"
+            if attached or powered:
+                self.calculate_state(level, pos, state, True, False, -1, None)
+            if powered:
+                level.update_neighbors_at(pos, self.name)
+                level.update_neighbors_at(rel(pos, OPP[prop(state, "facing")]), self.name)
+
+    def get_signal(self, level, state, pos, direction) -> int:
+        return 15 if prop(state, "powered") == "true" else 0
+
+    def get_direct_signal(self, level, state, pos, direction) -> int:
+        if prop(state, "powered") != "true":
+            return 0
+        return 15 if prop(state, "facing") == direction else 0
+
+    def is_signal_source(self, state) -> bool:
+        return True
+
+
+class Tripwire(Block):
+    name = "minecraft:tripwire"
+
+    @staticmethod
+    def should_connect_to(state, direction) -> bool:
+        if name_of(state) == TripwireHook.name:
+            return prop(state, "facing") == OPP[direction]
+        return name_of(state) == Tripwire.name
+
+    def placement_state(self, level, pos):
+        state = default_state(self.name)
+        return with_props(state, **{d: _bool(self.should_connect_to(level.get(rel(pos, d)), d)) for d in HORIZONTAL})
+
+    def update_shape(self, level, state, direction, neighbor_state, pos, neighbor_pos):
+        if direction in HORIZONTAL:
+            return with_props(state, **{direction: _bool(self.should_connect_to(neighbor_state, direction))})
+        return state
+
+    def on_place(self, level, state, pos, old, moved):
+        if name_of(old) != self.name:
+            self.update_source(level, pos, state)
+
+    def on_remove(self, level, state, pos, new, moved):
+        if not moved and name_of(new) != self.name:
+            self.update_source(level, pos, with_props(state, powered="true"))
+
+    def update_source(self, level, pos, state):
+        hook = TripwireHook()
+        for direction in ("south", "west"):
+            for i in range(1, 42):
+                p = rel(pos, direction, i)
+                other = level.get(p)
+                if name_of(other) == TripwireHook.name:
+                    if prop(other, "facing") == OPP[direction]:
+                        hook.calculate_state(level, p, other, False, True, i, state)
+                    break
+                if name_of(other) != self.name:
+                    break
+
+    def _entities_inside(self, level, pos) -> bool:
+        server = level.server
+        x, y, z = pos
+        for player in server.get_online_players() if hasattr(server, "get_online_players") else ():
+            if getattr(player, "gamemode", "") != "spectator" and x - 0.3 < player.x < x + 1.3 \
+                    and z - 0.3 < player.z < z + 1.3 and y - 1.8 < player.y < y + 0.15:
+                return True
+        manager = getattr(server, "entity_manager", None)
+        if manager is not None:
+            for entity in manager.list_entities():
+                if x <= entity.x < x + 1 and z <= entity.z < z + 1 and y - 0.5 < entity.y < y + 0.15:
+                    return True
+        return False
+
+    def check_pressed(self, level, pos):
+        state = level.get(pos)
+        powered = prop(state, "powered") == "true"
+        pressed = self._entities_inside(level, pos)
+        if pressed != powered:
+            state = with_props(state, powered=_bool(pressed))
+            level.set_block(pos, state, UPDATE_ALL)
+            self.update_source(level, pos, state)
+        if pressed:
+            level.schedule_tick(pos, self.name, 10)
+
+    def entity_inside(self, level, state, pos):
+        if prop(state, "powered") != "true":
+            self.check_pressed(level, pos)
+
+    def tick(self, level, state, pos):
+        if prop(state, "powered") == "true":
+            self.check_pressed(level, pos)
+
+
+# --------------------------------------------------------------------------
 # plain attached blocks that just need to break with their support
 # --------------------------------------------------------------------------
 
@@ -1214,6 +1395,7 @@ def build_registry() -> dict:
 
     for b in (RedstoneWire(), RedstoneTorch(), RedstoneWallTorch(), Repeater(), Comparator(), Observer(),
               Lever(), RedstoneBlock(), Target(), RedstoneLamp(), Tnt(), NoteBlock(), Hopper(),
+              TripwireHook(), Tripwire(),
               PistonBase("minecraft:piston", False), PistonBase("minecraft:sticky_piston", True),
               PistonHead(), MovingPistonBlock()):
         add(b)

@@ -253,3 +253,33 @@ class Placement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Tripwire(unittest.TestCase):
+    def build(self):
+        w = World()
+        w.set(-1, 64, 0, S("stone"))
+        w.set(5, 64, 0, S("stone"))
+        w.set(0, 64, 0, S("tripwire_hook", facing="east"))
+        w.set(4, 64, 0, S("tripwire_hook", facing="west"))
+        for x in (1, 2, 3):
+            w.set(x, 64, 0, S("tripwire"))
+        return w
+
+    def test_hooks_attach_and_detach(self):
+        w = self.build()
+        self.assertEqual([w.props(x, 64, 0)["attached"] for x in range(5)], ["true"] * 5)
+        w.set(5, 64, 0, S("air"))          # support gone: hook drops, line detaches
+        self.assertEqual(w.name(4, 64, 0), "air")
+        self.assertEqual([w.props(x, 64, 0)["attached"] for x in range(4)], ["false"] * 4)
+
+    def test_piston_breaks_string_and_hooks_recheck_after_10_ticks(self):
+        w = self.build()
+        w.set(2, 64, 1, S("piston", facing="north"))
+        w.engine.drain_pending_effects()
+        w.set(3, 64, 1, S("redstone_block"))
+        w.tick(15)
+        self.assertEqual(w.name(2, 64, 0), "piston_head")
+        drops = [e for e in w.engine.drain_pending_effects() if e[0] == "drop"]
+        self.assertEqual(len(drops), 1)
+        self.assertEqual(w.props(0, 64, 0)["attached"], "false")
