@@ -101,19 +101,18 @@ class WireAndComponents(unittest.TestCase):
         container.items[0] = ItemStack("minecraft:stone", 64)
         w.set(1, 64, 0, S("comparator", facing="west"))
         w.tick(3)
-        level = w.engine.level
-        self.assertEqual(level.comparator_output.get((1, 64, 0)), 1)       # 1 of 27 slots: 1
+        self.assertEqual(w.engine.comparator_outputs().get((1, 64, 0)), 1)       # 1 of 27 slots: 1
         for i in range(len(container.items)):
             container.items[i] = ItemStack("minecraft:stone", 64)
         w.engine.on_container_changed(0, 64, 0)
         w.tick(3)
-        self.assertEqual(level.comparator_output.get((1, 64, 0)), 15)
+        self.assertEqual(w.engine.comparator_outputs().get((1, 64, 0)), 15)
         w.set(1, 64, 1, S("redstone_wire"))
         w.set(1, 64, 2, S("redstone_wire"))
         w.set(1, 64, 3, S("redstone_block"))
         w.use(1, 64, 0)                                                    # subtract mode, side input 14
         w.tick(3)
-        self.assertEqual(level.comparator_output.get((1, 64, 0)), 1)
+        self.assertEqual(w.engine.comparator_outputs().get((1, 64, 0)), 1)
         container.items[:] = [None] * len(container.items)
 
 
@@ -296,8 +295,7 @@ class TntDuplication(unittest.TestCase):
         w.set(2, 65, 1, S("dead_tube_coral_wall_fan", facing="west"))
         w.set(1, 65, 1, S("tnt"))
         # budded: powered by a redstone block that never updated it
-        w.storage.load_generated_chunk(0, 0)[65 + 64][1][0] = S("redstone_block")
-        w.engine.level._chunks.clear()
+        w.poke(0, 65, 1, S("redstone_block"))
         w.set(0, 66, 0, S("redstone_block"))
         w.tick(4)
         self.assertEqual(w.name(2, 65, 1), "tnt")                       # the block moved on

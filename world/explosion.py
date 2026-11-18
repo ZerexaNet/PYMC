@@ -51,6 +51,9 @@ def _rays() -> list[tuple[float, float, float]]:
     return rays
 
 
+_RAY_COUNT = 1352
+
+
 def affected_blocks(get_block, x: float, y: float, z: float, power: float,
                     rng: random.Random) -> list[tuple[int, int, int]]:
     """Explosion.explode(): the block positions the explosion destroys."""
@@ -138,7 +141,19 @@ def _plan_explosion(server, x, y, z, power, destroy, targets, seed):
     def get_block(bx, by, bz):
         return _get_block_from_cache(server, cache, bx, by, bz)
 
-    positions = affected_blocks(get_block, x, y, z, power, rng) if destroy else []
+    from .editing import _get_edit_chunk
+    from .rs import native
+
+    def get_chunk(cx, cz):
+        return _get_edit_chunk(server, cache, cx, cz)
+
+    positions = []
+    if destroy:
+        if native.native_available():
+            # same rays in C++; the per-ray random intensities still come from rng
+            positions = native.explosion_blocks(get_chunk, x, y, z, power, [rng.random() for _ in range(_RAY_COUNT)])
+        else:
+            positions = affected_blocks(get_block, x, y, z, power, rng)
     rng.shuffle(positions)
     blocks = []
     for pos in positions:
@@ -151,8 +166,11 @@ def _plan_explosion(server, x, y, z, power, destroy, targets, seed):
         blocks.append((pos, state, name, drops, rng.randrange(20) + 10))
     reach = power * 2.0
     impacts = []
+    exposure = None
+    if targets and native.native_available():
+        exposure = native.ExposureContext(get_chunk, x, y, z, reach).exposure
     for key, box_min, box_max, eye in targets:
-        impact, direction = _impact(get_block, (x, y, z), reach, box_min, box_max, eye)
+        impact, direction = _impact(get_block, (x, y, z), reach, box_min, box_max, eye, exposure)
         if impact > 0:
             impacts.append((key, impact, direction))
     return blocks, impacts
@@ -271,7 +289,7 @@ def _blast_protection(item) -> int:
     return int(enchantments.get("blast_protection", enchantments.get("minecraft:blast_protection", 0)) or 0)
 
 
-def _impact(get_block, center, reach, box_min, box_max, eye):
+def _impact(get_block, center, reach, box_min, box_max, eye, exposure_fn=None):
     dx, dy, dz = box_min[0] + 0.3 - center[0], box_min[1] - center[1], box_min[2] + 0.3 - center[2]
     feet_dist = math.sqrt(dx * dx + dy * dy + dz * dz) / reach
     if feet_dist > 1.0:
@@ -280,7 +298,10 @@ def _impact(get_block, center, reach, box_min, box_max, eye):
     length = math.sqrt(ex * ex + ey * ey + ez * ez)
     if length == 0:
         return 0.0, (0.0, 0.0, 0.0)
-    exposure = _exposure(get_block, center, (box_min, box_max))
+    if exposure_fn is not None:
+        exposure = exposure_fn(center, (box_min, box_max))
+    else:
+        exposure = _exposure(get_block, center, (box_min, box_max))
     impact = (1.0 - feet_dist) * exposure
     return impact, (ex / length, ey / length, ez / length)
 

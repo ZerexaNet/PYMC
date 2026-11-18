@@ -254,6 +254,9 @@ class RedstoneEngine:
         for pos, value in data.get("comparators", []):
             self.level.comparator_output[tuple(pos)] = int(value)
 
+    def comparator_outputs(self) -> dict:
+        return dict(self.level.comparator_output)
+
     def get_status(self) -> dict:
         return {"scheduled_ticks": len(self.level._tick_heap),
                 "moving_pistons": len(self.level.moving_pistons)}

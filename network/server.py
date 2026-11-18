@@ -470,7 +470,8 @@ class MinecraftServer:
 
         # 初始化红石引擎
         if self.config.get("redstone-enabled", True):
-            self.redstone_engine = RedstoneEngine(self)
+            from world.rs.native import create_engine
+            self.redstone_engine = create_engine(self)
 
         # 初始化流体系统
         if self.config.get("fluid-flow-enabled", True):
@@ -1321,6 +1322,17 @@ class MinecraftServer:
             if entity is not None:
                 from handlers.play.entities import broadcast_entity_spawn
                 await broadcast_entity_spawn(self, entity)
+        elif kind == "container_changed":
+            # a hopper moved items: refresh the windows of players looking into the container
+            from world.block_behavior import container_manager
+            from world.inventory import send_container_content
+            pos = tuple(payload["pos"])
+            container = container_manager.get_container(*pos)
+            if container is not None:
+                for player in self.get_online_players():
+                    if getattr(player, "_open_container_pos", None) == pos \
+                            and getattr(player, "_open_window_id", None) is not None:
+                        await send_container_content(player, player._open_window_id, container.items)
         elif kind == "explosion":
             self.queue_explosion(payload["x"] + 0.5, payload["y"] + 0.0625, payload["z"] + 0.5, 4.0)
 

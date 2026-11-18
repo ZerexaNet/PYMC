@@ -37,6 +37,7 @@ jobs:
           ls -l build/stage/native
           test -x build/stage/native/terrain_gen
           test -x build/stage/native/mob_ai
+          test -f build/stage/native/libpymc_vanilla.*
           build/stage/native/terrain_gen --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         run: |
@@ -82,6 +83,7 @@ jobs:
           ls -l build/stage/native
           test -x build/stage/native/terrain_gen
           test -x build/stage/native/mob_ai
+          test -f build/stage/native/libpymc_vanilla.*
           build/stage/native/terrain_gen --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         run: |
@@ -142,6 +144,7 @@ jobs:
           ls -l build/stage/native
           test -f build/stage/native/terrain_gen.exe
           test -f build/stage/native/mob_ai.exe
+          test -f build/stage/native/pymc_vanilla.dll
           build/stage/native/terrain_gen.exe --version | grep -q "pymc-worldgen 2"
       - name: Build with Nuitka
         # Nuitka on Windows defaults to MSVC. No --mingw64 flag, so it
@@ -162,7 +165,8 @@ jobs:
         run: |
           cp build/Release/terrain_gen.exe terrain_gen.exe
           cp build/Release/mob_ai.exe      mob_ai.exe
-          ls -lh terrain_gen.exe mob_ai.exe
+          cp build/Release/pymc_vanilla.dll pymc_vanilla.dll
+          ls -lh terrain_gen.exe mob_ai.exe pymc_vanilla.dll
           # Sanity check: list DLL dependencies. We expect only KERNEL32.dll
           # and the api-ms-win-crt-* stubs (which are part of Windows itself,
           # not the Visual C++ Redistributable).
@@ -175,6 +179,7 @@ jobs:
             pymc-server-windows-x86_64.exe
             terrain_gen.exe
             mob_ai.exe
+            pymc_vanilla.dll
           retention-days: 1
 
   # ── Auto pre-release for non-tagged pushes ──
@@ -231,6 +236,7 @@ jobs:
             your local `native/` directory with these:
             - `terrain_gen.exe` — C++ terrain generator (statically linked, no DLL dependencies)
             - `mob_ai.exe` — C++ mob AI engine (statically linked, no DLL dependencies)
+            - `pymc_vanilla.dll` — C++ redstone / hopper / explosion engine (loaded in-process)
 
             These are built with MSVC (/MT) and have the C++ runtime baked in,
             so they run on stock Windows 10/11 without the Visual C++ Redistributable.
@@ -280,7 +286,7 @@ jobs:
             echo "- \`PyMC-windows.exe\`：Windows (x86_64)，双击运行"
             echo "- \`PyMC-linux\`：Linux (x86_64)，\`chmod +x PyMC-linux && ./PyMC-linux\`"
             echo "- \`PyMC-macos\`：macOS (ARM64)，\`chmod +x PyMC-macos && ./PyMC-macos\`"
-            echo "- \`terrain_gen.exe\` / \`mob_ai.exe\`：从 Python 源码在 Windows 上运行时放进 \`native/\` 的原生组件"
+            echo "- \`terrain_gen.exe\` / \`mob_ai.exe\` / \`pymc_vanilla.dll\`：从 Python 源码在 Windows 上运行时放进 \`native/\` 的原生组件"
             echo
             echo "Minecraft Java 1.21.1 客户端连接 \`ip:25565\`。"
             if [ -n "$PREV" ]; then

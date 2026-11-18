@@ -51,6 +51,15 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "[信息] 正在编译原生红石/漏斗/爆炸引擎..."
+if [ "$(uname)" = "Darwin" ]; then VANILLA_LIB=libpymc_vanilla.dylib; else VANILLA_LIB=libpymc_vanilla.so; fi
+g++ -O2 -std=c++17 -shared -fPIC -fvisibility=hidden -o native/$VANILLA_LIB native/vanilla/api.cpp
+
+if [ $? -ne 0 ]; then
+    echo "[错误] $VANILLA_LIB 编译失败!"
+    exit 1
+fi
+
 echo "[信息] 正在编译 C++ 加速层 (共享内存 IPC + 红石引擎 + 光照引擎 + 物理引擎)..."
 if command -v cmake &> /dev/null; then
     cd build
@@ -82,6 +91,7 @@ python3 -m nuitka \
     --include-data-dir=native=native \
     --include-data-files=native/terrain_gen=terrain_gen \
     --include-data-files=native/mob_ai=mob_ai \
+    --include-data-files=native/$VANILLA_LIB=native/$VANILLA_LIB \
     --include-data-files=native/pymc_native_server=pymc_native_server \
     --include-data-files=native/libpymc_native.so=libpymc_native.so \
     --include-data-files=world/blocks.json=world/blocks.json \
