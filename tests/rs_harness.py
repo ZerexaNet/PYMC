@@ -73,6 +73,7 @@ class World:
             self.engine = NativeRedstoneEngine(self.server)
         else:
             self.engine = RedstoneEngine(self.server)
+        self.server.redstone_engine = self.engine
 
     def get(self, x, y, z):
         return self.storage.load_generated_chunk(x >> 4, z >> 4)[y + 64][z & 15][x & 15]

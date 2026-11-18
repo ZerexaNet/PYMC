@@ -720,6 +720,8 @@ class ContainerData:
                 self.items = [None] * 3
             elif self.type == "hopper":
                 self.items = [None] * 5
+            elif self.type == "brewing_stand":
+                self.items = [None] * 5  # 0-2 bottles, 3 ingredient, 4 blaze powder
             elif self.type == "dropper" or self.type == "dispenser":
                 self.items = [None] * 9
             else:
@@ -1104,6 +1106,51 @@ class ChestBehavior(BlockBehavior):
     @staticmethod
     def is_interactive() -> bool:
         return True
+
+
+class BrewingStandBehavior(BlockBehavior):
+    """Brewing stand window: 3 bottles, ingredient, blaze powder."""
+
+    @staticmethod
+    async def on_use(conn, server, x: int, y: int, z: int,
+                     face: int, hand: int) -> bool:
+        container_manager.get_or_create(x, y, z, "brewing_stand")
+        from world.inventory import send_open_container
+        from world.inventory_interactions import _sync_open_container
+        window_id = container_manager.allocate_window_id()
+        conn._open_window_id = window_id
+        conn._open_container_pos = (x, y, z)
+        conn._open_container_type = 'block'
+        await send_open_container(conn, window_id, "minecraft:brewing_stand", {"translate": "container.brewing"})
+        await _sync_open_container(conn, window_id)
+        container_manager.add_viewer(x, y, z, conn.entity_id)
+        return True
+
+    @staticmethod
+    def is_interactive() -> bool:
+        return True
+
+
+# PotionBrewing ingredients (1.21.1) and what goes into the bottle slots
+BREWING_INGREDIENTS = {"minecraft:" + n for n in (
+    "nether_wart", "redstone", "glowstone_dust", "fermented_spider_eye", "gunpowder", "dragon_breath", "sugar",
+    "rabbit_foot", "glistering_melon_slice", "spider_eye", "pufferfish", "magma_cream", "golden_carrot",
+    "blaze_powder", "ghast_tear", "turtle_helmet", "phantom_membrane", "breeze_rod", "slime_block", "cobweb",
+    "stone")}
+BREWING_BOTTLES = {"minecraft:potion", "minecraft:splash_potion", "minecraft:lingering_potion",
+                   "minecraft:glass_bottle"}
+
+
+def brewing_can_place(container, slot: int, item_id: str) -> bool:
+    """BrewingStandBlockEntity.canPlaceItem."""
+    if slot == 3:
+        return item_id in BREWING_INGREDIENTS
+    if slot == 4:
+        return item_id == "minecraft:blaze_powder"
+    if slot in (0, 1, 2):
+        current = container.items[slot]
+        return item_id in BREWING_BOTTLES and (current is None or current.is_empty)
+    return False
 
 
 class CraftingTableBehavior(BlockBehavior):
@@ -1778,6 +1825,7 @@ BLOCK_BEHAVIORS: dict[str, BlockBehavior] = {
     # Crafting
     "minecraft:crafting_table": CraftingTableBehavior(),
     "minecraft:composter": ComposterBehavior(),
+    "minecraft:brewing_stand": BrewingStandBehavior(),
     # Furnaces
     "minecraft:furnace": FurnaceBehavior(),
     "minecraft:blast_furnace": BlastFurnaceBehavior(),

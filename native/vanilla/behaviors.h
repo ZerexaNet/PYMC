@@ -853,6 +853,46 @@ struct PoweredRail : BaseRail {
 
 struct DetectorRail : BaseRail {
     explicit DetectorRail(int s) : BaseRail(s, true) {}
+    static const int (*links(const std::string& shape))[3] {
+        static const int NS[2][3] = {{0, 0, -1}, {0, 0, 1}}, EW[2][3] = {{-1, 0, 0}, {1, 0, 0}};
+        static const int AE[2][3] = {{-1, 0, 0}, {1, 1, 0}}, AW[2][3] = {{-1, 1, 0}, {1, 0, 0}};
+        static const int AN[2][3] = {{0, 1, -1}, {0, 0, 1}}, AS[2][3] = {{0, 0, -1}, {0, 1, 1}};
+        static const int SE[2][3] = {{0, 0, 1}, {1, 0, 0}}, SW[2][3] = {{0, 0, 1}, {-1, 0, 0}};
+        static const int NW[2][3] = {{0, 0, -1}, {-1, 0, 0}}, NE[2][3] = {{0, 0, -1}, {1, 0, 0}};
+        if (shape == "east_west") return EW;
+        if (shape == "ascending_east") return AE;
+        if (shape == "ascending_west") return AW;
+        if (shape == "ascending_north") return AN;
+        if (shape == "ascending_south") return AS;
+        if (shape == "south_east") return SE;
+        if (shape == "south_west") return SW;
+        if (shape == "north_west") return NW;
+        if (shape == "north_east") return NE;
+        return NS;
+    }
+    // DetectorRailBlock.checkPressed (entity query mode 4: minecarts in the search box)
+    void check_pressed(Level& L, Pos pos, int st) {
+        if (should_be_removed(L, pos, st)) return;
+        bool powered = prop_true(L, st, "powered");
+        bool found = L.entity_count && L.entity_count(pos.x, pos.y, pos.z, 4) > 0;
+        if (found != powered) {
+            st = L.table.with(st, "powered", found);
+            L.set_block(pos, st, UPDATE_ALL);
+            const int (*l)[3] = links(L.table.prop(st, "shape"));
+            for (int k = 0; k < 2; k++) L.neighbor_changed(Pos{pos.x + l[k][0], pos.y + l[k][1], pos.z + l[k][2]}, self, pos);
+            L.update_neighbors_at(pos, self);
+            L.update_neighbors_at(pos.rel(DOWN), self);
+        }
+        if (found) L.schedule_tick(pos, self, 20);
+        L.update_neighbour_for_output_signal(pos, self);
+    }
+    void entity_inside(Level& L, int st, Pos pos) override { if (!prop_true(L, st, "powered")) check_pressed(L, pos, st); }
+    void tick(Level& L, int st, Pos pos) override { if (prop_true(L, st, "powered")) check_pressed(L, pos, st); }
+    // mode 5: comparator signal of a container minecart on the rail
+    int analog_output(Level& L, int st, Pos pos) override {
+        if (!prop_true(L, st, "powered") || !L.entity_count) return 0;
+        return L.entity_count(pos.x, pos.y, pos.z, 5);
+    }
     int get_signal(Level& L, int st, Pos, Dir) override { return prop_true(L, st, "powered") ? 15 : 0; }
     int get_direct_signal(Level& L, int st, Pos, Dir d) override { return prop_true(L, st, "powered") && d == UP ? 15 : 0; }
     bool is_signal_source(int) override { return true; }

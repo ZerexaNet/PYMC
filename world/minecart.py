@@ -9,8 +9,11 @@ Minecarts and hopper minecarts (AbstractMinecart / MinecartHopper).
   rail, sucks one item per tick from the container above it or picks up item
   entities (the item moving itself happens in the native hopper code);
 * hoppers push into and pull from a hopper minecart in the block next to them;
-* players break minecarts (dropping the item and the contents) and open a
-  hopper minecart's 5-slot window;
+* players ride minecarts (W pushes them along, sneak gets off), push them by
+  walking into them, and break them (dropping the item and the contents) or
+  open a hopper minecart's 5-slot window;
+* minecarts bump into each other (AbstractMinecart.push) and trigger detector
+  rails;
 * minecarts are saved with the world (pymc_minecarts.json).
 """
 
@@ -78,6 +81,8 @@ class MinecartEntity(Entity):
         self.damage = 0.0
         self.enabled = True
         self.on_rail = False
+        self.passenger = None         # the riding player (connection)
+        self.prev_x, self.prev_z = x, z
         if variant == "hopper_minecart":
             from .block_behavior import ContainerData
             self.container = ContainerData(type="hopper")
@@ -113,6 +118,13 @@ class MinecartEntity(Entity):
 
     def tick(self, server):
         super().tick(server)
+        self.prev_x, self.prev_z = self.x, self.z
+        rider = self.passenger
+        if rider is not None and (not getattr(rider, "alive", True) or getattr(rider, "_dead", False)
+                                  or getattr(rider, "vehicle", None) is not self):
+            self.passenger = rider = None
+        if rider is not None:
+            self._rider_input(rider)
         bx, by, bz = math.floor(self.x), math.floor(self.y), math.floor(self.z)
         rail = _rail(server, bx, by, bz)
         if rail is None:
@@ -122,9 +134,86 @@ class MinecartEntity(Entity):
         if rail is not None:
             self.on_rail = True
             self._move_along_track(server, bx, by, bz, *rail)
+            if rail[0] == "minecraft:detector_rail":
+                engine = getattr(server, "redstone_engine", None)
+                if engine is not None:
+                    engine.on_entity_move(bx, by, bz)        # DetectorRailBlock.entityInside
         else:
             self.on_rail = False
             self._come_off_track(server)
+        # AbstractMinecart.tick: yaw follows the motion
+        dx, dz = self.prev_x - self.x, self.prev_z - self.z
+        if dx * dx + dz * dz > 0.001:
+            self.yaw = math.degrees(math.atan2(dz, dx))
+        self._push_entities(server)
+        if rider is not None:
+            rider.x, rider.y, rider.z = self.x, self.y + 0.0625, self.z
+
+    def _rider_input(self, rider):
+        """A riding player holding W pushes the minecart in the look direction (when slow)."""
+        forward, sideways = getattr(rider, "vehicle_input", (0.0, 0.0))
+        if not forward and not sideways:
+            return
+        yaw = math.radians(getattr(rider, "yaw", 0.0))
+        mx = (sideways * math.cos(yaw) - forward * math.sin(yaw)) * 0.1
+        mz = (forward * math.cos(yaw) + sideways * math.sin(yaw)) * 0.1
+        if mx * mx + mz * mz > 1.0e-4 and self.vx * self.vx + self.vz * self.vz < 0.01:
+            self.vx += mx * 0.1
+            self.vz += mz * 0.1
+
+    # ------------------------------------------------------------- collisions
+
+    def _push_entities(self, server):
+        """Players walking into a minecart push it; minecarts push each other."""
+        (x0, y0, z0), (x1, y1, z1) = self.bounding_box()
+        x0, z0, x1, z1 = x0 - 0.2, z0 - 0.2, x1 + 0.2, z1 + 0.2
+        for player in server.get_online_players() if hasattr(server, "get_online_players") else ():
+            if player is self.passenger or getattr(player, "gamemode", "") == "spectator" \
+                    or getattr(player, "_dead", False) or getattr(player, "vehicle", None) is not None:
+                continue
+            px, py, pz = player.x, player.y, player.z
+            if px + 0.3 > x0 and px - 0.3 < x1 and pz + 0.3 > z0 and pz - 0.3 < z1 and py + 1.8 > y0 and py < y1:
+                self._pushed_by(px, pz)
+        for other in minecarts(server):
+            if other is self or not other.alive:
+                continue
+            (ox0, oy0, oz0), (ox1, oy1, oz1) = other.bounding_box()
+            if ox1 > x0 and ox0 < x1 and oz1 > z0 and oz0 < z1 and oy1 > y0 and oy0 < y1:
+                other.collide_with(self)
+
+    def _pushed_by(self, px: float, pz: float):
+        """Entity.push(minecart) from a player: away from them, 0.05 at most."""
+        if self.passenger is not None:
+            return
+        d, e = self.x - px, self.z - pz
+        g = max(abs(d), abs(e))
+        if g < 0.01:
+            return
+        g = math.sqrt(g)
+        d, e = d / g, e / g
+        h = min(1.0, 1.0 / g)
+        self.vx += d * h * 0.05
+        self.vz += e * h * 0.05
+
+    def collide_with(self, other: "MinecartEntity"):
+        """AbstractMinecart.push(Entity) for two minecarts (neither is a furnace minecart)."""
+        d, e = other.x - self.x, other.z - self.z
+        f = d * d + e * e
+        if f < 1.0e-4:
+            return
+        f = math.sqrt(f)
+        d, e = d / f, e / f
+        g = min(1.0, 1.0 / f)
+        d, e = d * g * 0.05, e * g * 0.05
+        hx, hz = other.x - self.x, other.z - self.z
+        hl = math.sqrt(hx * hx + hz * hz) or 1.0
+        yaw = math.radians(self.yaw)
+        if abs(hx / hl * math.cos(yaw) + hz / hl * math.sin(yaw)) < 0.8:
+            return
+        k = (other.vx + self.vx) / 2.0
+        m = (other.vz + self.vz) / 2.0
+        self.vx, self.vz = self.vx * 0.2 + k - d, self.vz * 0.2 + m - e
+        other.vx, other.vz = other.vx * 0.2 + k + d, other.vz * 0.2 + m + e
 
     def _move_along_track(self, server, bx, by, bz, name, props):
         shape = props.get("shape", "north_south")
@@ -182,7 +271,10 @@ class MinecartEntity(Entity):
                 break
 
         # AbstractMinecartContainer.applyNaturalSlowdown / AbstractMinecart
-        factor = 0.98 + (15 - self.comparator_signal()) * 0.001 if self.is_container else 0.96
+        if self.is_container:
+            factor = 0.98 + (15 - self.comparator_signal()) * 0.001
+        else:
+            factor = 0.997 if self.passenger is not None else 0.96
         self.vx *= factor
         self.vz *= factor
 
@@ -281,7 +373,8 @@ def spawn_minecart(server, item_id: str, x: int, y: int, z: int, yaw: float = 0.
     offset = 0.5 if shape.startswith("ascending") else 0.0
     manager = server.entity_manager
     entity = MinecartEntity(server.get_next_entity_id(), x + 0.5, y + 0.0625 + offset, z + 0.5, variant)
-    entity.yaw = yaw
+    (ax, _, az), (cx, _, cz) = EXITS.get(shape, EXITS["north_south"])
+    entity.yaw = math.degrees(math.atan2(cz - az, cx - ax))
     manager.add_entity(entity)
     return entity
 
@@ -348,3 +441,41 @@ def load_minecarts(server, world_dir) -> int:
         except (KeyError, TypeError, ValueError):
             continue
     return count
+
+
+# ------------------------------------------------------------------ riding
+
+def mount(cart, player) -> bool:
+    if cart.container is not None or cart.passenger is not None or getattr(player, "vehicle", None) is not None:
+        return False
+    cart.passenger = player
+    player.vehicle = cart
+    player.vehicle_input = (0.0, 0.0)
+    return True
+
+
+def dismount(player):
+    cart = getattr(player, "vehicle", None)
+    player.vehicle = None
+    player.vehicle_input = (0.0, 0.0)
+    if cart is not None and cart.passenger is player:
+        cart.passenger = None
+    return cart
+
+
+def detector_minecarts(server, x: int, y: int, z: int) -> list:
+    """DetectorRailBlock.getInteractingMinecartOfType: minecarts in the rail's search box."""
+    found = []
+    for cart in minecarts(server):
+        (x0, y0, z0), (x1, y1, z1) = cart.bounding_box()
+        if x0 < x + 0.8 and x1 > x + 0.2 and y0 < y + 0.8 and y1 > y and z0 < z + 0.8 and z1 > z + 0.2:
+            found.append(cart)
+    return found
+
+
+def detector_signal(server, x: int, y: int, z: int) -> int:
+    """DetectorRailBlock.getAnalogOutputSignal: the fill level of a container minecart on it."""
+    for cart in detector_minecarts(server, x, y, z):
+        if cart.container is not None:
+            return cart.comparator_signal()
+    return 0

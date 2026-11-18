@@ -1265,11 +1265,56 @@ class PoweredRail(BaseRail):
                 level.update_neighbors_at(rel(pos, "up"), self.name)
 
 
+_RAIL_LINKS = {
+    "north_south": ((0, 0, -1), (0, 0, 1)), "east_west": ((-1, 0, 0), (1, 0, 0)),
+    "ascending_east": ((-1, 0, 0), (1, 1, 0)), "ascending_west": ((-1, 1, 0), (1, 0, 0)),
+    "ascending_north": ((0, 1, -1), (0, 0, 1)), "ascending_south": ((0, 0, -1), (0, 1, 1)),
+    "south_east": ((0, 0, 1), (1, 0, 0)), "south_west": ((0, 0, 1), (-1, 0, 0)),
+    "north_west": ((0, 0, -1), (-1, 0, 0)), "north_east": ((0, 0, -1), (1, 0, 0)),
+}
+
+
 class DetectorRail(BaseRail):
-    """DetectorRailBlock: a source while a minecart is on it (no minecarts yet: unpowered)."""
+    """DetectorRailBlock: powered while a minecart is on it; comparators read a container minecart."""
 
     def __init__(self, name: str):
         super().__init__(name, True)
+
+    @staticmethod
+    def _minecarts(level, pos) -> list:
+        from ..minecart import detector_minecarts
+        return detector_minecarts(level.server, *pos)
+
+    def entity_inside(self, level, state, pos):
+        if prop(state, "powered") != "true":
+            self._check_pressed(level, pos, state)
+
+    def tick(self, level, state, pos):
+        if prop(state, "powered") == "true":
+            self._check_pressed(level, pos, state)
+
+    def _check_pressed(self, level, pos, state):
+        if self.should_be_removed(level, pos, state):
+            return
+        powered = prop(state, "powered") == "true"
+        found = bool(self._minecarts(level, pos))
+        if found != powered:
+            state = with_props(state, powered="true" if found else "false")
+            level.set_block(pos, state, UPDATE_ALL)
+            for dx, dy, dz in _RAIL_LINKS.get(prop(state, "shape"), ()):
+                link = (pos[0] + dx, pos[1] + dy, pos[2] + dz)
+                level.neighbor_changed(link, self.name, pos)
+            level.update_neighbors_at(pos, self.name)
+            level.update_neighbors_at(rel(pos, "down"), self.name)
+        if found:
+            level.schedule_tick(pos, self.name, 20)
+        level.update_neighbour_for_output_signal(pos, self.name)
+
+    def analog_output(self, level, state, pos) -> int:
+        if prop(state, "powered") != "true":
+            return 0
+        from ..minecart import detector_signal
+        return detector_signal(level.server, *pos)
 
     def get_signal(self, level, state, pos, direction) -> int:
         return 15 if prop(state, "powered") == "true" else 0

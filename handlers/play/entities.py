@@ -86,6 +86,12 @@ async def _send_generic_entity_spawn(conn: Connection, entity):
     payload.extend(write_short(_encode_entity_velocity_component(entity.vz)))
     await conn.send_packet(0x01, bytes(payload))
 
+    if entity.kind == "minecart" and getattr(entity, "passenger", None) is not None:
+        from protocol.packet_map import get_clientbound_packet
+        pid = get_clientbound_packet(conn.protocol_version, "set_passengers")
+        if pid is not None:
+            await conn.send_packet(pid, build_passengers_payload(entity))
+
     if entity.kind == "tnt":
         # PrimedTnt data: 8 = fuse (VarInt), 9 = block state (TNT)
         from protocol.packet_map import get_clientbound_packet
@@ -192,3 +198,38 @@ async def broadcast_entity_remove(server, entity_ids: list[int]):
     for conn in server.get_online_players():
         conn.tracked_entities.difference_update(entity_ids)
         await _send_entity_remove(conn, entity_ids)
+
+
+def build_passengers_payload(vehicle) -> bytes:
+    passenger = getattr(vehicle, "passenger", None)
+    ids = [passenger.entity_id] if passenger is not None else []
+    return write_varint(vehicle.entity_id) + write_varint(len(ids)) + b"".join(write_varint(i) for i in ids)
+
+
+async def broadcast_passengers(server, vehicle):
+    """Set Passengers to everyone who sees the vehicle."""
+    from protocol.packet_map import get_clientbound_packet
+    payload = build_passengers_payload(vehicle)
+    for conn in server.get_online_players():
+        if vehicle.entity_id not in conn.tracked_entities and getattr(vehicle, "passenger", None) is not conn:
+            continue
+        pid = get_clientbound_packet(conn.protocol_version, "set_passengers")
+        if pid is not None:
+            await conn.send_packet(pid, payload)
+
+
+async def sync_minecarts(server):
+    """Minecarts move every tick: teleport them for their watchers (the rest syncs every 10 ticks)."""
+    from protocol.packet_map import get_clientbound_packet
+    from world.minecart import minecarts
+    carts = [c for c in minecarts(server)
+             if c.passenger is not None or abs(c.x - c.prev_x) + abs(c.z - c.prev_z) > 1e-4]
+    if not carts:
+        return
+    for conn in server.get_online_players():
+        pid = get_clientbound_packet(conn.protocol_version, "entity_teleport")
+        if pid is None:
+            continue
+        for cart in carts:
+            if cart.entity_id in conn.tracked_entities:
+                await conn.send_packet(pid, build_entity_teleport_payload(cart))

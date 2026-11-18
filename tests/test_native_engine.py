@@ -434,7 +434,98 @@ class NativeContainersPlus(_ContainerWorld, unittest.TestCase):
         self.assertFalse(item.alive)
 
 
+    def test_brewing_stand_faces(self):
+        from world.inventory import ItemStack
+        top = self.place(0, 2, 0, "hopper", "hopper", facing="down")
+        top.items[0] = ItemStack("minecraft:dirt", 1)                        # not an ingredient: stays
+        top.items[1] = ItemStack("minecraft:nether_wart", 2)
+        side = self.place(-1, 1, 0, "hopper", "hopper", facing="east")
+        side.items[0] = ItemStack("minecraft:glass_bottle", 4)
+        side.items[1] = ItemStack("minecraft:blaze_powder", 1)
+        stand = self.place(0, 1, 0, "brewing_stand", "brewing_stand")
+        self.w.tick(80)
+        # from above only the ingredient slot; from the side one bottle per empty bottle slot and the fuel
+        self.assertEqual((stand.items[3].item_id, stand.items[3].count), ("minecraft:nether_wart", 2))
+        self.assertEqual([stand.items[i].count for i in range(3)], [1, 1, 1])
+        self.assertEqual(stand.items[4].item_id, "minecraft:blaze_powder")
+        self.assertEqual(self.count(top, "minecraft:dirt"), 1)
+        self.assertEqual(self.count(side, "minecraft:glass_bottle"), 1)
+
+    def test_detector_rail_sees_minecarts_in_both_engines(self):
+        from world.inventory import ItemStack
+        from world.minecart import MinecartEntity
+        results = []
+        for native in (False, True):
+            w = World(native=native)
+            w.set(0, 64, 0, S("detector_rail", shape="east_west"))
+            w.set(0, 64, 1, S("comparator", facing="north"))
+            w.set(0, 64, -1, S("redstone_lamp"))
+            cart = MinecartEntity(50, 0.5, 64.0625, 0.5, "hopper_minecart")
+            cart.container.items[0] = ItemStack("minecraft:stone", 64)
+            w.entities.append(cart)
+            cart.tick(w.server)
+            w.tick(4)
+            on = (w.props(0, 64, 0)["powered"], w.props(0, 64, -1)["lit"],
+                  w.engine.comparator_outputs().get((0, 64, 1)))
+            cart.alive = False
+            w.tick(25)
+            results.append((on, w.props(0, 64, 0)["powered"], w.props(0, 64, -1)["lit"]))
+        self.assertEqual(results[0], ((("true", "true", 3), "false", "false")))   # 64 of 5*64 items: 3
+        self.assertEqual(results[0], results[1])
+
+
 class MinecartMovement(unittest.TestCase):
+    def _track(self, w, length=30):
+        for x in range(-length, length):
+            w.set(x, 64, 0, S("rail", shape="east_west"))
+
+    def test_minecarts_bump_into_each_other(self):
+        from world.minecart import MinecartEntity
+        w = World(native=False)
+        self._track(w)
+        a = MinecartEntity(1, 0.5, 64.0625, 0.5, "minecart")
+        b = MinecartEntity(2, 3.5, 64.0625, 0.5, "minecart")
+        a.yaw = b.yaw = 0.0
+        a.vx = 0.3
+        w.entities.extend([a, b])
+        for _ in range(30):
+            for cart in (a, b):
+                cart.tick(w.server)
+        self.assertGreater(b.vx, 0.0)                                       # b got pushed along
+        self.assertGreater(b.x, 3.5)
+        self.assertGreater(b.x - a.x, 0.9)                                  # they do not pass through
+
+    def test_player_pushes_minecart(self):
+        from types import SimpleNamespace
+        from world.minecart import MinecartEntity
+        w = World(native=False)
+        self._track(w)
+        cart = MinecartEntity(1, 0.5, 64.0625, 0.5, "minecart")
+        player = SimpleNamespace(x=-0.2, y=64.0, z=0.5, gamemode="survival", vehicle=None)
+        w.server.get_online_players = lambda: [player]
+        for _ in range(10):
+            cart.tick(w.server)
+        self.assertGreater(cart.x, 0.6)
+
+    def test_riding_and_steering(self):
+        from types import SimpleNamespace
+        from world.minecart import MinecartEntity, dismount, mount
+        w = World(native=False)
+        self._track(w)
+        cart = MinecartEntity(1, 0.5, 64.0625, 0.5, "minecart")
+        player = SimpleNamespace(x=0.0, y=64.0, z=0.0, yaw=-90.0, gamemode="survival", alive=True)
+        player.vehicle = None
+        self.assertTrue(mount(cart, player))
+        player.vehicle_input = (1.0, 0.0)                                     # W, looking east (yaw -90)
+        for _ in range(40):
+            cart.tick(w.server)
+        self.assertGreater(cart.x, 2.0)
+        self.assertAlmostEqual(player.x, cart.x)
+        self.assertIs(dismount(player), cart)
+        self.assertIsNone(cart.passenger)
+        hopper_cart = MinecartEntity(2, 5.5, 64.0625, 0.5, "hopper_minecart")
+        self.assertFalse(mount(hopper_cart, player))                         # only plain minecarts carry players
+
     def test_rides_along_rails_and_curves(self):
         from world.minecart import MinecartEntity
         w = World(native=False)
