@@ -296,6 +296,9 @@ async def handle_play(conn: Connection, packet_id: int, payload: bytes,
         await _handle_interact(conn, payload, server)
     elif name == "steer_vehicle":
         await _handle_steer_vehicle(conn, payload, server)
+    elif name == "enchant_item":
+        from world.enchanting_window import handle_enchant_button
+        await handle_enchant_button(conn, payload, server)
     elif name == "set_creative_mode_slot":
         await _handle_creative_inventory_action(conn, payload, server)
         from handlers.play.players import broadcast_player_equipment
@@ -460,6 +463,9 @@ async def _handle_close_container(conn: Connection, payload: bytes, server=None)
         for part in getattr(view, "positions", (pos,)):
             container_manager.remove_viewer(*part, conn.entity_id)
 
+    from world.enchanting_window import return_inputs
+    for stack in return_inputs(conn, window_id):
+        await _drop_stack(conn, server, stack, stack.count)
     conn._open_entity_container = None
     conn._open_window_id = None
     conn._open_container_pos = None

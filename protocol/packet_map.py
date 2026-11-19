@@ -456,6 +456,7 @@ CLIENTBOUND_PACKETS = {
         "update_time": 0x64,
         "update_health": 0x5D,
         "set_experience": 0x5C,       # experience
+        "craft_progress_bar": 0x14,   # container property (enchanting table, anvil)
         "entity_teleport": 0x70,
         "remove_entities": 0x42,       # entity_destroy
         "multi_block_change": 0x49,
@@ -821,6 +822,7 @@ SERVERBOUND_PACKETS = {
         "block_dig": 0x24,
         "entity_action": 0x25,
         "steer_vehicle": 0x26,
+        "enchant_item": 0x0D,
         "pong": 0x27,
         "held_item_slot": 0x2F,
         "set_creative_mode_slot": 0x32,

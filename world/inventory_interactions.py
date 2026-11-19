@@ -89,6 +89,8 @@ def window_slot_location(conn, window_id: int, slot_idx: int, player_slot_mapper
             return ('player', slot_idx - 37)      # 37-45 -> hotbar 0-8
         return None
     container_size = len(opened[1].items if opened[0] == 'block' else opened[1].ender_chest)
+    if opened[0] == 'block' and getattr(opened[1], 'type', '') == 'anvil' and slot_idx == 2:
+        return ('anvil_result', 0)              # take only; see world/enchanting_window.py
     if slot_idx < container_size:
         return (opened[0], slot_idx)
     if slot_idx < container_size + 27:
@@ -111,6 +113,9 @@ def _read_window_slot(conn, location):
         return store[idx]
     if kind == 'ender_chest':
         return inv.ender_chest[idx]
+    if kind == 'anvil_result':
+        opened = _open_container(conn, getattr(conn, '_open_window_id', -1))
+        return opened[1].items[2] if opened is not None and opened[0] == 'block' else None
     opened = _open_container(conn, getattr(conn, '_open_window_id', -1))
     if opened is not None and opened[0] == 'block':
         return opened[1].items[idx]
@@ -125,6 +130,14 @@ def _write_window_slot(conn, location, item):
         conn.inventory_obj.set_slot(idx, item)
         return
     if kind == 'craft_result':
+        return
+    if kind == 'anvil_result':
+        # the result is only ever taken: placing items on it is refused
+        if item is None:
+            opened = _open_container(conn, getattr(conn, '_open_window_id', -1))
+            if opened is not None and opened[0] == 'block' and opened[1].items[2] is not None:
+                from world.enchanting_window import take_anvil_result
+                take_anvil_result(conn, opened[1])
         return
     if kind == 'craft':
         from .crafting_window import grid_slots
@@ -615,6 +628,23 @@ async def handle_container_click(conn, payload: bytes, server, player_slot_mappe
     mutated = True
     crafting = False
     leftovers: list = []
+    special = None
+    opened_now = _open_container(conn, window_id) if window_id != 0 else None
+    if opened_now is not None and opened_now[0] == 'block' and getattr(opened_now[1], 'type', '') == 'anvil':
+        special = 'anvil'
+        if slot_idx == 2 and mode == 2:
+            # a hotbar key swap would put items on the result: refused
+            await _sync_open_container(conn, window_id)
+            return
+        if slot_idx == 2 and mode in (0, 1, 4):
+            from world.enchanting_window import anvil_take_allowed
+            if inv.carried_item is not None or not anvil_take_allowed(conn, opened_now[1]):
+                # no taking the result into a held item, or without the levels for it
+                await _sync_open_container(conn, window_id)
+                return
+    elif opened_now is not None and opened_now[0] == 'block' and getattr(opened_now[1], 'type', '') == 'enchanting_table':
+        special = 'enchanting'
+
     from .crafting_window import is_crafting_window, refresh_result
     grid_before = None
     if is_crafting_window(conn, window_id):
@@ -699,6 +729,12 @@ async def handle_container_click(conn, payload: bytes, server, player_slot_mappe
 
     if crafting:
         refresh_result(conn, window_id)
+    if special is not None and window_id != 0:
+        from world.enchanting_window import refresh, send_properties
+        opened_after = _open_container(conn, window_id)
+        if opened_after is not None and opened_after[0] == 'block':
+            props = refresh(conn, opened_after[1], conn._open_container_pos)
+            await send_properties(conn, window_id, props)
 
     contents = _window_contents(conn, window_id)
     if contents is None:

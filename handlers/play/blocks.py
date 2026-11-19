@@ -739,6 +739,10 @@ async def _use_item_on(conn: Connection, server, hand: int,
         container_manager.get_or_create(place_x, place_y, place_z, "hopper")
     elif placed_name == "minecraft:brewing_stand":
         container_manager.get_or_create(place_x, place_y, place_z, "brewing_stand")
+    elif placed_name == "minecraft:enchanting_table":
+        container_manager.get_or_create(place_x, place_y, place_z, "enchanting_table")
+    elif placed_name.endswith("anvil"):
+        container_manager.get_or_create(place_x, place_y, place_z, "anvil")
     elif placed_name in ("minecraft:dropper", "minecraft:dispenser"):
         container_manager.get_or_create(place_x, place_y, place_z, placed_name.split(":")[1])
 

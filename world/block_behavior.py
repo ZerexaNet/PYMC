@@ -709,6 +709,9 @@ class ContainerData:
     cook_time_total: int = 0 # Total cook time for current recipe
     brew_time: int = 0       # Brewing stand: ticks left in the current brew
     brew_fuel: int = 0       # Brewing stand: brew fuel units left (one blaze powder = 20)
+    enchant_seed: int = 0    # Enchanting table: seed of the offers (changes after each enchant)
+    enchant_offers: list = field(default_factory=list)   # Enchanting table: current offers (not saved)
+    anvil_cost: int = 0      # Anvil: levels the current result costs (not saved)
 
     def __post_init__(self):
         if not self.items:
@@ -724,6 +727,13 @@ class ContainerData:
                 self.items = [None] * 5
             elif self.type == "brewing_stand":
                 self.items = [None] * 5  # 0-2 bottles, 3 ingredient, 4 blaze powder
+            elif self.type == "enchanting_table":
+                self.items = [None] * 2  # 0 item, 1 lapis lazuli
+                if not self.enchant_seed:
+                    import random as _random
+                    self.enchant_seed = _random.getrandbits(31)
+            elif self.type == "anvil":
+                self.items = [None] * 3  # 0 left, 1 right, 2 result
             elif self.type == "dropper" or self.type == "dispenser":
                 self.items = [None] * 9
             else:
@@ -741,6 +751,7 @@ class ContainerData:
             "cook_time_total": self.cook_time_total,
             "brew_time": self.brew_time,
             "brew_fuel": self.brew_fuel,
+            "enchant_seed": self.enchant_seed,
         }
 
     @classmethod
@@ -756,6 +767,7 @@ class ContainerData:
         container.cook_time_total = int(data.get("cook_time_total", 0))
         container.brew_time = int(data.get("brew_time", 0))
         container.brew_fuel = int(data.get("brew_fuel", 0))
+        container.enchant_seed = int(data.get("enchant_seed", 0))
         return container
 
 
@@ -1378,17 +1390,21 @@ class BlastFurnaceBehavior(BlockBehavior):
 
 
 class AnvilBehavior(BlockBehavior):
-    """Anvil repair/enchant interface."""
+    """Anvil: merge an enchanted book (or a matching item) into an item."""
 
     @staticmethod
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
         from world.inventory import send_open_container
+        from world.enchanting_window import open_window, ANVIL
+        container = container_manager.get_or_create(x, y, z, ANVIL)
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
-
+        conn._open_container_type = 'block'
         await send_open_container(conn, window_id, "minecraft:anvil", {"translate": "container.repair"})
+        await open_window(conn, window_id, container, (x, y, z))
+        container_manager.add_viewer(x, y, z, conn.entity_id)
         return True
 
     @staticmethod
@@ -1397,17 +1413,21 @@ class AnvilBehavior(BlockBehavior):
 
 
 class EnchantingTableBehavior(BlockBehavior):
-    """Enchanting table interface."""
+    """Enchanting table: an item and lapis lazuli, three enchantment offers."""
 
     @staticmethod
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
         from world.inventory import send_open_container
+        from world.enchanting_window import open_window, ENCHANT_TABLE
+        container = container_manager.get_or_create(x, y, z, ENCHANT_TABLE)
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
-
+        conn._open_container_type = 'block'
         await send_open_container(conn, window_id, "minecraft:enchantment", {"translate": "container.enchant"})
+        await open_window(conn, window_id, container, (x, y, z))
+        container_manager.add_viewer(x, y, z, conn.entity_id)
         return True
 
     @staticmethod
