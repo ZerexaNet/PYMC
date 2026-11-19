@@ -440,16 +440,63 @@ class NativeContainersPlus(_ContainerWorld, unittest.TestCase):
         top.items[0] = ItemStack("minecraft:dirt", 1)                        # not an ingredient: stays
         top.items[1] = ItemStack("minecraft:nether_wart", 2)
         side = self.place(-1, 1, 0, "hopper", "hopper", facing="east")
-        side.items[0] = ItemStack("minecraft:glass_bottle", 4)
+        side.items[0] = ItemStack("minecraft:potion", 3, 0, {"potion": "water"})
         side.items[1] = ItemStack("minecraft:blaze_powder", 1)
         stand = self.place(0, 1, 0, "brewing_stand", "brewing_stand")
         self.w.tick(80)
-        # from above only the ingredient slot; from the side one bottle per empty bottle slot and the fuel
+        # from above only the ingredient slot; from the side the bottles and the fuel
         self.assertEqual((stand.items[3].item_id, stand.items[3].count), ("minecraft:nether_wart", 2))
         self.assertEqual([stand.items[i].count for i in range(3)], [1, 1, 1])
-        self.assertEqual(stand.items[4].item_id, "minecraft:blaze_powder")
+        self.assertEqual(stand.items[4], None)
         self.assertEqual(self.count(top, "minecraft:dirt"), 1)
-        self.assertEqual(self.count(side, "minecraft:glass_bottle"), 1)
+        self.assertEqual(self.count(side, "minecraft:potion"), 0)
+
+    def test_brewing_makes_awkward_potions_and_state(self):
+        from world.inventory import ItemStack
+        from world.block_behavior import BREW_TIME
+        stand = self.place(0, 1, 0, "brewing_stand", "brewing_stand")
+        for i in range(3):
+            stand.items[i] = ItemStack("minecraft:potion", 1, 0, {"potion": "water"})
+        stand.items[3] = ItemStack("minecraft:nether_wart", 2)
+        stand.items[4] = ItemStack("minecraft:blaze_powder", 1)
+        self.w.tick(BREW_TIME - 1)
+        self.assertEqual(stand.items[0].nbt, {"potion": "water"})          # not finished yet
+        self.assertEqual(self.w.props(self.BASE[0], self.BASE[1] + 1, self.BASE[2])["has_bottle_0"], "true")
+        self.w.tick(2)
+        self.assertEqual([stand.items[i].nbt["potion"] for i in range(3)], ["awkward"] * 3)
+        self.assertEqual(stand.items[3].count, 1)                          # one ingredient per brew
+        self.assertIsNone(stand.items[4])                                  # the blaze powder went into the fuel
+        self.assertEqual(stand.brew_fuel, 19)
+        self.w.tick(BREW_TIME * 2)                                          # awkward + wart: nothing to brew
+        self.assertEqual(stand.items[3].count, 1)
+        self.assertEqual(stand.brew_time, 0)
+
+    def test_brewing_needs_fuel_and_a_valid_mix(self):
+        from world.inventory import ItemStack
+        from world.block_behavior import BREW_TIME
+        stand = self.place(0, 1, 0, "brewing_stand", "brewing_stand")
+        stand.items[0] = ItemStack("minecraft:potion", 1, 0, {"potion": "awkward"})
+        stand.items[3] = ItemStack("minecraft:glowstone_dust", 1)
+        self.w.tick(5)
+        self.assertEqual(stand.brew_time, 0)                                # no fuel: no brew
+        stand.items[4] = ItemStack("minecraft:blaze_powder", 1)
+        self.w.tick(BREW_TIME + 1)
+        self.assertEqual(stand.items[0].nbt["potion"], "awkward")          # glowstone does not mix awkward potions
+        self.assertEqual(stand.items[3].count, 1)                           # and nothing was used up
+        self.assertEqual(stand.brew_fuel, 20)                               # fuel is only spent when a brew starts
+        stand.items[3] = ItemStack("minecraft:glistering_melon_slice", 1)
+        self.w.tick(BREW_TIME + 1)
+        self.assertEqual(stand.items[0].nbt["potion"], "healing")
+        self.assertIsNone(stand.items[3])
+
+    def test_brewing_stand_survives_save_and_load(self):
+        from world.block_behavior import ContainerData
+        from world.inventory import ItemStack
+        data = ContainerData(type="brewing_stand")
+        data.brew_time, data.brew_fuel = 123, 7
+        data.items[3] = ItemStack("minecraft:nether_wart", 1)
+        loaded = ContainerData.from_dict(data.to_dict())
+        self.assertEqual((loaded.brew_time, loaded.brew_fuel, loaded.items[3].item_id), (123, 7, "minecraft:nether_wart"))
 
     def test_detector_rail_sees_minecarts_in_both_engines(self):
         from world.inventory import ItemStack

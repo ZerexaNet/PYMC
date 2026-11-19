@@ -102,5 +102,7 @@ class World:
         return self.engine.on_player_interact(x, y, z, None)
 
     def tick(self, n=1):
+        from world.block_behavior import tick_brewing_stands
         for _ in range(n):
             self.engine.tick()
+            tick_brewing_stands(self.server)

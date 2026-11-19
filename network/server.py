@@ -1152,6 +1152,11 @@ class MinecraftServer:
         # Process active furnace-like containers.
         from world.block_behavior import container_manager
         container_manager.tick_furnaces(self)
+        from world.block_behavior import tick_brewing_stands
+        from handlers.play.blocks import _broadcast_block_changes
+        brew_changes = tick_brewing_stands(self)
+        if brew_changes:
+            await _broadcast_block_changes(self, brew_changes)
 
         # 发送 KeepAlive 心跳
         if tick_count % keepalive_interval == 0:
