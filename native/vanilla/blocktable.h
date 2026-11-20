@@ -33,6 +33,8 @@ struct BlockInfo {
     bool full = false;         // boundingBox == block
     bool transparent = false;
     bool empty_box = false;    // boundingBox == empty
+    int filter_light = 15;     // blocks.json filterLight: light level lost passing through (15 = opaque)
+    int emit_light = 0;        // blocks.json emitLight
     float hardness = 0.f;
     float resistance = 0.f;
     std::vector<int> harvest_tools;
@@ -66,6 +68,8 @@ public:
             info.transparent = b.get_bool("transparent", false);
             info.hardness = b.has("hardness") && b["hardness"].kind == vgen::Json::Number ? (float)b["hardness"].num : 0.f;
             info.resistance = b.has("resistance") && b["resistance"].kind == vgen::Json::Number ? (float)b["resistance"].num : 0.f;
+            info.filter_light = b.has("filterLight") && b["filterLight"].kind == vgen::Json::Number ? (int)b["filterLight"].num : 15;
+            info.emit_light = b.has("emitLight") && b["emitLight"].kind == vgen::Json::Number ? (int)b["emitLight"].num : 0;
             if (b.has("harvestTools") && b["harvestTools"].is_object())
                 for (auto& kv : b["harvestTools"].obj) info.harvest_tools.push_back(std::atoi(kv.first.c_str()));
             if (b.has("states") && b["states"].is_array()) {
