@@ -60,6 +60,9 @@ class World:
                                   get_entity=lambda eid: next((e for e in self.entities
                                                                if getattr(e, "entity_id", None) == eid), None),
                                   add_entity=lambda e: self.entities.append(e),
+                                  of_kind=lambda kind: [e for e in self.entities
+                                                        if getattr(e, "kind", None) == kind and getattr(e, "alive", True)],
+                                  tick_stamp=0,
                                   create_tnt=lambda x, y, z, *a, **k: self.entities.append(
                                       SimpleNamespace(kind="tnt", x=x, y=y, z=z, metadata={})),
                                   create_item=create_item)

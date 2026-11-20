@@ -160,6 +160,8 @@ python main.py --nogui
 - `view-distance`：区块视距
 - `level-seed`：世界种子
 - `gamemode`：默认游戏模式
+- `chunk-decode-cache`：解码后的区块缓存数量，每个约 1.2 MB，默认 64
+- `redstone-chunk-cache`：原生红石引擎保留的区块数，每个约 196 KB，默认 256
 - `anvil-too-expensive-limit`：铁砧合并费用达到 40 级时是否禁止取出（原版为 `true`；设为 `false` 后不限制费用，等级足够即可取出）
 - `permissions-file`：权限文件路径
 - `join-immediate-radius`：玩家入服时优先同步的近距离区块半径

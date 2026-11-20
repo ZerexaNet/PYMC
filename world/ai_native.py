@@ -16,6 +16,8 @@ from ._native_downloader import ensure_native_binary
 logger = logging.getLogger("pymc.ai_native")
 
 TICK_COMMAND = b"T"
+BATCH_COMMAND = b"B"
+MOB_RECORD_FORMAT = "<8i11d"
 REQUEST_HEADER_FORMAT = "<8i11dI"
 PLAYER_FORMAT = "<3dB"
 RESPONSE_HEADER_FORMAT = "<I"
@@ -234,23 +236,11 @@ class NativeMobAiEngine:
             payload.extend(struct.pack(PLAYER_FORMAT, player.x, player.y, player.z, attackable))
         return players, payload
 
-    def tick_mob(self, mob, server) -> bool:
-        if mob.mob_type not in MOB_TYPE_IDS:
-            return False
-        if not self.available:
-            self._start_process()
-            if not self.available:
-                return False
-
-        players, players_payload = self._online_players(server)
-        has_target = int(mob.target_x is not None and mob.target_z is not None)
-        target_x = float(mob.target_x) if mob.target_x is not None else 0.0
-        target_y = float(mob.target_y) if mob.target_y is not None else 0.0
-        target_z = float(mob.target_z) if mob.target_z is not None else 0.0
-
-        request = bytearray(TICK_COMMAND)
-        request.extend(struct.pack(
-            REQUEST_HEADER_FORMAT,
+    @staticmethod
+    def _mob_record(mob) -> bytes:
+        """The fields of one mob (what a single 'T' request sends before the player list)."""
+        return struct.pack(
+            MOB_RECORD_FORMAT,
             MOB_TYPE_IDS[mob.mob_type],
             int(mob.entity_id),
             int(mob.age_ticks),
@@ -258,7 +248,7 @@ class NativeMobAiEngine:
             int(mob.attack_cooldown),
             int(mob.aggressive_ticks),
             int(mob.look_time),
-            has_target,
+            int(mob.target_x is not None and mob.target_z is not None),
             float(mob.x),
             float(mob.y),
             float(mob.z),
@@ -267,64 +257,106 @@ class NativeMobAiEngine:
             float(mob.vx),
             float(mob.vy),
             float(mob.vz),
-            target_x,
-            target_y,
-            target_z,
-            len(players),
-        ))
-        request.extend(players_payload)
+            float(mob.target_x) if mob.target_x is not None else 0.0,
+            float(mob.target_y) if mob.target_y is not None else 0.0,
+            float(mob.target_z) if mob.target_z is not None else 0.0,
+        )
 
+    def _ready(self, server) -> bool:
+        if not self.available:
+            self._start_process()
+            if not self.available:
+                return False
+        return True
+
+    def tick_mob(self, mob, server) -> bool:
+        """One mob (the 'T' request). Prefer tick_batch(): one round trip for all mobs."""
+        if mob.mob_type not in MOB_TYPE_IDS or not self._ready(server):
+            return False
+        players, players_payload = self._online_players(server)
+        request = bytearray(TICK_COMMAND)
+        request.extend(self._mob_record(mob))
+        request.extend(struct.pack("<I", len(players)))
+        request.extend(players_payload)
+        return self._exchange(request, [mob], players) > 0
+
+    def tick_batch(self, mobs, server) -> set:
+        """All mobs in one round trip ('B': players once, one reply per mob).
+
+        Returns the mobs whose replies were applied; the rest run the Python AI."""
+        eligible = [mob for mob in mobs if mob.mob_type in MOB_TYPE_IDS]
+        if not eligible or not self._ready(server):
+            return set()
+        players, players_payload = self._online_players(server)
+        request = bytearray(BATCH_COMMAND)
+        request.extend(struct.pack("<I", len(eligible)))
+        request.extend(struct.pack("<I", len(players)))
+        request.extend(players_payload)
+        for mob in eligible:
+            request.extend(self._mob_record(mob))
+        done = set()                       # ids of the mobs whose reply was applied
+        self._exchange(request, eligible, players, done)
+        return done
+
+    def _exchange(self, request, mobs, players, done=None) -> int:
+        """Send a request and apply one reply per mob. Returns how many replies were applied."""
+        applied = 0
         try:
             self._process.stdin.write(request)
             self._process.stdin.flush()
-
-            header = self._read_exact(4)
-            payload_size = struct.unpack(RESPONSE_HEADER_FORMAT, header)[0]
-            if payload_size != RESPONSE_SIZE:
-                raise RuntimeError(f"原生 AI 响应长度异常: {payload_size}")
-            payload = self._read_exact(payload_size)
-            (
-                ok,
-                vx,
-                vz,
-                yaw,
-                pitch,
-                wander_cooldown,
-                aggressive_ticks,
-                look_time,
-                out_has_target,
-                out_target_x,
-                out_target_y,
-                out_target_z,
-                target_player_index,
-            ) = struct.unpack(RESPONSE_FORMAT, payload)
-            if not ok:
-                return False
-
-            mob.vx = vx
-            mob.vz = vz
-            mob.yaw = yaw
-            mob.pitch = pitch
-            mob.wander_cooldown = max(0, int(wander_cooldown))
-            mob.aggressive_ticks = max(0, int(aggressive_ticks))
-            mob.look_time = max(0, int(look_time))
-            if out_has_target:
-                mob.target_x = out_target_x
-                mob.target_y = out_target_y
-                mob.target_z = out_target_z
-            else:
-                mob.target_x = mob.target_y = mob.target_z = None
-            if 0 <= target_player_index < len(players):
-                mob.target_username = players[target_player_index].username
-            elif mob.profile.get("category") == "hostile":
-                mob.target_username = None
-            return True
-
+            for mob in mobs:
+                header = self._read_exact(4)
+                payload_size = struct.unpack(RESPONSE_HEADER_FORMAT, header)[0]
+                if payload_size != RESPONSE_SIZE:
+                    raise RuntimeError(f"原生 AI 响应长度异常: {payload_size}")
+                payload = self._read_exact(payload_size)
+                if self._apply_response(mob, payload, players):
+                    applied += 1
+                    if done is not None:
+                        done.add(id(mob))
         except Exception as e:
             logger.warning("原生 AI tick 失败，回退到 Python AI: %s", e)
             self.shutdown()
             self._disabled = True
+        return applied
+
+    @staticmethod
+    def _apply_response(mob, payload, players) -> bool:
+        (
+            ok,
+            vx,
+            vz,
+            yaw,
+            pitch,
+            wander_cooldown,
+            aggressive_ticks,
+            look_time,
+            out_has_target,
+            out_target_x,
+            out_target_y,
+            out_target_z,
+            target_player_index,
+        ) = struct.unpack(RESPONSE_FORMAT, payload)
+        if not ok:
             return False
+        mob.vx = vx
+        mob.vz = vz
+        mob.yaw = yaw
+        mob.pitch = pitch
+        mob.wander_cooldown = max(0, int(wander_cooldown))
+        mob.aggressive_ticks = max(0, int(aggressive_ticks))
+        mob.look_time = max(0, int(look_time))
+        if out_has_target:
+            mob.target_x = out_target_x
+            mob.target_y = out_target_y
+            mob.target_z = out_target_z
+        else:
+            mob.target_x = mob.target_y = mob.target_z = None
+        if 0 <= target_player_index < len(players):
+            mob.target_username = players[target_player_index].username
+        elif mob.profile.get("category") == "hostile":
+            mob.target_username = None
+        return True
 
     def shutdown(self):
         if getattr(self, "_process", None):

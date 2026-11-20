@@ -616,3 +616,24 @@ class MinecartMovement(unittest.TestCase):
         loaded = w2.entities[0]
         self.assertEqual((loaded.variant, loaded.x, loaded.container.items[2].item_id,
                           loaded.container.items[2].count), ("hopper_minecart", 3.5, "minecraft:diamond", 5))
+
+
+@unittest.skipUnless(HAVE_NATIVE, "native engine not built")
+class NativeChunkLimit(unittest.TestCase):
+    """A tiny chunk mirror (evicted every tick) gives the same circuit results."""
+
+    def test_wire_across_chunks_with_a_one_chunk_mirror(self):
+        from world.rs.native import load_library
+        results = []
+        for limit in (256, 1):
+            w = World(native=True)
+            load_library().vrs_set_chunk_limit(limit)
+            for x in range(0, 80, 2):
+                w.set(x, 64, 0, S("redstone_wire"))
+            w.set(-1, 64, 0, S("lever", face="floor", facing="north"))
+            w.set(1, 64, 0, S("redstone_wire"))
+            w.use(-1, 64, 0)
+            w.tick(3)
+            results.append([w.get(x, 64, 0) for x in range(-1, 80)] + [w.get(x, 65, 0) for x in range(-1, 80)])
+        load_library().vrs_set_chunk_limit(256)
+        self.assertEqual(results[0], results[1])

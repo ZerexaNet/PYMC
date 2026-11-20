@@ -31,7 +31,11 @@ static std::recursive_mutex M;
 
 static Pos P(int x, int y, int z) { return Pos{x, y, z}; }
 
-VRS_API int vrs_version() { return 3; }
+VRS_API int vrs_version() { return 4; }
+
+// Chunks kept in the mirror. Every chunk is 196 KB; the rest are re-read from storage on demand.
+static size_t g_chunk_limit = 256;
+VRS_API void vrs_set_chunk_limit(int n) { LOCK; g_chunk_limit = n < 1 ? 1 : (size_t)n; }
 
 VRS_API int vrs_init(const char* blocks_json) {
     LOCK;
@@ -101,7 +105,13 @@ static int guarded(const std::function<void()>& fn) {
     }
 }
 
-VRS_API int vrs_tick() { LOCK; return guarded([] { G->tick_all(); }); }
+VRS_API int vrs_tick() {
+    LOCK;
+    return guarded([] {
+        G->tick_all();
+        G->evict(g_chunk_limit);   // no pointers into the mirror are held between ticks
+    });
+}
 
 VRS_API int vrs_tick_hoppers(const int32_t* xyz, int n) {
     LOCK;

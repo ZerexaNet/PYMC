@@ -258,20 +258,26 @@ class MobEntity(Entity):
         }
 
     def tick(self, server, native_ai=None):
+        if not self.tick_begin(server):
+            return
+        used_native_ai = native_ai.tick_mob(self, server) if native_ai is not None else False
+        self.tick_finish(server, used_native_ai)
+
+    def tick_begin(self, server) -> bool:
+        """Everything before the AI decision. Returns False when this tick ends here."""
         super().tick(server)
         if getattr(self, "invulnerable_ticks", 0) > 0:
             self.invulnerable_ticks -= 1
             if self.invulnerable_ticks == 0:
                 self.last_hurt = 0.0
         if not self.ai_enabled:
-            return
+            return False
         if self.attack_cooldown > 0:
             self.attack_cooldown -= 1
+        return True
 
-        used_native_ai = False
-        if native_ai is not None:
-            used_native_ai = native_ai.tick_mob(self, server)
-
+    def tick_finish(self, server, used_native_ai: bool):
+        """The AI (unless the native one already decided) and the physics of this tick."""
         if not used_native_ai:
             if self.profile.get("category") == "hostile":
                 self._tick_hostile_ai(server)
@@ -564,6 +570,8 @@ class EntityManager:
     def __init__(self, server):
         self.server = server
         self.entities: dict[int, Entity] = {}
+        self._by_kind: dict[str, dict[int, Entity]] = {}   # kind -> id -> entity (index for of_kind)
+        self.tick_stamp = 0                                 # increases every tick (per-tick caches)
         self.spawned_at: dict[int, float] = {}
         self.removed_ids: list[int] = []
         self.native_ai = None
@@ -605,6 +613,7 @@ class EntityManager:
 
     def add_entity(self, entity: Entity):
         self.entities[entity.entity_id] = entity
+        self._by_kind.setdefault(entity.kind, {})[entity.entity_id] = entity
         self.spawned_at[entity.entity_id] = time.time()
 
     def remove_entity(self, entity_id: int) -> Entity | None:
@@ -612,7 +621,14 @@ class EntityManager:
         entity = self.entities.pop(entity_id, None)
         if entity is not None:
             self.removed_ids.append(entity_id)
+            bucket = self._by_kind.get(entity.kind)
+            if bucket is not None:
+                bucket.pop(entity_id, None)
         return entity
+
+    def of_kind(self, kind: str) -> list[Entity]:
+        """Living entities of one kind, without scanning every entity."""
+        return [entity for entity in self._by_kind.get(kind, {}).values() if entity.alive]
 
     def get_entity(self, entity_id: int) -> Entity | None:
         return self.entities.get(entity_id)
@@ -682,10 +698,20 @@ class EntityManager:
         return spawned
 
     def tick(self):
+        self.tick_stamp += 1
         to_remove: list[int] = []
+        mobs_for_native: list = []
+        finishing: list = []
         for entity in self.entities.values():
             if not entity.alive:
                 to_remove.append(entity.entity_id)
+                continue
+            if isinstance(entity, MobEntity) and self.native_ai is not None:
+                if entity.tick_begin(self.server):
+                    mobs_for_native.append(entity)
+                    finishing.append(entity)
+                if not entity.alive:
+                    to_remove.append(entity.entity_id)
                 continue
             if isinstance(entity, MobEntity):
                 entity.tick(self.server, self.native_ai)
@@ -693,6 +719,14 @@ class EntityManager:
                 entity.tick(self.server)
             if not entity.alive:
                 to_remove.append(entity.entity_id)
+
+        # every mob's AI in one native round trip, then each mob's remaining steps
+        if mobs_for_native:
+            done = self.native_ai.tick_batch(mobs_for_native, self.server)   # ids of mobs it decided for
+            for entity in finishing:
+                entity.tick_finish(self.server, id(entity) in done)
+                if not entity.alive:
+                    to_remove.append(entity.entity_id)
 
         for entity_id in to_remove:
             self.remove_entity(entity_id)

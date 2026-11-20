@@ -105,7 +105,8 @@ class MinecraftServer:
         self.level_name = world_name
         world_path = os.path.join(universe, world_name) if universe else world_name
         self.world_storage = WorldStorage(
-            world_path, region_format=str(config.get("region-file-format", "anvil")))
+            world_path, region_format=str(config.get("region-file-format", "anvil")),
+            decoded_cache_size=config.get("chunk-decode-cache", None))
         self.session_lock = SessionLock(self.world_storage.world_dir)
 
         # level.dat: 出生点、世界时间、天气、游戏规则、种子

@@ -50,6 +50,8 @@ DEFAULT_CONFIG = {
 
     # ---- PyMC 扩展 ----
     "debug": False,                         # 输出 DEBUG 级别日志
+    "chunk-decode-cache": 64,               # 解码后的区块缓存数量 (每个约 1.2 MB)
+    "redstone-chunk-cache": 256,            # 原生红石引擎保留在内存中的区块数 (每个约 196 KB)
     "anvil-too-expensive-limit": True,      # 铁砧费用达到 40 级时不能取 (原版); 关闭后不限制费用
     "permissions-file": "permissions.json",
     "chunk-generation-multithreading": False,

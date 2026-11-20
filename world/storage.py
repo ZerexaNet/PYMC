@@ -975,6 +975,7 @@ class WorldStorage:
     def __init__(self, world_dir: str,
                  max_cached_regions: int = DEFAULT_MAX_REGIONS,
                  max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
+                 decoded_cache_size: int | None = None,
                  region_format: str = "anvil"):
         self.world_dir = Path(world_dir)
         self.region_format = "linear" if str(region_format).lower() == "linear" else "anvil"
@@ -998,6 +999,8 @@ class WorldStorage:
 
         # LRU 缓存
         self._cache = LRUCache(max_cached_regions, max_memory_mb)
+        if decoded_cache_size is not None:
+            self.DECODED_CACHE_SIZE = max(1, int(decoded_cache_size))
         self._cache.set_flush_callback(self._flush_region_impl)
 
         # 确保目录存在
@@ -1109,7 +1112,7 @@ class WorldStorage:
     # TPS 拖垮, 所以把解码后的数组按 LRU 缓存起来。缓存中的数组是共享对象:
     # 修改后必须调用 save_generated_chunk() 写回 (世界编辑代码都是这么做的)。
 
-    DECODED_CACHE_SIZE = 192
+    DECODED_CACHE_SIZE = 64     # about 1.2 MB per decoded chunk (nested lists): ~80 MB at most
 
     def _decoded_cache_get(self, key):
         with self._decoded_lock:

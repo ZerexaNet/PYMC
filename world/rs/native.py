@@ -27,7 +27,7 @@ from .core import DIRECTIONS, name_of
 
 logger = logging.getLogger("PyMC.红石")
 
-ABI_VERSION = 3
+ABI_VERSION = 4
 
 LOAD_CHUNK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_uint16))
 CONTAINER_SIGNAL = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
@@ -89,6 +89,7 @@ def _declare(lib):
     i, i32p, d = ctypes.c_int, ctypes.POINTER(ctypes.c_int32), ctypes.c_double
     lib.vrs_init.argtypes = [ctypes.c_char_p]
     lib.vrs_set_callbacks.argtypes = [LOAD_CHUNK, CONTAINER_SIGNAL, ENTITY_COUNT]
+    lib.vrs_set_chunk_limit.argtypes = [i]
     lib.vrs_set_hopper_callbacks.argtypes = [INV_GET, CAN_PLACE, TAKE, GIVE, PICKUP, COMPOST, i]
     lib.vrs_tick_hopper_minecarts.argtypes = [i32p, ctypes.POINTER(d), ctypes.POINTER(ctypes.c_uint8), i]
     for name in ("vrs_drain_changes", "vrs_drain_effects", "vrs_drain_actions", "vrs_drain_hopper_changes",
@@ -206,7 +207,7 @@ def _chunk_set(get_chunk, x: float, y: float, z: float, reach: float):
 class NativeRedstoneEngine(RedstoneEngine):
     """RedstoneEngine on top of native/vanilla (plus vanilla hoppers)."""
 
-    REFRESH_TICKS = 100     # re-read chunks from storage this often (writes that bypass the engine)
+    DEFAULT_CHUNK_LIMIT = 256   # chunks kept in the C++ mirror (about 196 KB each)
 
     def __init__(self, server):
         lib = load_library()
@@ -221,7 +222,6 @@ class NativeRedstoneEngine(RedstoneEngine):
         self.block_actions: list = []
         self._item_keys: dict = {}
         self._item_proto: list = [None]
-        self._ticks_since_refresh = 0
         self._buf = (ctypes.c_int32 * (6 * 4096))()
         from ..inventory import ItemStack
         bone_meal = self._item_key(ItemStack("minecraft:bone_meal", 1))
@@ -230,6 +230,9 @@ class NativeRedstoneEngine(RedstoneEngine):
                            CAN_PLACE(self._cb_can_place), TAKE(self._cb_take), GIVE(self._cb_give),
                            PICKUP(self._cb_pickup), COMPOST(self._cb_compost))
         lib.vrs_set_callbacks(*self._callbacks[:3])
+        limit = int(server.config.get("redstone-chunk-cache", self.DEFAULT_CHUNK_LIMIT)) \
+            if isinstance(getattr(server, "config", None), dict) else self.DEFAULT_CHUNK_LIMIT
+        lib.vrs_set_chunk_limit(limit)
         lib.vrs_set_hopper_callbacks(*self._callbacks[3:], bone_meal)
         self._block_names = self._registry_names()
         self._load_ticks()
@@ -488,10 +491,6 @@ class NativeRedstoneEngine(RedstoneEngine):
 
     def tick(self):
         lib = self.lib
-        self._ticks_since_refresh += 1
-        if self._ticks_since_refresh >= self.REFRESH_TICKS:
-            self._ticks_since_refresh = 0
-            lib.vrs_invalidate_all()
         if not lib.vrs_tick():
             logger.warning("Native redstone tick failed")
         hoppers = self._hopper_positions()
