@@ -201,6 +201,60 @@ def _decode_update(data: bytes) -> dict:
             "progress": progress, "end": pos}
 
 
+class EventTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.announced = []
+        self.server = types.SimpleNamespace(
+            world_storage=types.SimpleNamespace(world_dir=Path(self._tmp.name)),
+            broadcast_system_message=lambda text, **k: self.announced.append(text),
+        )
+        adv._pending.clear()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        adv._pending.clear()
+
+    def test_hostile_kill_grants_both(self):
+        conn = _conn()
+        conn.advancement_progress = {}
+        adv.on_mob_killed(conn, types.SimpleNamespace(profile={"category": "hostile"}))
+        self.assertTrue(adv.is_complete(conn, "adventure/root"))
+        self.assertTrue(adv.is_complete(conn, "adventure/kill_a_mob"))
+
+    def test_passive_kill_grants_only_the_root(self):
+        conn = _conn()
+        conn.advancement_progress = {}
+        adv.on_mob_killed(conn, types.SimpleNamespace(profile={"category": "passive"}))
+        self.assertTrue(adv.is_complete(conn, "adventure/root"))
+        self.assertNotIn("adventure/kill_a_mob", conn.advancement_progress)
+
+    def test_event_before_join_is_ignored(self):
+        conn = _conn()          # no progress loaded yet
+        adv.trigger(conn, "adventure/root", "killed_something")
+        self.assertEqual(adv._pending, [])
+
+    def test_flush_sends_once_and_announces_completions(self):
+        conn = _conn()
+        conn.advancement_progress = {}
+        adv.on_mob_killed(conn, types.SimpleNamespace(profile={"category": "hostile"}))
+        asyncio.run(adv.flush(self.server))
+        self.assertEqual(adv._pending, [])
+        self.assertEqual(len(conn.sent), 1)                  # one update for both advancements
+        self.assertEqual(len(self.announced), 2)             # both completed now
+        asyncio.run(adv.flush(self.server))                  # nothing pending: nothing sent
+        self.assertEqual(len(conn.sent), 1)
+
+    def test_enchant_event(self):
+        conn = _conn()
+        conn.advancement_progress = {}
+        adv.trigger(conn, "adventure/enchant_item", "enchanted_item")
+        self.assertTrue(adv.is_complete(conn, "adventure/enchant_item"))
+        adv.trigger(conn, "adventure/enchant_item", "enchanted_item")   # already done: no new event
+        self.assertEqual(len(adv._pending), 1)
+
+
 class PacketTests(unittest.TestCase):
 
     def test_full_packet_round_trips_with_the_1_21_1_layout(self):

@@ -154,6 +154,8 @@ async def handle_enchant_button(conn, payload: bytes, server):
     if not _is_creative(conn):
         _take_levels(conn, offer["levels"])
     container.enchant_seed = random.getrandbits(31)
+    from world.advancements import trigger as advancement_trigger
+    advancement_trigger(conn, "adventure/enchant_item", "enchanted_item")
 
     props = refresh(conn, container, pos)
     await send_properties(conn, window_id, props)

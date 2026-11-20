@@ -105,6 +105,17 @@ ADVANCEMENTS: tuple[Advancement, ...] = (
           "diamond_boots": ("minecraft:diamond_boots",)},
          requirements=[("diamond_helmet", "diamond_chestplate", "diamond_leggings", "diamond_boots")],
          parent="story/mine_diamond", x=5.0, y=1.0),
+    # adventure tab: granted by events (see trigger), not by inventory contents
+    _adv("adventure/root", "minecraft:map",
+         {"killed_something": ()},
+         background="minecraft:textures/gui/advancements/backgrounds/adventure.png",
+         toast=False, x=0.0, y=0.0),
+    _adv("adventure/kill_a_mob", "minecraft:iron_sword",
+         {"killed_mob": ()},
+         parent="adventure/root", x=1.0, y=0.0),
+    _adv("adventure/enchant_item", "minecraft:enchanted_book",
+         {"enchanted_item": ()},
+         parent="adventure/root", x=1.0, y=1.0),
 )
 
 BY_KEY: dict[str, Advancement] = {a.key: a for a in ADVANCEMENTS}
@@ -301,8 +312,17 @@ async def on_join(server, conn) -> None:
     await send_full(conn)
 
 
+def _announce(server, conn, adv: Advancement) -> None:
+    if adv.hidden:
+        return
+    server.broadcast_system_message(
+        translate("chat.type.advancement.task", conn.username, translate(adv.title_key)))
+
+
 async def tick(server, tick_count: int) -> None:
-    """Every CHECK_INTERVAL ticks: grant what the inventories already satisfy."""
+    """Every tick: send the events that happened since the last tick.
+    Every CHECK_INTERVAL ticks: grant what the inventories already satisfy."""
+    await flush(server)
     if tick_count % CHECK_INTERVAL:
         return
     for conn in server.get_online_players():
@@ -314,10 +334,60 @@ async def tick(server, tick_count: int) -> None:
         await send_update(conn, changed)
         save(server, conn)
         for adv in completed:
-            if adv.hidden:
-                continue
-            server.broadcast_system_message(
-                translate("chat.type.advancement.task", conn.username, translate(adv.title_key)))
+            _announce(server, conn, adv)
+
+
+# ------------------------------------------------------------ events
+
+_pending: list[tuple[object, str, bool]] = []   # (conn, advancement key, done before the event)
+
+
+def trigger(conn, key: str, criterion: str) -> None:
+    """
+    An event happened for this player. Safe to call from synchronous game code:
+    the progress changes now, the client is told by flush() on the next tick.
+    """
+    adv = BY_KEY.get(key)
+    progress = getattr(conn, "advancement_progress", None)
+    if adv is None or progress is None or criterion not in adv.criteria:
+        return
+    criteria = progress.setdefault(key, {})
+    if criterion in criteria:
+        return
+    before = is_done(adv, criteria)
+    criteria[criterion] = int(time() * 1000)
+    _pending.append((conn, key, before))
+
+
+async def flush(server) -> None:
+    """Send the progress changed by trigger() since the last flush, and announce completions."""
+    if not _pending:
+        return
+    batch = _pending[:]
+    _pending.clear()
+    per_conn: dict[int, tuple[object, list[Advancement]]] = {}
+    completed: list[tuple[object, Advancement]] = []
+    for conn, key, before in batch:
+        if not getattr(conn, "alive", True):
+            continue
+        adv = BY_KEY[key]
+        entry = per_conn.setdefault(id(conn), (conn, []))
+        if adv not in entry[1]:
+            entry[1].append(adv)
+        if not before and is_done(adv, conn.advancement_progress.get(key, {})):
+            completed.append((conn, adv))
+    for conn, advs in per_conn.values():
+        await send_update(conn, advs)
+        save(server, conn)
+    for conn, adv in completed:
+        _announce(server, conn, adv)
+
+
+def on_mob_killed(conn, mob) -> None:
+    """A player killed a mob (called from the damage code)."""
+    trigger(conn, "adventure/root", "killed_something")
+    if getattr(mob, "profile", {}).get("category") == "hostile":
+        trigger(conn, "adventure/kill_a_mob", "killed_mob")
 
 
 # ------------------------------------------------------------ commands
