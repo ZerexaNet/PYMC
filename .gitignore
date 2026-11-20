@@ -10,7 +10,6 @@ __pycache__/
 /world/region/
 /world/playerdata/
 
-/pumpkin-ref/
 
 # 本地编译产物 (由 build.bat/build.sh/CMake 生成)
 native/terrain_gen

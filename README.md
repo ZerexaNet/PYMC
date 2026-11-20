@@ -126,7 +126,6 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - `mods/`：PYMC 原生 Python Mod API
 - `plugins/`：PYMC 原生 Python Plugin API + Java Bukkit/Paper 桥接层（`plugins/java_plugin.py`）
 - `native/`：C++ 原生地形生成器、轻量生物 AI、红石引擎、光照引擎、物理引擎及 PYMC 原生扩展接口
-- `pumpkin-ref/`：本地参考源码，不属于 PyMC 运行时
 
 ## 运行
 
