@@ -145,6 +145,13 @@ async def send_join_game(conn: Connection, server):
         from commands.brigadier import send_commands
         await send_commands(conn, server)
 
+    # --- 1b. 进度 (1.12+ advancements): the tree and this player's progress ---
+    from world.advancements import on_join as send_advancements
+    try:
+        await send_advancements(server, conn)
+    except Exception:
+        logger.exception(f"发送 {conn.username} 的进度失败")
+
     # --- 2. 解析出生位置 (存档位置不安全时回退到安全出生点) ---
     target_x, target_y, target_z = _resolve_initial_player_location(
         server, player_state

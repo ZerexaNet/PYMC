@@ -383,6 +383,8 @@ class MinecraftServer:
             player_data["inventory"] = conn.inventory_obj.serialize_full()
 
         self.world_storage.save_player_data(str(conn.uuid), player_data)
+        from world.advancements import save as save_advancements
+        save_advancements(self, conn)
 
     def save_all_player_states(self):
         """保存所有在线玩家存档。"""
@@ -1133,6 +1135,10 @@ class MinecraftServer:
         brew_changes = tick_brewing_stands(self)
         if brew_changes:
             await _broadcast_block_changes(self, brew_changes)
+
+        # 进度: 背包里已有的物品授予对应的进度
+        from world.advancements import tick as tick_advancements
+        await tick_advancements(self, tick_count)
 
         # 发送 KeepAlive 心跳
         if tick_count % keepalive_interval == 0:

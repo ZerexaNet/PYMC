@@ -25,7 +25,11 @@ Opacity and emission come from ``world/blocks.json`` (``filterLight`` /
 
 from __future__ import annotations
 
+import ctypes
+import threading
+from array import array
 from collections import deque
+from itertools import chain
 
 SECTION_VOLUME = 4096
 LAYER = 256
@@ -80,7 +84,7 @@ def _spread(light: bytearray, queue: deque, blocks, opacity: list[int], height: 
                 queue.append((nx, ny, nz))
 
 
-def compute_light(blocks) -> tuple[bytearray, bytearray]:
+def _compute_python(blocks) -> tuple[bytearray, bytearray]:
     """
     Compute light for one chunk column.
 
@@ -172,6 +176,73 @@ def compute_light(blocks) -> tuple[bytearray, bytearray]:
         _spread(block_light, queue, blocks, opacity, height)
 
     return sky, block_light
+
+
+_native = None          # the loaded native library with the light tables set, False if unavailable
+_native_lock = threading.Lock()
+
+
+def _native_lib():
+    """The native engine (vrs_light_*) with the tables set, or None to use the Python version."""
+    global _native
+    if _native is None:
+        with _native_lock:
+            if _native is None:
+                _native = False
+                try:
+                    from world.rs.native import load_library
+                    lib = load_library()
+                except Exception:  # the Python version is always there
+                    lib = None
+                if lib is not None:
+                    opacity, emission, _ = _light_tables()
+                    lib.vrs_light_set_tables(bytes(opacity), bytes(emission), len(opacity))
+                    _native = lib
+    return _native or None
+
+
+def _address(buffer: bytearray) -> int:
+    return ctypes.addressof((ctypes.c_char * len(buffer)).from_buffer(buffer))
+
+
+def _compute_native(lib, blocks) -> tuple[bytearray, bytearray]:
+    height = len(blocks)
+    flat = array("H", chain.from_iterable(chain.from_iterable(blocks)))
+    sky = bytearray(height * LAYER)
+    block_light = bytearray(height * LAYER)
+    lib.vrs_light_compute(flat.buffer_info()[0], height, _address(sky), _address(block_light))
+    return sky, block_light
+
+
+def compute_light_flat(flat, height: int | None = None) -> tuple[bytearray, bytearray]:
+    """
+    Same as compute_light, for blocks already in a flat ``array('H')`` (index
+    ``y * 256 + z * 16 + x``). This is the fast path: the native engine reads the
+    array directly, while the nested-list form costs a few milliseconds to flatten.
+    """
+    if height is None:
+        height = len(flat) // LAYER
+    lib = _native_lib()
+    if lib is not None:
+        sky = bytearray(height * LAYER)
+        block_light = bytearray(height * LAYER)
+        lib.vrs_light_compute(flat.buffer_info()[0], height, _address(sky), _address(block_light))
+        return sky, block_light
+    nested = [[[flat[y * LAYER + z * 16 + x] for x in range(16)] for z in range(16)] for y in range(height)]
+    return _compute_python(nested)
+
+
+def compute_light(blocks) -> tuple[bytearray, bytearray]:
+    """
+    Compute light for one chunk column (native when available, else Python).
+
+    ``blocks`` is the ``[y][z][x]`` state-id array. Returns flat
+    ``(sky, block)`` arrays indexed ``y * 256 + z * 16 + x`` with levels 0-15.
+    """
+    lib = _native_lib()
+    if lib is not None:
+        return _compute_native(lib, blocks)
+    return _compute_python(blocks)
 
 
 _FULL = b"\x0f" * SECTION_VOLUME

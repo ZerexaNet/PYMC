@@ -4,6 +4,7 @@
 //   redstone / block updates (BUD, QC, pistons, ...)  -> vrs_tick, vrs_block_changed, ...
 //   hoppers                                           -> vrs_tick_hoppers
 //   explosions (rays + exposure, thread safe)         -> vrs_explosion_blocks, vrs_exposure
+//   chunk light (sky + block, no engine state)        -> vrs_light_set_tables, vrs_light_compute
 //
 // The engine keeps a mirror of the chunks it reads (loaded through a
 // callback); every change it makes is logged and drained by Python, which
@@ -14,6 +15,7 @@
 
 #include "behaviors.h"
 #include "hopper.h"
+#include "light.h"
 
 #if defined(_WIN32)
 #define VRS_API extern "C" __declspec(dllexport)
@@ -31,7 +33,15 @@ static std::recursive_mutex M;
 
 static Pos P(int x, int y, int z) { return Pos{x, y, z}; }
 
-VRS_API int vrs_version() { return 4; }
+VRS_API int vrs_version() { return 5; }
+
+// Light: opacity/emission tables by state id (set once), then one call per chunk.
+VRS_API void vrs_light_set_tables(const uint8_t* opacity, const uint8_t* emission, int n) {
+    vrs::light::set_tables(opacity, emission, n);
+}
+VRS_API void vrs_light_compute(const uint16_t* blocks, int height, uint8_t* sky, uint8_t* block_light) {
+    vrs::light::compute(blocks, height, sky, block_light);
+}
 
 // Chunks kept in the mirror. Every chunk is 196 KB; the rest are re-read from storage on demand.
 static size_t g_chunk_limit = 256;
