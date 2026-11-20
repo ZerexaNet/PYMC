@@ -129,7 +129,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 
 ## 运行
 
-需要 Python 3.10 或更新版本。
+需要 Python 3.14（最新稳定版；测试在 3.14 上通过）。
 
 ```bash
 pip install -r requirements.txt
