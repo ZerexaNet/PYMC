@@ -234,14 +234,13 @@ def compute_light_flat(flat, height: int | None = None) -> tuple[bytearray, byte
 
 def compute_light(blocks) -> tuple[bytearray, bytearray]:
     """
-    Compute light for one chunk column (native when available, else Python).
+    Compute light for one chunk column.
 
     ``blocks`` is the ``[y][z][x]`` state-id array. Returns flat
     ``(sky, block)`` arrays indexed ``y * 256 + z * 16 + x`` with levels 0-15.
     """
-    lib = _native_lib()
-    if lib is not None:
-        return _compute_native(lib, blocks)
+    # Nested lists: the Python version is faster (flattening them costs more than the
+    # native call saves). Flat arrays go to the native engine: see compute_light_flat.
     return _compute_python(blocks)
 
 

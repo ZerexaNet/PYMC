@@ -62,6 +62,14 @@ class ProgressTests(unittest.TestCase):
         # nothing new the second time
         self.assertEqual(adv.check_inventory(conn), ([], []))
 
+    def test_diamond_branch(self):
+        conn = _conn(["minecraft:diamond"])
+        conn.advancement_progress = {}
+        _, completed = adv.check_inventory(conn)
+        keys = {a.key for a in completed}
+        self.assertIn("story/mine_diamond", keys)
+        self.assertNotIn("story/shiny_gear", keys)
+
     def test_obtain_armor_needs_one_piece(self):
         conn = _conn(["minecraft:iron_boots"])
         conn.advancement_progress = {}
@@ -72,9 +80,10 @@ class ProgressTests(unittest.TestCase):
         conn = _conn()
         conn.advancement_progress = {}
         n = asyncio.run(adv.apply(self.server, conn, "grant", "from", "story/upgrade_tools"))
-        self.assertEqual(set(conn.advancement_progress), {"story/upgrade_tools", "story/smelt_iron",
-                                                          "story/obtain_armor"})
-        self.assertEqual(n, 3)
+        expected = {"story/upgrade_tools"} | {a.key for a in adv.descendants("story/upgrade_tools")}
+        self.assertEqual(set(conn.advancement_progress), expected)
+        self.assertIn("story/shiny_gear", expected)
+        self.assertEqual(n, len(expected))
         conn.advancement_progress = {}
         asyncio.run(adv.apply(self.server, conn, "grant", "through", "story/upgrade_tools"))
         self.assertEqual(set(conn.advancement_progress), {"story/root", "story/mine_stone",

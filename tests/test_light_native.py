@@ -67,7 +67,7 @@ class NativeLightMatchesPython(unittest.TestCase):
                 with self.subTest(seed=seed, chunk=(cx, cz)):
                     self.assertSameLight(gen.generate_chunk(cx, cz))
 
-    def test_public_entry_point_uses_native(self):
+    def test_public_entry_point_matches_python(self):
         blocks = _random_chunk(random.Random(99), self.size, height=64)
         sky, block_light = lighting.compute_light(blocks)
         ref_sky, ref_block = lighting._compute_python(blocks)

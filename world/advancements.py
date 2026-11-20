@@ -89,6 +89,22 @@ ADVANCEMENTS: tuple[Advancement, ...] = (
           "iron_boots": ("minecraft:iron_boots",)},
          requirements=[("iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots")],
          parent="story/smelt_iron", x=4.0, y=0.0),
+    _adv("story/iron_tools", "minecraft:iron_pickaxe",
+         {"iron_pickaxe": ("minecraft:iron_pickaxe",)},
+         parent="story/smelt_iron", x=3.0, y=1.0),
+    _adv("story/lava_bucket", "minecraft:lava_bucket",
+         {"lava_bucket": ("minecraft:lava_bucket",)},
+         parent="story/smelt_iron", x=3.0, y=-1.0),
+    _adv("story/mine_diamond", "minecraft:diamond",
+         {"diamond": ("minecraft:diamond",)},
+         parent="story/iron_tools", x=4.0, y=1.0),
+    _adv("story/shiny_gear", "minecraft:diamond_chestplate",
+         {"diamond_helmet": ("minecraft:diamond_helmet",),
+          "diamond_chestplate": ("minecraft:diamond_chestplate",),
+          "diamond_leggings": ("minecraft:diamond_leggings",),
+          "diamond_boots": ("minecraft:diamond_boots",)},
+         requirements=[("diamond_helmet", "diamond_chestplate", "diamond_leggings", "diamond_boots")],
+         parent="story/mine_diamond", x=5.0, y=1.0),
 )
 
 BY_KEY: dict[str, Advancement] = {a.key: a for a in ADVANCEMENTS}
