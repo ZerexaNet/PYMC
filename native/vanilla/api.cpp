@@ -14,7 +14,6 @@
 
 #include "behaviors.h"
 #include "hopper.h"
-#include "lighting.h"
 
 #if defined(_WIN32)
 #define VRS_API extern "C" __declspec(dllexport)
@@ -33,32 +32,6 @@ static std::recursive_mutex M;
 static Pos P(int x, int y, int z) { return Pos{x, y, z}; }
 
 VRS_API int vrs_version() { return 4; }
-
-// ---------------------------------------------------------------- light
-// Independent of the game state: its own block tables, read-only after vlight_init, so the
-// light workers (thread pool) call it without the game lock.
-static BlockTable g_light_table;
-static LightTables g_light;
-static std::mutex g_light_init_mutex;
-
-VRS_API int vlight_init(const char* blocks_json) {
-    std::lock_guard<std::mutex> guard(g_light_init_mutex);
-    if (g_light.loaded) return 1;
-    if (!g_light_table.load(blocks_json)) return 0;
-    g_light.build(g_light_table);
-    return 1;
-}
-
-// blocks: 98304 states, index y*256 + z*16 + x. sky_out / block_out: 26 * 2048 bytes each.
-// out[0..3] = sky mask, block mask, empty sky mask, empty block mask; out[4] / out[5] = array counts.
-VRS_API int vlight_build_sections(const uint16_t* blocks, uint8_t* sky_out, uint8_t* block_out, int32_t* out) {
-    if (!g_light.loaded) return 0;
-    int32_t masks[4], counts[2];
-    light_build_sections(g_light, blocks, sky_out, block_out, masks, counts);
-    out[0] = masks[0]; out[1] = masks[1]; out[2] = masks[2]; out[3] = masks[3];
-    out[4] = counts[0]; out[5] = counts[1];
-    return 1;
-}
 
 // Chunks kept in the mirror. Every chunk is 196 KB; the rest are re-read from storage on demand.
 static size_t g_chunk_limit = 256;
