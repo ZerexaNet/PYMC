@@ -50,10 +50,7 @@ DEFAULT_CONFIG = {
 
     # ---- PyMC 扩展 ----
     "debug": False,                         # 输出 DEBUG 级别日志
-    "web-admin-enabled": True,
-    "web-admin-host": "127.0.0.1",
-    "web-admin-port": 25568,
-    "web-admin-allow-remote": False,
+    "anvil-too-expensive-limit": True,      # 铁砧费用达到 40 级时不能取 (原版); 关闭后不限制费用
     "permissions-file": "permissions.json",
     "chunk-generation-multithreading": False,
     "chunk-generation-workers": 0,

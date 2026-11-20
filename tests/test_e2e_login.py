@@ -66,7 +66,7 @@ class EndToEndLoginTests(unittest.IsolatedAsyncioTestCase):
         os.chdir(self.tmp.name)
         config = dict(DEFAULT_CONFIG)
         config.update({
-            "server-ip": "127.0.0.1", "server-port": 0, "web-admin-enabled": False,
+            "server-ip": "127.0.0.1", "server-port": 0,
             "level-seed": "12345", "view-distance": 2, "join-immediate-radius": 1,
             "motd": "E2E", "plugins-directory": "no-plugins", "mods-directory": "no-mods",
             "permissions-file": os.path.join(self.tmp.name, "permissions.json"),
@@ -208,7 +208,7 @@ class OnlineModeLoginTests(unittest.IsolatedAsyncioTestCase):
         os.chdir(self.tmp.name)
         config = dict(DEFAULT_CONFIG)
         config.update({
-            "server-ip": "127.0.0.1", "server-port": 0, "web-admin-enabled": False,
+            "server-ip": "127.0.0.1", "server-port": 0,
             "online-mode": True, "level-seed": "1", "view-distance": 2,
             "join-immediate-radius": 1, "plugins-directory": "no-plugins",
             "mods-directory": "no-mods",

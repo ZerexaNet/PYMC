@@ -23,6 +23,19 @@ ANVIL = "anvil"
 ANVIL_RESULT_SLOT = 2
 TOO_EXPENSIVE = enchanting.TOO_EXPENSIVE
 
+# "Too Expensive!": the anvil refuses results from TOO_EXPENSIVE levels up (vanilla). Servers can
+# switch the limit off with the anvil-too-expensive-limit property.
+_limit_too_expensive = True
+
+
+def set_too_expensive_limit(enabled: bool):
+    global _limit_too_expensive
+    _limit_too_expensive = bool(enabled)
+
+
+def too_expensive_limit() -> bool:
+    return _limit_too_expensive
+
 # clientbound "Container Set Data" (craft_progress_bar, 0x14 in 1.21.1)
 _PROPERTY_PACKET = "craft_progress_bar"
 
@@ -56,7 +69,7 @@ def refresh(conn, container, pos) -> dict:
         return props
     if container.type == ANVIL:
         result, cost = enchanting.anvil_merge(container.items[0], container.items[1])
-        if result is not None and cost >= TOO_EXPENSIVE and not _is_creative(conn):
+        if result is not None and _limit_too_expensive and cost >= TOO_EXPENSIVE and not _is_creative(conn):
             result = None
         container.items[ANVIL_RESULT_SLOT] = result
         container.anvil_cost = cost if result is not None else 0

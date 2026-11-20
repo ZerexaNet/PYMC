@@ -199,7 +199,8 @@ class WindowTests(unittest.IsolatedAsyncioTestCase):
         cost = anvil.anvil_cost
         conn = make_conn(window_id=1, container_type="block")
         await _handle_click_container(conn, click(2, button=0, mode=0), None)      # take the result
-        self.assertEqual(conn.inventory_obj.carried_item.nbt, {"enchantments": {"sharpness": 2}})
+        self.assertEqual(conn.inventory_obj.carried_item.nbt,
+                         {"enchantments": {"sharpness": 2}, "repair_cost": 1})
         self.assertIsNone(anvil.items[0])
         self.assertIsNone(anvil.items[1])
         self.assertEqual(conn.experience_level, 30 - cost)
@@ -244,3 +245,88 @@ class WindowTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnvilCostTests(unittest.IsolatedAsyncioTestCase):
+    """Prior work penalty and the too-expensive switch."""
+
+    def tearDown(self):
+        from world.enchanting_window import set_too_expensive_limit
+        set_too_expensive_limit(True)
+        container_manager.containers.clear()
+
+    def test_prior_work_penalty_grows_with_each_use(self):
+        sword = ItemStack("minecraft:diamond_sword", 1, 0, {"enchantments": {"sharpness": 1}})
+        book = ItemStack("minecraft:enchanted_book", 1, 0, {"stored_enchantments": {"unbreaking": 1}})
+        first, cost1 = enchanting.anvil_merge(sword, book)
+        self.assertEqual(enchanting.repair_cost(first), 1)                       # max(0, 0) * 2 + 1
+        book2 = ItemStack("minecraft:enchanted_book", 1, 0, {"stored_enchantments": {"mending": 1}})
+        second, cost2 = enchanting.anvil_merge(first, book2)
+        self.assertEqual(enchanting.repair_cost(second), 3)                      # max(1, 0) * 2 + 1
+        self.assertEqual(cost2, enchanting.enchantment("mending")["anvil_cost"] + 1)  # the penalty is added
+        self.assertEqual(cost1, enchanting.enchantment("unbreaking")["anvil_cost"])
+
+    def test_limit_refuses_results_from_forty_levels(self):
+        from world.enchanting_window import refresh, set_too_expensive_limit
+        anvil = container_manager.get_or_create(0, 64, 0, "anvil")
+        anvil.items[0] = ItemStack("minecraft:diamond_sword", 1, 0, {"enchantments": {"sharpness": 5}, "repair_cost": 39})
+        anvil.items[1] = ItemStack("minecraft:enchanted_book", 1, 0, {"stored_enchantments": {"unbreaking": 3}})
+        set_too_expensive_limit(True)
+        refresh(make_conn(), anvil, (0, 64, 0))
+        self.assertIsNone(anvil.items[2])                                       # cost >= 40: refused
+        set_too_expensive_limit(False)
+        refresh(make_conn(), anvil, (0, 64, 0))
+        self.assertIsNotNone(anvil.items[2])
+        self.assertGreaterEqual(anvil.anvil_cost, 40)
+
+    async def test_without_the_limit_the_expensive_result_can_be_taken(self):
+        from world.enchanting_window import refresh, set_too_expensive_limit
+        set_too_expensive_limit(False)
+        anvil = container_manager.get_or_create(0, 64, 0, "anvil")
+        anvil.items[0] = ItemStack("minecraft:diamond_sword", 1, 0, {"enchantments": {"sharpness": 5}, "repair_cost": 39})
+        anvil.items[1] = ItemStack("minecraft:enchanted_book", 1, 0, {"stored_enchantments": {"unbreaking": 3}})
+        refresh(make_conn(), anvil, (0, 64, 0))
+        cost = anvil.anvil_cost
+        conn = make_conn(window_id=1, experience_level=cost)
+        await _handle_click_container(conn, click(2, button=0, mode=0), None)
+        self.assertIsNotNone(conn.inventory_obj.carried_item)
+        self.assertEqual(conn.experience_level, 0)
+
+    async def test_creative_ignores_the_limit_anyway(self):
+        from world.enchanting_window import refresh
+        anvil = container_manager.get_or_create(0, 64, 0, "anvil")
+        anvil.items[0] = ItemStack("minecraft:diamond_sword", 1, 0, {"enchantments": {"sharpness": 5}, "repair_cost": 39})
+        anvil.items[1] = ItemStack("minecraft:enchanted_book", 1, 0, {"stored_enchantments": {"unbreaking": 3}})
+        refresh(make_conn(gamemode="creative"), anvil, (0, 64, 0))
+        self.assertIsNotNone(anvil.items[2])
+
+    def test_config_switch_is_read_from_server_properties(self):
+        import tempfile
+        from config import load_config
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/server.properties"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("anvil-too-expensive-limit=false\n")
+            self.assertFalse(load_config(path)["anvil-too-expensive-limit"])
+        self.assertTrue(load_config(f"{d}/missing.properties")["anvil-too-expensive-limit"])
+
+
+class PotionContentsTests(unittest.TestCase):
+    def test_potion_round_trips_with_its_registry_id(self):
+        from world.potions import protocol_id
+        bottle = ItemStack("minecraft:splash_potion", 1, 0, {"potion": "long_turtle_master"})
+        data = encode_slot_entry(bottle) + b"\x00"
+        item, offset = decode_slot_entry(data, 0)
+        self.assertEqual(item.item_id, "minecraft:splash_potion")
+        self.assertEqual(item.nbt, {"potion": "long_turtle_master"})
+        self.assertEqual(offset, len(data) - 1)
+        self.assertEqual(protocol_id("long_turtle_master"), 20)
+
+    def test_water_bottle_has_the_water_potion(self):
+        water = ItemStack("minecraft:potion", 1, 0, {"potion": "water"})
+        item, _ = decode_slot_entry(encode_slot_entry(water), 0)
+        self.assertEqual(item.nbt, {"potion": "water"})
+
+    def test_potions_without_a_known_name_are_plain_items(self):
+        item, _ = decode_slot_entry(encode_slot_entry(ItemStack("minecraft:potion", 1, 0, {})), 0)
+        self.assertEqual(item.nbt, {})

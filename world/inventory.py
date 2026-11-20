@@ -547,6 +547,21 @@ class PlayerInventory:
 SLOT_COMPONENT_DAMAGE = 3  # minecraft:damage in the 1.21.1 data component registry
 SLOT_COMPONENT_ENCHANTMENTS = 9          # minecraft:enchantments (ItemEnchantments)
 SLOT_COMPONENT_STORED_ENCHANTMENTS = 23  # minecraft:stored_enchantments (enchanted books)
+SLOT_COMPONENT_POTION_CONTENTS = 31      # minecraft:potion_contents
+POTION_ITEM_IDS = {"minecraft:potion", "minecraft:splash_potion", "minecraft:lingering_potion"}
+
+
+def _potion_payload(name: str) -> bytes | None:
+    """PotionContents: optional potion id, optional custom colour, custom effects, optional custom name."""
+    from protocol.data_types import write_boolean
+    from world.potions import protocol_id
+    registry_id = protocol_id(name)
+    if registry_id is None:
+        return None
+    return (write_boolean(True) + write_varint(registry_id)   # potion
+            + write_boolean(False)                            # no custom colour
+            + write_varint(0)                                 # no custom effects
+            + write_boolean(False))                           # no custom name
 
 
 def _enchantments_payload(levels: dict) -> bytes | None:
@@ -616,6 +631,12 @@ def encode_slot_entry(item: ItemStack | None) -> bytes:
         components.extend(write_varint(min(damage, item.max_durability)))
         component_count += 1
     nbt = getattr(item, "nbt", None) or {}
+    if item.item_id in POTION_ITEM_IDS and nbt.get("potion"):
+        potion_data = _potion_payload(str(nbt["potion"]))
+        if potion_data is not None:
+            components.extend(write_varint(SLOT_COMPONENT_POTION_CONTENTS))
+            components.extend(potion_data)
+            component_count += 1
     for key, component in (("enchantments", SLOT_COMPONENT_ENCHANTMENTS),
                            ("stored_enchantments", SLOT_COMPONENT_STORED_ENCHANTMENTS)):
         enchant_data = _enchantments_payload(nbt.get(key) or {})
@@ -683,8 +704,29 @@ def decode_slot_entry(data: bytes, offset: int = 0) -> tuple[ItemStack | None, i
             key = "enchantments" if component_type == SLOT_COMPONENT_ENCHANTMENTS else "stored_enchantments"
             if levels:
                 nbt[key] = levels
+        elif component_type == SLOT_COMPONENT_POTION_CONTENTS:
+            from protocol.data_types import read_boolean, read_int, read_string
+            from world.potions import name_of_protocol_id
+            has_potion, offset = read_boolean(data, offset)
+            if has_potion:
+                potion_id, offset = read_varint(data, offset)
+                name = name_of_protocol_id(potion_id)
+                if name is not None:
+                    nbt["potion"] = name
+            has_colour, offset = read_boolean(data, offset)
+            if has_colour:
+                _colour, offset = read_int(data, offset)
+            effects, offset = read_varint(data, offset)
+            if effects:
+                # custom effects are not used by the server; their layout is not parsed
+                offset = len(data)
+                removed_count = 0
+                break
+            has_name, offset = read_boolean(data, offset)
+            if has_name:
+                _custom_name, offset = read_string(data, offset)
         else:
-            # Other component payloads (names, enchantments, potion contents...)
+            # Other component payloads (names, potion contents...)
             # are not decoded; the rest of this slot cannot be parsed reliably.
             offset = len(data)
             removed_count = 0

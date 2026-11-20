@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from typing import Optional
 from config import save_config
 from admin.permissions import PermissionManager, UserCache
-from admin.web import WebAdminServer
 from .connection import Connection, ConnectionState
 from handlers.handshake import handle_handshake
 from handlers.status import handle_status
@@ -151,7 +150,6 @@ class MinecraftServer:
         whitelist["enabled"] = bool(config.get("white-list", False))
         self.permissions.on_whitelist_toggle = self._on_whitelist_toggle
 
-        self.web_admin: WebAdminServer | None = None
         self.rcon = None
         self.loop: asyncio.AbstractEventLoop | None = None
 
@@ -463,6 +461,8 @@ class MinecraftServer:
         self.world_storage.initialize()
         container_manager.load(str(self.world_storage.world_dir))
         container_manager.block_reader = self.get_block_at        # double chests read their block states
+        from world.enchanting_window import set_too_expensive_limit
+        set_too_expensive_limit(self.config.get("anvil-too-expensive-limit", True))
         from world.minecart import load_minecarts
         load_minecarts(self, self.world_storage.world_dir)
         self._initialize_terrain_generator()
@@ -504,19 +504,6 @@ class MinecraftServer:
 
         # 启动游戏循环 (20 TPS)
         self._tick_task = asyncio.create_task(self._game_loop())
-
-        if self.config.get("web-admin-enabled", True):
-            try:
-                self.web_admin = WebAdminServer(
-                    self,
-                    self.config.get("web-admin-host", "127.0.0.1"),
-                    self.config.get("web-admin-port", 25568),
-                    self.config.get("web-admin-allow-remote", False),
-                )
-                self.web_admin.start()
-            except Exception as e:
-                logger.error(f"启动 Web 管理台失败: {e}")
-                self.web_admin = None
 
         if self.config.get("enable-rcon", False):
             from network.rcon import RconServer
@@ -972,10 +959,6 @@ class MinecraftServer:
         self.save_level_data()
         self.world_storage.close()
         mc_logger.info(f"ThreadedAnvilChunkStorage ({self.level_name}): All chunks are saved")
-
-        if self.web_admin:
-            self.web_admin.stop()
-            self.web_admin = None
 
         if self._chunk_executor:
             self._chunk_executor.shutdown(wait=False, cancel_futures=True)

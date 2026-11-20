@@ -246,8 +246,16 @@ def with_enchantments(item_id: str, nbt: dict, enchants: list[tuple[str, int]]) 
     return item_id, nbt
 
 
+def repair_cost(item) -> int:
+    """Prior work penalty of an item (nbt "repair_cost"): it doubles-plus-one each time the item is used in an anvil."""
+    return int((getattr(item, "nbt", None) or {}).get("repair_cost", 0) or 0)
+
+
 def anvil_merge(left, right):
-    """The anvil result for (left item, right item): (result ItemStack or None, cost in levels)."""
+    """The anvil result for (left item, right item): (result ItemStack or None, cost in levels).
+
+    The cost is the enchantments' anvil cost plus the prior work penalties of both items; the
+    result's penalty is max(left, right) * 2 + 1 (AnvilMenu.createResult)."""
     from .inventory import ItemStack
     if left is None or right is None or left.is_empty or right.is_empty:
         return None, 0
@@ -287,10 +295,13 @@ def anvil_merge(left, right):
         cost += entry["anvil_cost"] * new_level
     if not applied:
         return None, 0
-    base_nbt = {k: v for k, v in left.nbt.items() if k not in ("enchantments", "stored_enchantments")}
+    left_penalty, right_penalty = repair_cost(left), repair_cost(right)
+    total = max(1, cost + left_penalty + right_penalty)
+    base_nbt = {k: v for k, v in left.nbt.items() if k not in ("enchantments", "stored_enchantments", "repair_cost")}
+    base_nbt["repair_cost"] = max(left_penalty, right_penalty) * 2 + 1
     if is_book(left.item_id):
         result_id, nbt = "minecraft:enchanted_book", dict(base_nbt, stored_enchantments=current)
     else:
         result_id, nbt = left.item_id, dict(base_nbt, enchantments=current)
     result = ItemStack(result_id, 1, left.damage, nbt)
-    return result, max(1, cost)
+    return result, total
