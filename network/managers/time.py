@@ -174,21 +174,9 @@ class TimeManager:
         self._day_time = max(0, self._day_time + int(ticks))
         return self.time
 
-    def get_day_time(self) -> float:
-        """获取以小时表示的游戏时间。"""
-        return (self.time / MAX_TIME) * 24.0
-
     def get_day_count(self) -> int:
         """获取当前是第几天。"""
         return self._day_time // MAX_TIME
-
-    def is_daytime(self) -> bool:
-        """判断是否为白天。"""
-        return 0 <= self.time < 12000 or self.time >= 23000
-
-    def is_nighttime(self) -> bool:
-        """判断是否为夜晚。"""
-        return 12000 <= self.time < 23000
 
     def set_weather(self, weather: str, duration: int = 0):
         """

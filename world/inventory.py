@@ -17,12 +17,10 @@ Slot layout (Java Edition 1.21.1):
   45:    Crafting result (client-side only)
 """
 
-import copy
 import logging
-from typing import Optional
 
 from protocol.data_types import (
-    write_varint, write_boolean, write_byte, write_short,
+    write_varint, write_short,
 )
 
 logger = logging.getLogger("PyMC.物品栏")
@@ -157,11 +155,6 @@ BLOCK_TO_ITEM_OVERRIDES: dict[str, str] = {
 }
 
 
-def block_name_to_item_name(block_name: str) -> str:
-    """Convert a block name to the item it drops when mined without silk touch."""
-    return BLOCK_TO_ITEM_OVERRIDES.get(block_name, block_name)
-
-
 # --------------------------------------------------
 # ItemStack
 # --------------------------------------------------
@@ -212,14 +205,6 @@ class ItemStack:
 
     # --- Backward compatibility methods ---
 
-    def is_empty_method(self) -> bool:
-        """Check if this stack is empty (method version for backward compat)."""
-        return self.is_empty
-
-    def max_stack_size_method(self) -> int:
-        """Get max stack size (method version for backward compat)."""
-        return self.max_stack_size
-
     def can_stack_with(self, other: 'ItemStack | None') -> bool:
         """Check if this stack can be combined with another."""
         if other is None or other.is_empty:
@@ -250,15 +235,6 @@ class ItemStack:
     def get_tool_tier(self) -> str | None:
         """Get the tool tier if this item is a tiered tool."""
         return TOOL_TIER_FROM_ITEM.get(self.item_id)
-
-    def get_mining_speed(self) -> float:
-        """Get the mining speed multiplier for this tool."""
-        tier = self.get_tool_tier()
-        if tier:
-            return TOOL_TIER_SPEED.get(tier, 1.0)
-        if self.item_id == "minecraft:shears":
-            return 1.0
-        return 1.0
 
     def __repr__(self) -> str:
         if self.is_empty:
@@ -397,12 +373,6 @@ class PlayerInventory:
                 total += slot.count
         return total
 
-    def swap_slots(self, a: int, b: int):
-        """Swap the contents of two slots."""
-        if 0 <= a < self.TOTAL_SLOTS and 0 <= b < self.TOTAL_SLOTS:
-            self.slots[a], self.slots[b] = self.slots[b], self.slots[a]
-            self.state_id += 1
-
     def clear(self):
         """Clear all inventory slots."""
         self.slots = [None] * self.TOTAL_SLOTS
@@ -435,16 +405,6 @@ class PlayerInventory:
     def get_armor(self) -> list[ItemStack | None]:
         """Get the 4 armor slots (boots, leggings, chestplate, helmet)."""
         return list(self.slots[36:40])
-
-    def get_offhand(self) -> ItemStack | None:
-        """Get the offhand item."""
-        return self.slots[40]
-
-    def get_hotbar_slot(self, index: int) -> ItemStack | None:
-        """Get an item from the hotbar (0-8)."""
-        if 0 <= index < 9:
-            return self.slots[index]
-        return None
 
     def set_held_slot(self, slot: int):
         """Set the currently selected hotbar slot (0-8)."""
@@ -531,14 +491,6 @@ class PlayerInventory:
     def from_legacy(cls, data: dict) -> 'PlayerInventory':
         """Create from legacy serialization format."""
         return cls.deserialize_full(data)
-
-    def to_legacy_tuple(self, slot: int) -> tuple[str, int] | None:
-        """Convert a slot to legacy tuple format for old code compatibility."""
-        item = self.get_slot(slot)
-        if item is None or item.is_empty:
-            return None
-        return (item.item_id, item.count)
-
 
 # --------------------------------------------------
 # Protocol Encoding

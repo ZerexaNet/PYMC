@@ -54,7 +54,6 @@ Recipe format:
 """
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger("PyMC.合成")
 
@@ -1678,75 +1677,6 @@ class CraftingSystem:
                 result_item, result_count = recipe["result"]
                 return (result_item, recipe["xp"], recipe["cook_time"])
         return None
-
-    def check_stonecutting(self, ingredient: str) -> list[tuple[str, int]]:
-        """
-        Check stonecutting recipes for a given ingredient.
-        Returns list of (result_item, result_count) tuples (multiple possible).
-        """
-        results = []
-        for recipe_name, recipe in STONECUTTING_RECIPES.items():
-            if recipe["ingredient"] == ingredient:
-                result_item, result_count = recipe["result"]
-                results.append((result_item, result_count))
-        return results
-
-    def check_smithing(self, template: str, base: str, addition: str) -> tuple[str, int] | None:
-        """
-        Check a smithing recipe.
-        Returns (result_item, result_count) or None if no match.
-        """
-        for recipe_name, recipe in SMITHING_RECIPES.items():
-            if (recipe["template"] == template and
-                recipe["base"] == base and
-                recipe["addition"] == addition):
-                return recipe["result"]
-        return None
-
-    def get_fuel_burn_time(self, fuel_item: str) -> int:
-        """Get the burn time in ticks for a fuel item."""
-        return FUEL_VALUES.get(fuel_item, 0)
-
-    def consume_ingredients(self, grid: list[list[str]]) -> list[list[str]]:
-        """
-        Consume one of each ingredient from the crafting grid.
-        Returns the updated grid with consumed items removed.
-        """
-        result = []
-        for row in grid:
-            result_row = []
-            for cell in row:
-                # Each ingredient is consumed (replaced with air)
-                if cell and cell != "minecraft:air":
-                    result_row.append("")
-                else:
-                    result_row.append(cell)
-            result.append(result_row)
-        return result
-
-    def check_2x2_crafting(self, slots: list[str]) -> tuple[str, int] | None:
-        """
-        Check a 2x2 crafting grid from the player inventory.
-        slots is a list of 4 item IDs: [top-left, top-right, bottom-left, bottom-right]
-        """
-        grid = [
-            [slots[0] if len(slots) > 0 else "", slots[1] if len(slots) > 1 else ""],
-            [slots[2] if len(slots) > 2 else "", slots[3] if len(slots) > 3 else ""],
-        ]
-        return self.check_crafting(grid)
-
-    def check_3x3_crafting(self, slots: list[str]) -> tuple[str, int] | None:
-        """
-        Check a 3x3 crafting grid from a crafting table.
-        slots is a list of 9 item IDs in row-major order.
-        """
-        grid = [
-            [slots[0] if len(slots) > 0 else "", slots[1] if len(slots) > 1 else "", slots[2] if len(slots) > 2 else ""],
-            [slots[3] if len(slots) > 3 else "", slots[4] if len(slots) > 4 else "", slots[5] if len(slots) > 5 else ""],
-            [slots[6] if len(slots) > 6 else "", slots[7] if len(slots) > 7 else "", slots[8] if len(slots) > 8 else ""],
-        ]
-        return self.check_crafting(grid)
-
 
 # Global crafting system instance
 crafting_system = CraftingSystem()

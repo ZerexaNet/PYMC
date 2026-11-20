@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import time
 from collections import defaultdict
-from typing import Any
 
 logger = logging.getLogger("PyMC.network_optimizer")
 
@@ -147,50 +145,6 @@ class PlayerNetworkOptimizer:
             # Clear the queue for this player
             self.packet_queues[key] = []
 
-    def optimize_chunk_order(self, conn, chunks: list) -> list:
-        """
-        Sort chunks by distance from player for smoother loading.
-
-        Prioritizes chunks that are:
-        1. Closer to the player (Manhattan distance)
-        2. In the direction the player is facing
-
-        Args:
-            conn: Player connection (must have x, z, yaw attributes)
-            chunks: List of (cx, cz) chunk coordinate tuples
-
-        Returns:
-            Sorted list of chunk coordinates
-        """
-        if not chunks:
-            return chunks
-
-        player_cx = int(conn.x) >> 4
-        player_cz = int(conn.z) >> 4
-
-        # Calculate facing direction (normalized)
-        yaw_rad = math.radians(conn.yaw)
-        facing_dx = -math.sin(yaw_rad)
-        facing_dz = math.cos(yaw_rad)
-
-        def chunk_priority(chunk_coord) -> float:
-            cx, cz = chunk_coord
-            # Manhattan distance
-            dist = abs(cx - player_cx) + abs(cz - player_cz)
-
-            # Direction bonus: chunks in the facing direction get priority
-            dx = cx - player_cx
-            dz = cz - player_cz
-            if dx != 0 or dz != 0:
-                length = math.sqrt(dx * dx + dz * dz)
-                ndx, ndz = dx / length, dz / length
-                facing_bonus = ndx * facing_dx + ndz * facing_dz
-                dist -= facing_bonus * 2.0
-
-            return dist
-
-        return sorted(chunks, key=chunk_priority)
-
     def should_send_movement(self, conn) -> bool:
         """
         Rate-limit movement updates to other players.
@@ -210,36 +164,6 @@ class PlayerNetworkOptimizer:
 
         self._last_movement_send[key] = now
         return True
-
-    def get_chunk_send_delay(self, conn) -> float:
-        """Get the delay between chunk sends for a player."""
-        return self.chunk_send_rate
-
-    def should_send_chunk(self, conn) -> bool:
-        """Check if we should send a chunk to this player now (rate limiting)."""
-        key = conn.username if conn.username else conn.address
-        now = time.time()
-
-        last_send = self._last_chunk_send.get(key, 0.0)
-        if now - last_send < self.chunk_send_rate:
-            return False
-
-        self._last_chunk_send[key] = now
-        return True
-
-    def get_stats(self) -> dict:
-        """Get optimizer statistics."""
-        total_queued = sum(len(q) for q in self.packet_queues.values())
-        return {
-            "packets_batched": self._packets_batched,
-            "packets_sent_directly": self._packets_sent_directly,
-            "movements_dropped": self._movements_dropped,
-            "currently_queued": total_queued,
-            "connections_with_queue": len([q for q in self.packet_queues.values() if q]),
-            "movement_rate_hz": self._movement_rate_hz,
-            "batch_interval_ms": self.movement_batch_interval * 1000,
-            "chunk_send_rate_ms": self.chunk_send_rate * 1000,
-        }
 
     async def _flush_loop(self):
         """Periodically flush all queued packets."""
@@ -261,71 +185,8 @@ class PacketBatcher:
         """Add a packet to the batch."""
         self._batches[conn_key].append((packet_id, payload))
 
-    def get_batch(self, conn_key: str) -> list[tuple[int, bytes]]:
-        """Get and clear the batch for a connection."""
-        return self._batches.pop(conn_key, [])
-
-    def has_batch(self, conn_key: str) -> bool:
-        """Check if there are queued packets for a connection."""
-        return bool(self._batches.get(conn_key))
-
     def clear(self):
         """Clear all batches."""
         self._batches.clear()
 
 
-class MovementInterpolator:
-    """Interpolate between player positions for smooth rendering."""
-
-    def __init__(self):
-        self._positions: dict[str, list[tuple[float, float, float, float]]] = {}
-        # username -> [(x, y, z, timestamp), ...]
-
-    def record_position(self, username: str, x: float, y: float, z: float):
-        """Record a player position."""
-        if username not in self._positions:
-            self._positions[username] = []
-
-        self._positions[username].append((x, y, z, time.time()))
-
-        # Keep only recent positions
-        if len(self._positions[username]) > 10:
-            self._positions[username] = self._positions[username][-10:]
-
-    def get_interpolated_position(self, username: str, render_time: float) -> tuple[float, float, float] | None:
-        """
-        Get the interpolated position for a given render time.
-        This helps smooth out movement when updates come at irregular intervals.
-        """
-        positions = self._positions.get(username, [])
-        if not positions:
-            return None
-
-        # Find the two positions bracketing the render time
-        before = None
-        after = None
-
-        for pos in positions:
-            if pos[3] <= render_time:
-                before = pos
-            elif pos[3] > render_time and after is None:
-                after = pos
-                break
-
-        if before is None:
-            return None
-
-        if after is None:
-            return (before[0], before[1], before[2])
-
-        # Linear interpolation
-        t0 = before[3]
-        t1 = after[3]
-        alpha = (render_time - t0) / (t1 - t0) if t1 != t0 else 0.0
-        alpha = max(0.0, min(1.0, alpha))
-
-        x = before[0] + (after[0] - before[0]) * alpha
-        y = before[1] + (after[1] - before[1]) * alpha
-        z = before[2] + (after[2] - before[2]) * alpha
-
-        return (x, y, z)

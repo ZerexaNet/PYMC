@@ -7,8 +7,7 @@
 import logging
 from protocol.data_types import read_varint, read_string, read_ushort
 from protocol.versions import (
-    is_supported, get_version_name, get_handler_version,
-    has_configuration_phase, NATIVE_PROTOCOL_VERSION
+    is_supported, get_version_name
 )
 from network.connection import Connection, ConnectionState
 

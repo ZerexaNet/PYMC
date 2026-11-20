@@ -121,13 +121,6 @@ class ModInfo:
     package_path: str = ""     # Absolute path to the mod package directory
     extra: Dict[str, Any] = field(default_factory=dict)
 
-    def depends_on(self, mod_id: str) -> bool:
-        return mod_id in self.dependencies
-
-    def soft_depends_on(self, mod_id: str) -> bool:
-        return mod_id in self.soft_dependencies
-
-
 # ===========================================================
 # PyMCMod Base Class
 # ===========================================================
@@ -163,10 +156,6 @@ class PyMCMod:
         self._mod_info: Optional[ModInfo] = None
         self._manager: Optional['ModManager'] = None
         self._event_handlers: List[tuple] = []  # (event_name, handler)
-
-    @property
-    def mod_info(self) -> ModInfo:
-        return self._mod_info
 
     @property
     def logger(self) -> logging.Logger:
@@ -281,10 +270,6 @@ class ModManager:
         self._mods_dir = mods_dir
 
     # --- Discovery ---
-
-    def scan_mods_directory(self, mods_dir: str) -> List[ModInfo]:
-        """Compatibility method: discover mods from a directory."""
-        return self.discover_mods(mods_dir)
 
     def discover_mods(self, mods_dir: Optional[str] = None) -> List[ModInfo]:
         """
@@ -482,35 +467,13 @@ class ModManager:
 
     # --- Query ---
 
-    def is_mod_loaded(self, mod_id: str) -> bool:
-        return mod_id in self._mods and self._mods[mod_id].is_active
-
     def get_mod(self, mod_id: str) -> Optional[PyMCMod]:
         instance = self._mods.get(mod_id)
         return instance.mod_obj if instance else None
 
-    def get_mod_state(self, mod_id: str) -> Optional[ModState]:
-        instance = self._mods.get(mod_id)
-        return instance.state if instance else None
-
-    def get_loaded_mods(self) -> List[str]:
-        return [mid for mid, inst in self._mods.items() if inst.is_active]
-
     @property
     def mod_count(self) -> int:
         return len([i for i in self._mods.values() if i.is_active])
-
-    @property
-    def registered_blocks(self) -> Dict[str, Dict]:
-        return dict(self._blocks)
-
-    @property
-    def registered_items(self) -> Dict[str, Dict]:
-        return dict(self._items)
-
-    @property
-    def registered_biomes(self) -> Dict[str, Dict]:
-        return dict(self._biomes)
 
     # --- Internal: Registration callbacks ---
 

@@ -15,16 +15,12 @@
   - build_player_info_update / build_player_info_remove
 """
 
-import asyncio
-import json
 import logging
-import math
 
 from protocol.data_types import (
     write_varint, write_string, write_boolean,
     write_uuid,
 )
-from protocol.nbt import encode_nbt
 from network.connection import Connection
 
 logger = logging.getLogger("PyMC.聊天")
@@ -84,11 +80,6 @@ async def send_system_message(conn: Connection, text, overlay: bool = False):
         pid = get_clientbound_packet(conn.protocol_version, "system_chat") or 0x6C
         await conn.send_packet(
             pid, build_system_message_payload(text, overlay, conn.protocol_version))
-
-
-async def send_action_bar(conn: Connection, text):
-    """在动作栏 (物品栏上方) 显示一条消息。"""
-    await send_system_message(conn, text, overlay=True)
 
 
 MAX_CHAT_LENGTH = 256

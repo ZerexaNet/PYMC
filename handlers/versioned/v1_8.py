@@ -25,9 +25,8 @@ import struct
 import math
 import json
 from protocol.data_types import (
-    write_varint, write_string, write_boolean, write_int, write_long,
-    write_byte, write_ubyte, write_float, write_double,
-    write_uuid, write_identifier, write_position, write_short,
+    write_varint, write_string, write_boolean, write_int, write_byte,
+    write_ubyte,
 )
 from handlers.versioned.base import VersionHandler
 
@@ -120,11 +119,9 @@ class VersionHandlerV1_8(VersionHandler):
 
     async def send_set_center_chunk(self, conn, chunk_x, chunk_z):
         """1.8 doesn't have Set Center Chunk - no-op."""
-        pass
 
     async def send_set_chunk_cache_radius(self, conn, view_distance):
         """1.8 doesn't have Set Chunk Cache Radius - no-op."""
-        pass
 
     async def send_remove_entities(self, conn, entity_ids):
         """Send Destroy Entities packet for 1.8."""

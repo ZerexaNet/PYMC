@@ -26,15 +26,14 @@ from world.biomes import BiomeSampler
 from world.entities import EntityManager
 from world.redstone import RedstoneEngine
 from world.vanilla_terrain import VanillaTerrainGenerator
-from world.inventory import PlayerInventory
-from world.block_behavior import ContainerManager, container_manager
+from world.block_behavior import container_manager
 from world.fluids import FluidSystem
 from watchdog import WatchdogManager, PlayerNetworkOptimizer
 from .managers.gamerule import GameruleManager
 from .managers.time import TimeManager
 from .managers.scheduler import TickScheduler
 from .managers.metrics import ServerMetrics
-from .managers.protocol import PacketCache, PacketBatcher
+from .managers.protocol import PacketCache
 
 logger = logging.getLogger("PyMC.服务器")
 mc_logger = logging.getLogger("minecraft.server")
@@ -303,13 +302,6 @@ class MinecraftServer:
             if conn.username.lower() == target:
                 return conn
         return None
-
-    def broadcast_packet(self, packet_id: int, payload: bytes,
-                         exclude: Connection = None):
-        """向所有在线玩家广播数据包。"""
-        for conn in self.get_online_players():
-            if conn != exclude:
-                asyncio.ensure_future(conn.send_packet(packet_id, payload))
 
     def broadcast_system_message(self, text, exclude: Connection = None,
                                  log: bool = False):
@@ -1465,7 +1457,6 @@ class MinecraftServer:
             _add_player_experience,
             _damage_player,
             _send_collect_entity,
-            send_system_message,
         )
 
         players = self.get_online_players()

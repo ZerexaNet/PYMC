@@ -20,9 +20,6 @@
 import logging
 from typing import Optional
 
-from protocol.data_types import (
-    write_varint, write_boolean, write_short, write_byte,
-)
 
 logger = logging.getLogger("PyMC.玩家状态")
 
@@ -30,12 +27,8 @@ logger = logging.getLogger("PyMC.玩家状态")
 from world.inventory import (
     ItemStack,
     PlayerInventory as NewPlayerInventory,
-    encode_slot_entry,
     build_set_container_content_payload as new_build_container_payload,
     build_set_slot_payload as new_build_slot_payload,
-    build_open_screen_payload,
-    item_name_to_protocol_id,
-    protocol_id_to_item_name,
     send_inventory_sync as new_send_inventory_sync,
     send_slot_update as new_send_slot_update,
     send_hotbar_update as new_send_hotbar_update,
@@ -177,10 +170,6 @@ class PlayerInventory:
             return {"item": item.item_id, "count": item.count}
         return None
 
-    def clear_slot(self, slot: int):
-        """清除指定槽位。"""
-        self._inv.set_slot(slot, None)
-
     def add_item(self, item_name: str, count: int = 1) -> int:
         """
         尝试添加物品到物品栏，返回无法添加的数量。
@@ -232,37 +221,7 @@ class PlayerInventory:
 
     # --- New API access ---
 
-    def get_new_inventory(self) -> NewPlayerInventory:
-        """Get the underlying new ItemStack-based inventory."""
-        return self._inv
-
-    def get_held_item_stack(self) -> ItemStack | None:
-        """Get the currently held item as an ItemStack."""
-        return self._inv.get_held_item_from_slot(self._selected_slot)
-
-
 # --- Legacy encoding functions (kept for backward compat) ---
-
-def _encode_slot_entry(item: Optional[tuple[str, int]]) -> bytes:
-    """
-    编码单个物品栏槽位 (legacy tuple format).
-    新代码应使用 world.inventory.encode_slot_entry
-    """
-    if item is None:
-        return write_boolean(False)
-
-    item_name, count = item
-    stack = ItemStack(item_name, count)
-    return encode_slot_entry(stack)
-
-
-def _item_name_to_protocol_id(item_name: str) -> int:
-    """
-    将物品命名空间 ID 转换为协议数值 ID。
-    新代码应使用 world.inventory.item_name_to_protocol_id
-    """
-    return item_name_to_protocol_id(item_name)
-
 
 def build_set_container_content_payload(
     window_id: int,

@@ -22,17 +22,14 @@
 from commands.framework import Command, CommandContext, SUCCESS, FAILURE
 
 # --- Consolidated command module imports ---
-from commands.vanilla.core import register as register_core
 from commands.vanilla.player import register as register_player
 from commands.vanilla.world import register as register_world
 from commands.vanilla.entity import register as register_entity
-from commands.vanilla.server import register as register_server
 from commands.vanilla.execute_cmd import register as register_execute_cmd
 from commands.vanilla.display import register as register_display
 from commands.vanilla.world_mgmt import register as register_world_mgmt
 
 # --- Additional standalone command modules ---
-from commands.vanilla.gamerule import register as register_gamerule
 from commands.vanilla.particle import register as register_particle
 from commands.vanilla.playsound import register as register_playsound
 from commands.vanilla.data import register as register_data
@@ -51,7 +48,6 @@ def register_all(manager):
 
     # ===== Core commands =====
     # help, list, stop, reload, save-all, save-on, save-off, save-status
-    register_core(manager)
     
     # ===== Player commands =====
     # tp, gamemode, give, clear, kill, xp, effect, enchant, damage
@@ -69,7 +65,6 @@ def register_all(manager):
     # ===== Server administration commands =====
     # kick, ban, ban-ip, pardon, pardon-ip, banlist, op, deop,
     # whitelist, say, me, msg
-    register_server(manager)
     
     # ===== Execute command =====
     # execute (with chained subcommands: as, at, positioned, rotated, align,
@@ -87,7 +82,6 @@ def register_all(manager):
 
     # ===== Additional commands =====
     # gamerule, particle, playsound, data, item
-    register_gamerule(manager)
     register_particle(manager)
     register_playsound(manager)
     register_data(manager)

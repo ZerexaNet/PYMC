@@ -33,7 +33,6 @@ from world.chunk import (
     build_flat_chunk_column, build_heightmap_data,
 )
 from world.terrain import TerrainGenerator
-from world.blocks import AIR, WATER
 
 logger = logging.getLogger("PyMC.区块")
 
@@ -58,7 +57,6 @@ async def _send_chunk_data(conn: Connection, chunk_x: int, chunk_z: int):
     发送 Chunk Data and Update Light 数据包 (0x27)。
     (平坦世界版本)
     """
-    from protocol.data_types import write_varint as _wv
     payload = bytearray()
 
     # Chunk X, Z (Int)

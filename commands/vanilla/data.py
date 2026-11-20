@@ -14,7 +14,7 @@ logger = logging.getLogger("PyMC.数据")
 
 def register(manager):
     async def _execute(ctx: CommandContext) -> int:
-        from network.connection import Connection
+        pass
 
         tokens = ctx.arguments.get("_raw_tokens", [])
         args = tokens[1:] if len(tokens) > 1 else []

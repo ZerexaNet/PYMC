@@ -12,7 +12,6 @@ import logging
 import math
 import os
 import random
-from typing import Any
 
 from commands.framework import Command, CommandContext, SUCCESS, FAILURE
 from commands.selector import resolve_selector
@@ -40,10 +39,6 @@ _world_border = {
     "warning_blocks": 5,
     "warning_time": 15,
 }
-
-
-def get_world_border() -> dict:
-    return _world_border
 
 
 # ============================================================

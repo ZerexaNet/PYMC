@@ -180,13 +180,6 @@ class PluginInfo:
     package_path: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
 
-    def has_hard_dep(self, plugin_id: str) -> bool:
-        return plugin_id in self.depend
-
-    def has_soft_dep(self, plugin_id: str) -> bool:
-        return plugin_id in self.softdepend
-
-
 # ===========================================================
 # PyMCServer - Server interface available to plugins
 # ===========================================================
@@ -231,10 +224,6 @@ class PyMCServer:
     def get_tps(self) -> float:
         """Get current server TPS (ticks per second). 20.0 = ideal."""
         return self._tps
-
-    def get_world(self, name: str) -> Optional[Dict]:
-        """Get world info by name."""
-        return self._worlds.get(name)
 
     def get_world_names(self) -> List[str]:
         """Get names of loaded worlds."""
@@ -310,10 +299,6 @@ class PyMCPlugin:
         self._event_handlers: List[tuple] = []  # (event_name, handler, priority)
         self._commands: Dict[str, Callable] = {}
 
-    @property
-    def plugin_info(self) -> PluginInfo:
-        return self._plugin_info
-
     # --- Lifecycle methods (override in subclass) ---
 
     def on_load(self):
@@ -340,10 +325,6 @@ class PyMCPlugin:
             return logging.getLogger(f"pymc.plugins.{self._plugin_info.plugin_id}")
         return logger
 
-    def get_config(self) -> Dict[str, Any]:
-        """Get this plugin's configuration."""
-        return self._config
-
     # --- Registration API ---
 
     def register_command(self, name: str, handler: Callable[[str], None]):
@@ -362,12 +343,6 @@ class PyMCPlugin:
             self._manager._register_event_handler(
                 event_name, handler, priority, self._plugin_info.plugin_id
             )
-
-    def register_listener(self, event_name: str,
-                          handler: Callable[[PluginEvent], None]):
-        """Convenience: register at NORMAL priority."""
-        self.register_event_handler(event_name, handler, EventPriority.NORMAL)
-
 
 # ===========================================================
 # Plugin Instance (internal)
@@ -465,12 +440,6 @@ class PluginManager:
         return discovered
 
     # --- Loading ---
-
-    def load_plugins_from_dir(self, plugins_dir: str) -> int:
-        """Compatibility method: discover + load all from a directory.
-        Returns count of plugins loaded."""
-        self.discover_plugins(plugins_dir)
-        return self.load_all()
 
     def load_all(self) -> int:
         """Load all discovered plugins in dependency order. Returns count loaded."""
@@ -661,19 +630,9 @@ class PluginManager:
 
     # --- Query ---
 
-    def is_plugin_loaded(self, plugin_id: str) -> bool:
-        return plugin_id in self._plugins and self._plugins[plugin_id].is_active
-
     def get_plugin(self, plugin_id: str) -> Optional[PyMCPlugin]:
         instance = self._plugins.get(plugin_id)
         return instance.plugin_obj if instance else None
-
-    def get_plugin_state(self, plugin_id: str) -> Optional[PluginState]:
-        instance = self._plugins.get(plugin_id)
-        return instance.state if instance else None
-
-    def get_loaded_plugins(self) -> List[str]:
-        return [pid for pid, inst in self._plugins.items() if inst.is_active]
 
     @property
     def plugin_count(self) -> int:

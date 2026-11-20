@@ -18,17 +18,15 @@ import logging
 
 from network.connection import Connection
 from world.blocks import (
-    AIR, WATER, LAVA, GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL,
-    MOSS_BLOCK, SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY, STONE,
-    FIRE, SOUL_FIRE, CACTUS, WATER_CAULDRON, LAVA_CAULDRON,
-    MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH,
-    POWDER_SNOW, POWDER_SNOW_CAULDRON, SNOW,
-    SHORT_GRASS, TALL_GRASS, FERN, LARGE_FERN, DEAD_BUSH,
-    SEAGRASS, TALL_SEAGRASS, KELP, KELP_PLANT, SUGAR_CANE, BAMBOO,
-    OAK_LEAVES, SPRUCE_LEAVES, BIRCH_LEAVES, JUNGLE_LEAVES,
-    ACACIA_LEAVES, CHERRY_LEAVES, DARK_OAK_LEAVES, MANGROVE_LEAVES,
-    OAK_LOG, SPRUCE_LOG, BIRCH_LOG, JUNGLE_LOG, ACACIA_LOG,
-    CHERRY_LOG, DARK_OAK_LOG, MANGROVE_LOG,
+    AIR, WATER, LAVA, FIRE, SOUL_FIRE, CACTUS, WATER_CAULDRON,
+    LAVA_CAULDRON, MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH, POWDER_SNOW, POWDER_SNOW_CAULDRON,
+    SNOW, SHORT_GRASS, TALL_GRASS, FERN, LARGE_FERN,
+    DEAD_BUSH, SEAGRASS, TALL_SEAGRASS, KELP,
+    KELP_PLANT, SUGAR_CANE, BAMBOO,
+    OAK_LEAVES, SPRUCE_LEAVES, BIRCH_LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES,
+    CHERRY_LEAVES, DARK_OAK_LEAVES, MANGROVE_LEAVES, OAK_LOG, SPRUCE_LOG, BIRCH_LOG,
+    JUNGLE_LOG, ACACIA_LOG, CHERRY_LOG, DARK_OAK_LOG,
+    MANGROVE_LOG,
 )
 
 logger = logging.getLogger("PyMC.出生点")
@@ -118,23 +116,6 @@ def _is_spawn_ground_block(block_id: int | None) -> bool:
         and block_id not in SPAWN_CLEAR_BLOCKS
         and block_id not in SPAWN_CANOPY_BLOCKS
     )
-
-
-def _spawn_candidate_from_column(chunk_blocks, local_x: int, local_z: int):
-    for y_index in range(len(chunk_blocks) - 3, 0, -1):
-        ground = chunk_blocks[y_index][local_z][local_x]
-        foot = chunk_blocks[y_index + 1][local_z][local_x]
-        head = chunk_blocks[y_index + 2][local_z][local_x]
-        if not _is_spawn_ground_block(ground):
-            continue
-        if not _is_spawn_clear_block(foot) or not _is_spawn_clear_block(head):
-            continue
-        return {
-            "block_id": ground,
-            "world_y": y_index - 64,
-            "spawn_y": y_index + 1 - 64,
-        }
-    return None
 
 
 def _resolve_spawn_location(server, block_x: int, block_z: int) -> tuple[int, int, int]:

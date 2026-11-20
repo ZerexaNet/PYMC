@@ -464,6 +464,7 @@ async def _handle_close_container(conn: Connection, payload: bytes, server=None)
             container_manager.remove_viewer(*part, conn.entity_id)
 
     from world.enchanting_window import return_inputs
+    from world.inventory_interactions import _drop_stack
     for stack in return_inputs(conn, window_id):
         await _drop_stack(conn, server, stack, stack.count)
     conn._open_entity_container = None

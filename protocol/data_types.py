@@ -86,26 +86,6 @@ def write_varlong(value: int) -> bytes:
     return bytes(result)
 
 
-def read_varlong(data: bytes, offset: int = 0) -> tuple[int, int]:
-    """从字节流中读取 VarLong。返回 (值, 新偏移量)。"""
-    result = 0
-    num_read = 0
-    while True:
-        if offset >= len(data):
-            raise ValueError("VarLong 数据不足")
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << (7 * num_read)
-        num_read += 1
-        if num_read > 10:
-            raise ValueError("VarLong 超过最大长度 (10 字节)")
-        if (byte & 0x80) == 0:
-            break
-    if result >= (1 << 63):
-        result -= (1 << 64)
-    return result, offset
-
-
 # --------------------------------------------------
 # 基础类型编码 (大端序)
 # --------------------------------------------------
@@ -150,11 +130,6 @@ def read_short(data: bytes, offset: int = 0) -> tuple[int, int]:
     return struct.unpack_from('>h', data, offset)[0], offset + 2
 
 
-def write_ushort(value: int) -> bytes:
-    """编码无符号 Short (16位)。"""
-    return struct.pack('>H', value)
-
-
 def read_ushort(data: bytes, offset: int = 0) -> tuple[int, int]:
     """读取无符号 Short。"""
     return struct.unpack_from('>H', data, offset)[0], offset + 2
@@ -173,21 +148,6 @@ def read_int(data: bytes, offset: int = 0) -> tuple[int, int]:
 def write_long(value: int) -> bytes:
     """编码有符号 Long (64位)。"""
     return struct.pack('>q', value)
-
-
-def read_long(data: bytes, offset: int = 0) -> tuple[int, int]:
-    """读取有符号 Long。"""
-    return struct.unpack_from('>q', data, offset)[0], offset + 8
-
-
-def write_ulong(value: int) -> bytes:
-    """编码无符号 Long (64位)。"""
-    return struct.pack('>Q', value)
-
-
-def read_ulong(data: bytes, offset: int = 0) -> tuple[int, int]:
-    """读取无符号 Long。"""
-    return struct.unpack_from('>Q', data, offset)[0], offset + 8
 
 
 def write_float(value: float) -> bytes:
@@ -290,27 +250,9 @@ def write_angle(degrees: float) -> bytes:
     return struct.pack('>B', int((degrees / 360.0) * 256) & 0xFF)
 
 
-def read_angle(data: bytes, offset: int = 0) -> tuple[float, int]:
-    """读取 Angle，返回角度值。"""
-    raw = data[offset]
-    return (raw / 256.0) * 360.0, offset + 1
-
-
 # --------------------------------------------------
 # 字节数组
 # --------------------------------------------------
-
-def write_byte_array(data_bytes: bytes) -> bytes:
-    """编码字节数组 (VarInt 长度前缀 + 数据)。"""
-    return write_varint(len(data_bytes)) + data_bytes
-
-
-def read_byte_array(data: bytes, offset: int = 0) -> tuple[bytes, int]:
-    """读取字节数组。"""
-    length, offset = read_varint(data, offset)
-    end = offset + length
-    return data[offset:end], end
-
 
 # --------------------------------------------------
 # 标识符 (Identifier / Namespace:Path)
@@ -326,6 +268,3 @@ def write_identifier(namespace: str, path: str = None) -> bytes:
     return write_string(f"{namespace}:{path}")
 
 
-def read_identifier(data: bytes, offset: int = 0) -> tuple[str, int]:
-    """读取标识符。"""
-    return read_string(data, offset)

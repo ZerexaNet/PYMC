@@ -292,9 +292,6 @@ class PermissionManager:
     def list_groups(self) -> dict:
         return deepcopy(self.data["groups"])
 
-    def list_users(self) -> dict:
-        return deepcopy(self.data["users"])
-
     def get_user_record(self, username: str) -> dict:
         key = username.lower()
         users = self.data["users"]
@@ -313,15 +310,6 @@ class PermissionManager:
         record = self.get_user_record(username)
         record["name"] = username
         record["group"] = group
-        self.save()
-
-    def set_group(self, name: str, permissions: list[str], inherits: list[str] | None = None):
-        if name == "default" and inherits:
-            logger.warning("default 组通常不建议继承其他组")
-        self.data["groups"][name] = {
-            "inherits": inherits or [],
-            "permissions": sorted(set(permissions)),
-        }
         self.save()
 
     # ------------------------------------------------------------------
@@ -452,9 +440,6 @@ class PermissionManager:
         self.save()
         return True
 
-    def get_whitelist(self) -> dict:
-        return deepcopy(self.data["whitelist"])
-
     def check_login(self, username: str, ip: str):
         """
         登录检查。允许时返回 None, 否则返回断开原因 (文本组件),
@@ -477,23 +462,6 @@ class PermissionManager:
             return translate("multiplayer.disconnect.not_whitelisted")
 
         return None
-
-    def check_login_allowed(self, username: str, ip: str) -> str | None:
-        """兼容旧接口: 返回纯文本原因。"""
-        reason = self.check_login(username, ip)
-        if reason is None:
-            return None
-        from protocol.text import plain_text
-        return plain_text(reason)
-
-    def get_web_payload(self) -> dict:
-        return {
-            "groups": self.list_groups(),
-            "users": self.list_users(),
-            "ops": list(self.data["ops"]),
-            "bans": self.get_banlist(),
-            "whitelist": self.get_whitelist(),
-        }
 
     def _collect_group_permissions(self, group_name: str, seen: set[str] | None = None) -> set[str]:
         seen = seen or set()

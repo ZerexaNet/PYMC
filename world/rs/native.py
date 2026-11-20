@@ -23,7 +23,7 @@ from itertools import chain
 from pathlib import Path
 
 from . import RedstoneEngine, _holds_placeable_item, registry
-from .core import DIRECTIONS, name_of
+from .core import name_of
 
 logger = logging.getLogger("PyMC.红石")
 
@@ -533,9 +533,6 @@ class NativeRedstoneEngine(RedstoneEngine):
 
     def invalidate_chunk(self, cx: int, cz: int):
         self.lib.vrs_invalidate_chunk(int(cx), int(cz))
-
-    def invalidate_all(self):
-        self.lib.vrs_invalidate_all()
 
     def on_container_changed(self, x: int, y: int, z: int):
         self.lib.vrs_container_changed(int(x), int(y), int(z))

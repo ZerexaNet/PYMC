@@ -6,7 +6,7 @@
 
 import json
 import logging
-from protocol.data_types import write_string, read_long, write_long
+from protocol.data_types import write_string
 from protocol.versions import get_version_name, NATIVE_PROTOCOL_VERSION
 from network.connection import Connection
 

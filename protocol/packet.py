@@ -7,48 +7,6 @@ import zlib
 from .data_types import write_varint, read_varint, read_varint_async
 
 
-class PacketBuffer:
-    """
-    数据包缓冲区，用于方便地构建和读取数据包内容。
-    """
-
-    def __init__(self, data: bytes = b''):
-        self._data = bytearray(data)
-        self._offset = 0
-
-    @property
-    def data(self) -> bytes:
-        """获取缓冲区中的所有数据。"""
-        return bytes(self._data)
-
-    @property
-    def remaining(self) -> int:
-        """剩余可读字节数。"""
-        return len(self._data) - self._offset
-
-    def write(self, data: bytes):
-        """向缓冲区写入原始字节。"""
-        self._data.extend(data)
-
-    def read(self, length: int) -> bytes:
-        """从缓冲区读取指定长度的字节。"""
-        if self._offset + length > len(self._data):
-            raise ValueError(f"缓冲区数据不足: 需要 {length} 字节, 剩余 {self.remaining} 字节")
-        result = bytes(self._data[self._offset:self._offset + length])
-        self._offset += length
-        return result
-
-    def read_all(self) -> bytes:
-        """读取剩余所有字节。"""
-        result = bytes(self._data[self._offset:])
-        self._offset = len(self._data)
-        return result
-
-    def reset(self):
-        """重置读取位置到开头。"""
-        self._offset = 0
-
-
 def pack_packet(packet_id: int, payload: bytes, compression_threshold: int = -1) -> bytes:
     """
     将数据包 ID 和负载打包为可发送的帧。

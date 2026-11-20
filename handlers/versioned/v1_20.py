@@ -11,13 +11,10 @@ Uses the same 384-height world format.
 """
 
 import logging
-import struct
 from protocol.data_types import (
-    write_varint, write_string, write_boolean, write_int, write_long,
-    write_byte, write_ubyte, write_float, write_double,
-    write_uuid, write_identifier, write_position, write_angle,
+    write_varint, write_boolean, write_int, write_long, write_byte,
+    write_ubyte, write_identifier,
 )
-from protocol.nbt import encode_nbt, NbtLong, NbtLongArray
 from handlers.versioned.base import VersionHandler
 
 logger = logging.getLogger("PyMC.版本.1_20")
@@ -114,46 +111,4 @@ class VersionHandlerV1_20(VersionHandler):
 
         await conn.send_packet(pid, bytes(payload))
 
-    def build_chunk_packet(self, chunk_x, chunk_z, chunk_data, heightmap_longs,
-                           chunk_blocks=None, sky_light_arrays=None,
-                           block_light_arrays=None):
-        """Build Chunk Data and Update Light packet for 1.20.1."""
-        payload = bytearray()
-
-        # Chunk X, Z (Int)
-        payload.extend(write_int(chunk_x))
-        payload.extend(write_int(chunk_z))
-
-        # Heightmaps (NBT)
-        payload.extend(self.build_heightmap_nbt(heightmap_longs, heightmap_longs))
-
-        # Chunk Data
-        payload.extend(write_varint(len(chunk_data)))
-        payload.extend(chunk_data)
-
-        # Block Entities (VarInt count = 0)
-        payload.extend(write_varint(0))
-
-        # Light data - simplified full bright
-        all_bits = (1 << 26) - 1
-        payload.extend(write_varint(1))
-        payload.extend(write_long(all_bits))
-        payload.extend(write_varint(1))
-        payload.extend(write_long(all_bits))
-        payload.extend(write_varint(0))
-        payload.extend(write_varint(0))
-
-        sky_light_section = bytes([0xFF] * 2048)
-        light_section_count = 26
-        payload.extend(write_varint(light_section_count))
-        for _ in range(light_section_count):
-            payload.extend(write_varint(2048))
-            payload.extend(sky_light_section)
-
-        block_light_section = bytes([0x00] * 2048)
-        payload.extend(write_varint(light_section_count))
-        for _ in range(light_section_count):
-            payload.extend(write_varint(2048))
-            payload.extend(block_light_section)
-
-        return bytes(payload)
+    build_chunk_packet = VersionHandler.build_chunk_packet_full_light

@@ -11,7 +11,6 @@ import json
 import logging
 import math
 import re
-from typing import Any
 
 logger = logging.getLogger("PyMC.参数")
 
@@ -75,15 +74,6 @@ GAMEMODE_MAP = {
 GAMEMODE_NAMES = {0: "survival", 1: "creative", 2: "adventure", 3: "spectator"}
 
 
-def parse_gamemode(raw: str) -> tuple[int, str]:
-    """Parse a gamemode string. Returns (mode_int, mode_name)."""
-    raw = raw.strip().lower()
-    if raw not in GAMEMODE_MAP:
-        raise ValueError(f"Invalid gamemode: {raw}. Expected: survival, creative, adventure, spectator")
-    mode = GAMEMODE_MAP[raw]
-    return (mode, GAMEMODE_NAMES[mode])
-
-
 # --- Difficulty argument ---
 
 DIFFICULTY_MAP = {
@@ -94,42 +84,7 @@ DIFFICULTY_MAP = {
 }
 
 
-def parse_difficulty(raw: str) -> tuple[int, str]:
-    """Parse a difficulty string. Returns (difficulty_int, difficulty_name)."""
-    raw = raw.strip().lower()
-    if raw not in DIFFICULTY_MAP:
-        raise ValueError(f"Invalid difficulty: {raw}. Expected: peaceful, easy, normal, hard")
-    diff = DIFFICULTY_MAP[raw]
-    names = {0: "peaceful", 1: "easy", 2: "normal", 3: "hard"}
-    return (diff, names[diff])
-
-
 # --- Block state string parsing ---
-
-def parse_block_state_string(raw: str) -> tuple[str, dict[str, str]]:
-    """
-    Parse a block state string like 'minecraft:stone[half=top,waterlogged=true]'.
-
-    Returns:
-        (block_name, properties_dict)
-    """
-    raw = raw.strip()
-    if ":" not in raw:
-        raw = f"minecraft:{raw}"
-
-    # Check for properties in brackets
-    if "[" in raw:
-        base = raw[:raw.index("[")]
-        props_str = raw[raw.index("[") + 1:raw.rindex("]")]
-        properties = {}
-        if props_str.strip():
-            for pair in props_str.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    properties[k.strip()] = v.strip()
-        return (base, properties)
-    return (raw, {})
-
 
 # --- Coordinate parsing with relative support ---
 
@@ -190,33 +145,6 @@ def parse_int_coordinates(tokens: list[str], start: int, base_x: float = 0.0, ba
 
 # --- Item stack parsing ---
 
-def parse_item_stack(raw: str) -> dict:
-    """
-    Parse an item stack string like 'minecraft:diamond_sword{count:1}'.
-
-    Returns:
-        dict with 'item' and 'count' keys
-    """
-    raw = raw.strip()
-    if ":" not in raw:
-        raw = f"minecraft:{raw}"
-
-    count = 1
-    item_name = raw
-
-    # Check for NBT-like count specification
-    if "{" in raw:
-        item_name = raw[:raw.index("{")]
-        nbt_str = raw[raw.index("{") + 1:raw.rindex("}")]
-        try:
-            nbt = json.loads("{" + nbt_str + "}")
-            count = nbt.get("count", 1)
-        except json.JSONDecodeError:
-            pass
-
-    return {"item": item_name, "count": count}
-
-
 # --- Effect parsing ---
 
 EFFECT_NAMES = {
@@ -276,14 +204,6 @@ def parse_enchantment_name(raw: str) -> str:
 # --- Weather parsing ---
 
 WEATHER_TYPES = {"clear", "rain", "thunder"}
-
-
-def parse_weather(raw: str) -> str:
-    """Parse a weather type."""
-    raw = raw.strip().lower()
-    if raw not in WEATHER_TYPES:
-        raise ValueError(f"Invalid weather: {raw}. Expected: clear, rain, thunder")
-    return raw
 
 
 # --- Text component parsing ---
@@ -473,13 +393,6 @@ CLONE_MODES = {"normal", "force", "move"}
 FILL_MODES = {"replace", "destroy", "keep", "hollow", "outline"}
 
 
-def parse_mask_mode(raw: str) -> str:
-    raw = raw.strip().lower()
-    if raw not in MASK_MODES:
-        raise ValueError(f"Invalid mask mode: {raw}")
-    return raw
-
-
 def parse_clone_mode(raw: str) -> str:
     raw = raw.strip().lower()
     if raw not in CLONE_MODES:
@@ -503,78 +416,13 @@ VALID_COLORS = {
 }
 
 
-def parse_color(raw: str) -> str:
-    """Parse a Minecraft color name."""
-    raw = raw.strip().lower()
-    if raw.startswith("minecraft:"):
-        raw = raw[10:]
-    if raw not in VALID_COLORS:
-        raise ValueError(f"Invalid color: {raw}. Expected one of: {', '.join(sorted(VALID_COLORS))}")
-    return raw
-
-
 # --- Identifier parsing ---
-
-def parse_identifier(raw: str, default_namespace: str = "minecraft") -> str:
-    """Parse a namespaced identifier. Adds default namespace if missing."""
-    raw = raw.strip()
-    if ":" not in raw:
-        return f"{default_namespace}:{raw}"
-    return raw
-
 
 # --- Angle parsing ---
 
-def parse_angle(raw: str) -> tuple[float, bool]:
-    """Parse an angle with optional relative (~) notation.
-    
-    Returns:
-        (value, is_relative)
-    """
-    raw = raw.strip()
-    if raw.startswith("~"):
-        offset = float(raw[1:]) if len(raw) > 1 else 0.0
-        return (offset, True)
-    return (float(raw), False)
-
-
-def resolve_angle(parsed: tuple[float, bool], base: float = 0.0) -> float:
-    """Resolve a parsed angle to an absolute value."""
-    value, is_relative = parsed
-    if is_relative:
-        return base + value
-    return value
-
-
 # --- Rotation parsing ---
 
-def parse_rotation(tokens: list[str], start: int, base_yaw: float = 0.0, base_pitch: float = 0.0) -> tuple[float, float] | None:
-    """Parse yaw and pitch rotation from tokens.
-    
-    Returns:
-        (yaw, pitch) absolute values, or None on failure
-    """
-    if start + 1 >= len(tokens):
-        return None
-    try:
-        yaw_parsed = parse_angle(tokens[start])
-        pitch_parsed = parse_angle(tokens[start + 1])
-        yaw = resolve_angle(yaw_parsed, base_yaw)
-        pitch = resolve_angle(pitch_parsed, base_pitch)
-        return (yaw, pitch)
-    except (ValueError, IndexError):
-        return None
-
-
 # --- Score holder parsing ---
-
-def parse_score_holder(raw: str) -> str:
-    """Parse a score holder (player name or * for all)."""
-    raw = raw.strip()
-    if raw == "*":
-        return "*"
-    return raw
-
 
 # --- Entity type parsing ---
 
@@ -591,14 +439,6 @@ MOB_TYPES = {
     "allay", "warden", "camel", "sniffer", "armadillo",
     "bogged", "breeze", "wind_charger",
 }
-
-
-def parse_entity_type(raw: str) -> str:
-    """Parse and normalize an entity type identifier."""
-    raw = raw.strip().lower().replace(" ", "_")
-    if ":" in raw:
-        return raw
-    return f"minecraft:{raw}"
 
 
 # --- Attribute parsing ---
@@ -618,16 +458,6 @@ ATTRIBUTE_NAMES = {
 }
 
 
-def parse_attribute_name(raw: str) -> str:
-    """Parse and normalize an attribute name."""
-    raw = raw.strip().lower().replace(" ", "_")
-    if not raw.startswith("generic.") and not raw.startswith("minecraft:"):
-        raw = f"generic.{raw}"
-    if ":" not in raw:
-        raw = f"minecraft:{raw}"
-    return raw
-
-
 # --- Bossbar parsing ---
 
 BOSSBAR_COLORS = {"pink", "blue", "red", "green", "yellow", "purple", "white"}
@@ -636,33 +466,9 @@ BOSSBAR_STYLES = {
 }
 
 
-def parse_bossbar_color(raw: str) -> str:
-    """Parse a bossbar color."""
-    raw = raw.strip().lower()
-    if raw not in BOSSBAR_COLORS:
-        raise ValueError(f"Invalid bossbar color: {raw}. Expected: {', '.join(BOSSBAR_COLORS)}")
-    return raw
-
-
-def parse_bossbar_style(raw: str) -> str:
-    """Parse a bossbar style (overlay)."""
-    raw = raw.strip().lower()
-    if raw not in BOSSBAR_STYLES:
-        raise ValueError(f"Invalid bossbar style: {raw}. Expected: {', '.join(BOSSBAR_STYLES)}")
-    return raw
-
-
 # --- Datapack parsing ---
 
 DATAPACK_ACTIONS = {"enable", "disable", "list"}
-
-
-def parse_datapack_action(raw: str) -> str:
-    """Parse a datapack action."""
-    raw = raw.strip().lower()
-    if raw not in DATAPACK_ACTIONS:
-        raise ValueError(f"Invalid datapack action: {raw}. Expected: {', '.join(DATAPACK_ACTIONS)}")
-    return raw
 
 
 # --- Forceload parsing ---
@@ -670,25 +476,9 @@ def parse_datapack_action(raw: str) -> str:
 FORCELOAD_ACTIONS = {"add", "remove", "query"}
 
 
-def parse_forceload_action(raw: str) -> str:
-    """Parse a forceload action."""
-    raw = raw.strip().lower()
-    if raw not in FORCELOAD_ACTIONS:
-        raise ValueError(f"Invalid forceload action: {raw}. Expected: {', '.join(FORCELOAD_ACTIONS)}")
-    return raw
-
-
 # --- Trigger parsing ---
 
 TRIGGER_ACTIONS = {"enable", "set", "add"}
-
-
-def parse_trigger_action(raw: str) -> str:
-    """Parse a trigger action."""
-    raw = raw.strip().lower()
-    if raw not in TRIGGER_ACTIONS:
-        raise ValueError(f"Invalid trigger action: {raw}")
-    return raw
 
 
 # --- Ride parsing ---
@@ -696,25 +486,9 @@ def parse_trigger_action(raw: str) -> str:
 RIDE_ACTIONS = {"mount", "dismount"}
 
 
-def parse_ride_action(raw: str) -> str:
-    """Parse a ride action."""
-    raw = raw.strip().lower()
-    if raw not in RIDE_ACTIONS:
-        raise ValueError(f"Invalid ride action: {raw}. Expected: mount, dismount")
-    return raw
-
-
 # --- Item command actions ---
 
 ITEM_ACTIONS = {"replace", "modify"}
-
-
-def parse_item_action(raw: str) -> str:
-    """Parse an item command action."""
-    raw = raw.strip().lower()
-    if raw not in ITEM_ACTIONS:
-        raise ValueError(f"Invalid item action: {raw}. Expected: {', '.join(ITEM_ACTIONS)}")
-    return raw
 
 
 # --- Recipe parsing ---
@@ -722,25 +496,9 @@ def parse_item_action(raw: str) -> str:
 RECIPE_ACTIONS = {"give", "take"}
 
 
-def parse_recipe_action(raw: str) -> str:
-    """Parse a recipe action."""
-    raw = raw.strip().lower()
-    if raw not in RECIPE_ACTIONS:
-        raise ValueError(f"Invalid recipe action: {raw}. Expected: give, take")
-    return raw
-
-
 # --- Advancement parsing ---
 
 ADVANCEMENT_ACTIONS = {"grant", "revoke"}
-
-
-def parse_advancement_action(raw: str) -> str:
-    """Parse an advancement action."""
-    raw = raw.strip().lower()
-    if raw not in ADVANCEMENT_ACTIONS:
-        raise ValueError(f"Invalid advancement action: {raw}. Expected: grant, revoke")
-    return raw
 
 
 # --- Schedule parsing ---
@@ -748,38 +506,14 @@ def parse_advancement_action(raw: str) -> str:
 SCHEDULE_ACTIONS = {"function", "clear"}
 
 
-def parse_schedule_action(raw: str) -> str:
-    """Parse a schedule action."""
-    raw = raw.strip().lower()
-    if raw not in SCHEDULE_ACTIONS:
-        raise ValueError(f"Invalid schedule action: {raw}. Expected: function, clear")
-    return raw
-
-
 # --- Place parsing ---
 
 PLACE_TYPES = {"structure", "jigsaw", "template"}
 
 
-def parse_place_type(raw: str) -> str:
-    """Parse a place type."""
-    raw = raw.strip().lower()
-    if raw not in PLACE_TYPES:
-        raise ValueError(f"Invalid place type: {raw}. Expected: {', '.join(PLACE_TYPES)}")
-    return raw
-
-
 # --- Worldborder parsing ---
 
 WORLDBORDER_ACTIONS = {"add", "set", "center", "damage", "get", "set", "warning", "shrink"}
-
-
-def parse_worldborder_action(raw: str) -> str:
-    """Parse a worldborder action."""
-    raw = raw.strip().lower()
-    if raw not in WORLDBORDER_ACTIONS:
-        raise ValueError(f"Invalid worldborder action: {raw}")
-    return raw
 
 
 # --- Data command parsing ---
@@ -788,33 +522,9 @@ DATA_TARGETS = {"block", "entity", "storage"}
 DATA_ACTIONS = {"get", "merge", "modify", "remove"}
 
 
-def parse_data_target(raw: str) -> str:
-    """Parse a data command target."""
-    raw = raw.strip().lower()
-    if raw not in DATA_TARGETS:
-        raise ValueError(f"Invalid data target: {raw}. Expected: {', '.join(DATA_TARGETS)}")
-    return raw
-
-
-def parse_data_action(raw: str) -> str:
-    """Parse a data command action."""
-    raw = raw.strip().lower()
-    if raw not in DATA_ACTIONS:
-        raise ValueError(f"Invalid data action: {raw}. Expected: {', '.join(DATA_ACTIONS)}")
-    return raw
-
-
 # --- Title command parsing ---
 
 TITLE_ACTIONS = {"title", "subtitle", "actionbar", "times", "clear", "reset"}
-
-
-def parse_title_action(raw: str) -> str:
-    """Parse a title command action."""
-    raw = raw.strip().lower()
-    if raw not in TITLE_ACTIONS:
-        raise ValueError(f"Invalid title action: {raw}. Expected: {', '.join(TITLE_ACTIONS)}")
-    return raw
 
 
 # --- Tag command parsing ---
@@ -822,25 +532,9 @@ def parse_title_action(raw: str) -> str:
 TAG_ACTIONS = {"add", "remove", "list"}
 
 
-def parse_tag_action(raw: str) -> str:
-    """Parse a tag command action."""
-    raw = raw.strip().lower()
-    if raw not in TAG_ACTIONS:
-        raise ValueError(f"Invalid tag action: {raw}. Expected: {', '.join(TAG_ACTIONS)}")
-    return raw
-
-
 # --- Team command parsing ---
 
 TEAM_ACTIONS = {"add", "remove", "join", "leave", "list", "modify", "empty"}
-
-
-def parse_team_action(raw: str) -> str:
-    """Parse a team command action."""
-    raw = raw.strip().lower()
-    if raw not in TEAM_ACTIONS:
-        raise ValueError(f"Invalid team action: {raw}. Expected: {', '.join(TEAM_ACTIONS)}")
-    return raw
 
 
 # --- Gamerule parsing ---
@@ -875,9 +569,3 @@ INTEGER_GAMERULES = {
 }
 
 
-def parse_gamerule_name(raw: str) -> str:
-    """Parse a gamerule name."""
-    raw = raw.strip().lower().replace(" ", "")
-    if raw not in GAMERULE_NAMES:
-        raise ValueError(f"Unknown gamerule: {raw}")
-    return raw

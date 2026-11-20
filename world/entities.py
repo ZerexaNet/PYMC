@@ -148,28 +148,6 @@ class Entity:
         dz = self.z - z
         return dx * dx + dy * dy + dz * dz
 
-    def as_dict(self) -> dict:
-        return {
-            "entity_id": self.entity_id,
-            "uuid": str(self.uuid_value),
-            "kind": self.kind,
-            "x": self.x,
-            "y": self.y,
-            "z": self.z,
-            "yaw": self.yaw,
-            "pitch": self.pitch,
-            "vx": self.vx,
-            "vy": self.vy,
-            "vz": self.vz,
-            "on_ground": self.on_ground,
-            "alive": self.alive,
-            "age_ticks": self.age_ticks,
-            "persistent": self.persistent,
-            "custom_name": self.custom_name,
-            "metadata": dict(self.metadata),
-        }
-
-
 @dataclass
 class ItemEntity(Entity):
     item_name: str = "minecraft:stone"

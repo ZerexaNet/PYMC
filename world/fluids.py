@@ -28,12 +28,9 @@ Dimension-aware:
 """
 
 import logging
-from collections import deque
-from typing import Optional
 
 from .blocks import (
     AIR, WATER, LAVA, STONE, COBBLESTONE, OBSIDIAN,
-    BEDROCK,
 )
 from .chunk_io import STATE_ID_TO_BLOCK, BLOCK_KEY_TO_STATE_ID
 
@@ -288,7 +285,6 @@ class FluidSystem:
                        fluid_type: str, remaining: list):
         """Process flow for a single fluid block."""
         from world.editing import set_world_block
-        from handlers.play.blocks import _broadcast_block_change
 
         level = _get_fluid_level(current_state)
         is_source = (level == 0)
@@ -454,57 +450,3 @@ class FluidSystem:
         self.server._fluid_updates = getattr(self.server, '_fluid_updates', [])
         self.server._fluid_updates.append((x, y, z, new_state))
 
-    def get_fluid_level(self, x: int, y: int, z: int) -> int:
-        """
-        Get fluid level at position.
-        Returns 0 for source, 1-7 for flowing, -1 for no fluid.
-        """
-        block = self.server.get_block_at(x, y, z)
-        if block is None:
-            return -1
-        return _get_fluid_level(block)
-
-    def is_fluid_source(self, x: int, y: int, z: int) -> bool:
-        """Check if the fluid at a position is a source block."""
-        level = self.get_fluid_level(x, y, z)
-        return level == 0
-
-    def scan_chunk_for_fluids(self, chunk_x: int, chunk_z: int,
-                                chunk_blocks) -> list[tuple[int, int, int, str]]:
-        """
-        Scan a newly loaded chunk for fluid blocks.
-        Returns list of (x, y, z, fluid_type) for all fluid blocks found.
-        """
-        fluids = []
-        for local_y in range(len(chunk_blocks)):
-            for local_z in range(16):
-                for local_x in range(16):
-                    state_id = chunk_blocks[local_y][local_z][local_x]
-                    if _is_water(state_id):
-                        world_x = chunk_x * 16 + local_x
-                        world_y = local_y - 64  # Adjust for MIN_Y
-                        world_z = chunk_z * 16 + local_z
-                        fluids.append((world_x, world_y, world_z, "water"))
-                    elif _is_lava(state_id):
-                        world_x = chunk_x * 16 + local_x
-                        world_y = local_y - 64
-                        world_z = chunk_z * 16 + local_z
-                        fluids.append((world_x, world_y, world_z, "lava"))
-        return fluids
-
-    def count_fluid_blocks(self) -> dict[str, int]:
-        """Count total tracked fluid blocks by type."""
-        water_count = 0
-        lava_count = 0
-        for x, y, z in self.fluid_sources:
-            block = self.server.get_block_at(x, y, z)
-            if block is not None:
-                if _is_water(block):
-                    water_count += 1
-                elif _is_lava(block):
-                    lava_count += 1
-        return {"water": water_count, "lava": lava_count}
-
-    def get_pending_count(self) -> int:
-        """Get number of pending flow updates."""
-        return len(self.pending_flows)

@@ -24,7 +24,6 @@ import random
 import re
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 logger = logging.getLogger("PyMC.选择器")
 
@@ -283,7 +282,6 @@ def resolve_selector(
         candidates = list(server.get_online_players())
     elif selector_type == "@e":
         # All entities (including players)
-        from world.entities import Entity
         candidates = list(server.entity_manager.list_entities())
         candidates.extend(server.get_online_players())
     elif selector_type == "@s":
@@ -321,48 +319,6 @@ def resolve_selector(
     return filtered
 
 
-def resolve_targets(
-    server,
-    sender,
-    selector_str: str,
-    *,
-    allow_players: bool = True,
-    allow_entities: bool = True,
-    must_exist: bool = True,
-) -> list:
-    """
-    High-level target resolution for commands.
-
-    Like resolve_selector but with additional flexibility:
-      - If selector_str is a player name, resolves to that player
-      - If allow_players is False, filters out Connection objects
-      - If allow_entities is False, filters out non-Connection objects
-      - If must_exist is True and no targets found, returns empty list
-
-    Args:
-        server: MinecraftServer
-        sender: Connection or None (console)
-        selector_str: Selector string or player name
-        allow_players: Whether to include player targets
-        allow_entities: Whether to include non-player entity targets
-        must_exist: If True, return empty list when no match found
-
-    Returns:
-        List of matching targets
-    """
-    targets = resolve_selector(server, sender, selector_str)
-
-    # Filter by type
-    if not allow_players:
-        from network.connection import Connection
-        targets = [t for t in targets if not isinstance(t, Connection)]
-    if not allow_entities:
-        from network.connection import Connection
-        targets = [t for t in targets if isinstance(t, Connection)]
-
-    return targets
-
-
 def resolve_one_target(
     server,
     sender,
@@ -386,11 +342,6 @@ def resolve_one_target(
     if fallback_to_self and sender:
         return sender
     return None
-
-
-def is_selector(raw: str) -> bool:
-    """Check if a string is a vanilla selector (starts with @)."""
-    return bool(re.match(r'^@[apers](\[.*\])?$', raw.strip()))
 
 
 def _distance_squared(entity, x: float, y: float, z: float) -> float:

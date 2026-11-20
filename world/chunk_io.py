@@ -26,7 +26,6 @@ import math
 from .fastpack import flatten_section, pack_longs, palette_of, to_signed, unpack_longs
 import struct
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 from protocol.nbt import (
@@ -331,15 +330,6 @@ def _build_section_nbt(section_blocks: list[list[list[int]]], section_y: int,
     return section
 
 
-@lru_cache(maxsize=1)
-def _empty_heightmaps() -> dict:
-    empty_chunk = [[[0 for _ in range(16)] for _ in range(16)] for _ in range(WORLD_HEIGHT)]
-    return {
-        "MOTION_BLOCKING": NbtLongArray(build_heightmap_from_terrain(empty_chunk, include_water=False)),
-        "WORLD_SURFACE": NbtLongArray(build_heightmap_from_terrain(empty_chunk, include_water=True)),
-    }
-
-
 def serialize_chunk(chunk_blocks: list[list[list[int]]], chunk_x: int = 0,
                     chunk_z: int = 0, chunk_biomes: list[list[int]] | None = None) -> bytes:
     """
@@ -542,21 +532,3 @@ def deserialize_chunk(data: bytes) -> list[list[list[int]]] | None:
     return blocks
 
 
-def serialize_chunk_fast(flat_blocks: array.array, chunk_x: int = 0,
-                         chunk_z: int = 0) -> bytes:
-    """
-    从扁平 uint16 数组编码原版 Chunk NBT。
-    """
-    if len(flat_blocks) != BLOCKS_COUNT:
-        raise ValueError(f"flat_blocks 长度应为 {BLOCKS_COUNT}, 实际 {len(flat_blocks)}")
-
-    blocks = []
-    offset = 0
-    for _ in range(WORLD_HEIGHT):
-        layer = []
-        for _ in range(16):
-            layer.append(list(flat_blocks[offset:offset + 16]))
-            offset += 16
-        blocks.append(layer)
-
-    return serialize_chunk(blocks, chunk_x=chunk_x, chunk_z=chunk_z)

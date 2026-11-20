@@ -893,11 +893,6 @@ def get_serverbound_packet(protocol_version: int, packet_name: str) -> int | Non
     return version_packets.get(packet_name)
 
 
-def get_clientbound_map(protocol_version: int) -> dict:
-    """Get the full clientbound packet map for a protocol version."""
-    return CLIENTBOUND_PACKETS.get(protocol_version, CLIENTBOUND_PACKETS.get(767, {}))
-
-
 def get_serverbound_map(protocol_version: int) -> dict:
     """Get the full serverbound packet map for a protocol version."""
     return SERVERBOUND_PACKETS.get(protocol_version, SERVERBOUND_PACKETS.get(767, {}))

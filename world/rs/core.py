@@ -202,9 +202,6 @@ class Level:
         state = self.raw(pos)
         return 0 if state is None else state
 
-    def is_loaded(self, pos) -> bool:
-        return self.raw(pos) is not None
-
     def _write(self, pos, state: int) -> bool:
         x, y, z = pos
         if y < -64 or y > 319:

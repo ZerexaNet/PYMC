@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import random
-import struct
 
 from . import enchanting
 from .inventory import ItemStack
@@ -32,9 +31,6 @@ def set_too_expensive_limit(enabled: bool):
     global _limit_too_expensive
     _limit_too_expensive = bool(enabled)
 
-
-def too_expensive_limit() -> bool:
-    return _limit_too_expensive
 
 # clientbound "Container Set Data" (craft_progress_bar, 0x14 in 1.21.1)
 _PROPERTY_PACKET = "craft_progress_bar"
@@ -93,22 +89,6 @@ async def open_window(conn, window_id: int, container, pos):
     """Refresh a freshly opened table/anvil and send its properties and contents."""
     from world.inventory_interactions import _sync_open_container
     await send_properties(conn, window_id, refresh(conn, container, pos))
-    await _sync_open_container(conn, window_id)
-
-
-async def after_click(conn, window_id: int):
-    """Called after every click in one of these windows."""
-    from world.inventory_interactions import _open_container
-    from world.inventory_interactions import _sync_open_container
-    opened = _open_container(conn, window_id)
-    if opened is None or opened[0] != "block":
-        return
-    container = opened[1]
-    pos = getattr(conn, "_open_container_pos", None)
-    if container.type not in (ENCHANT_TABLE, ANVIL) or pos is None:
-        return
-    props = refresh(conn, container, pos)
-    await send_properties(conn, window_id, props)
     await _sync_open_container(conn, window_id)
 
 

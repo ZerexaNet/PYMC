@@ -17,9 +17,7 @@ import logging
 import struct
 import math
 from protocol.data_types import (
-    write_varint, write_string, write_boolean, write_int, write_long,
-    write_byte, write_ubyte, write_float, write_double,
-    write_uuid, write_identifier, write_position,
+    write_varint, write_string, write_boolean, write_int, write_ubyte,
 )
 from handlers.versioned.base import VersionHandler
 

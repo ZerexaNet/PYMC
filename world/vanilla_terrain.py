@@ -37,46 +37,26 @@ Key improvements over the basic terrain generator:
 
 import math
 import random as _random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Callable
 
 from .blocks import (
-    AIR, STONE, GRANITE, DIORITE, ANDESITE,
-    GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL,
-    COBBLESTONE, BEDROCK,
-    WATER, SAND, RED_SAND, GRAVEL, SANDSTONE,
-    COAL_ORE, IRON_ORE, GOLD_ORE, DIAMOND_ORE, LAPIS_ORE,
-    COPPER_ORE, EMERALD_ORE, REDSTONE_ORE,
-    DEEPSLATE_COAL_ORE, DEEPSLATE_IRON_ORE, DEEPSLATE_GOLD_ORE,
-    DEEPSLATE_DIAMOND_ORE, DEEPSLATE_LAPIS_ORE, DEEPSLATE_COPPER_ORE,
-    DEEPSLATE_EMERALD_ORE, DEEPSLATE_REDSTONE_ORE,
-    DEEPSLATE, TUFF, CLAY, CALCITE,
-    SNOW_BLOCK, SNOW, ICE, PACKED_ICE, BLUE_ICE,
-    OAK_LOG, OAK_LEAVES, BIRCH_LOG, BIRCH_LEAVES,
-    SPRUCE_LOG, SPRUCE_LEAVES, JUNGLE_LOG, JUNGLE_LEAVES,
-    ACACIA_LOG, ACACIA_LEAVES,
-    CHERRY_LOG, CHERRY_LEAVES,
-    DARK_OAK_LOG, DARK_OAK_LEAVES,
-    MANGROVE_LOG, MANGROVE_LEAVES,
-    SHORT_GRASS, DANDELION, POPPY,
-    DIRT_PATH,
-    MOSS_BLOCK,
-    SEAGRASS, TALL_SEAGRASS, KELP, KELP_PLANT,
-    TUBE_CORAL_BLOCK, BRAIN_CORAL_BLOCK, BUBBLE_CORAL_BLOCK,
-    FIRE_CORAL_BLOCK, HORN_CORAL_BLOCK,
-    TUBE_CORAL_FAN, BRAIN_CORAL_FAN, BUBBLE_CORAL_FAN,
-    FIRE_CORAL_FAN, HORN_CORAL_FAN,
-    BLUE_ORCHID, ALLIUM, AZURE_BLUET, RED_TULIP, ORANGE_TULIP,
-    WHITE_TULIP, PINK_TULIP, OXEYE_DAISY, CORNFLOWER, LILY_OF_THE_VALLEY,
-    TERRACOTTA, WHITE_TERRACOTTA, ORANGE_TERRACOTTA, YELLOW_TERRACOTTA,
-    RED_TERRACOTTA, BROWN_TERRACOTTA, GREEN_TERRACOTTA,
-    LIGHT_GRAY_TERRACOTTA, GRAY_TERRACOTTA, LIGHT_BLUE_TERRACOTTA,
-    MAGENTA_TERRACOTTA, PINK_TERRACOTTA, LIME_TERRACOTTA,
-    CYAN_TERRACOTTA, PURPLE_TERRACOTTA, BLUE_TERRACOTTA,
-    RAW_IRON_BLOCK, RAW_COPPER_BLOCK,
-    LAVA,
+    AIR, STONE, GRANITE, DIORITE, ANDESITE, GRASS_BLOCK, DIRT, COARSE_DIRT,
+    PODZOL, COBBLESTONE, BEDROCK, WATER, SAND, RED_SAND, GRAVEL, SANDSTONE,
+    COAL_ORE, IRON_ORE, GOLD_ORE, DIAMOND_ORE, LAPIS_ORE, COPPER_ORE,
+    EMERALD_ORE, REDSTONE_ORE, DEEPSLATE_COAL_ORE, DEEPSLATE_IRON_ORE,
+    DEEPSLATE_GOLD_ORE, DEEPSLATE_DIAMOND_ORE, DEEPSLATE_LAPIS_ORE,
+    DEEPSLATE_COPPER_ORE, DEEPSLATE_EMERALD_ORE, DEEPSLATE_REDSTONE_ORE,
+    DEEPSLATE, TUFF, CLAY, CALCITE, SNOW_BLOCK, SNOW, ICE, PACKED_ICE,
+    OAK_LOG, OAK_LEAVES, BIRCH_LOG, BIRCH_LEAVES, SPRUCE_LOG,
+    SPRUCE_LEAVES, JUNGLE_LOG, JUNGLE_LEAVES, ACACIA_LOG, ACACIA_LEAVES,
+    CHERRY_LOG, CHERRY_LEAVES, DARK_OAK_LOG, DARK_OAK_LEAVES, MANGROVE_LOG,
+    MANGROVE_LEAVES, TERRACOTTA, WHITE_TERRACOTTA, ORANGE_TERRACOTTA,
+    YELLOW_TERRACOTTA, RED_TERRACOTTA, BROWN_TERRACOTTA,
+    LIGHT_GRAY_TERRACOTTA, LAVA,
 )
 from .biomes import BIOME_NAME_TO_ID
+from .terrain_decor import DecorationMixin
 
 # --------------------------------------------------
 # World constants (vanilla overworld)
@@ -311,9 +291,6 @@ class ImprovedNoise:
             y_smooth_input,
         )
 
-    def _p_idx(self, idx: int) -> int:
-        return self._p[idx & 0xFF]
-
     @staticmethod
     def _grad_dot(h: int, x: float, y: float, z: float) -> float:
         g = _GRADIENT[h & 0x0F]
@@ -511,19 +488,6 @@ class ShiftedNoise(DensityFunction):
         return self._noise.get_value(sx, sy, sz)
 
 
-class Clamped(DensityFunction):
-    """Clamp a density function output to [min, max]."""
-
-    def __init__(self, inner: DensityFunction, min_val: float, max_val: float):
-        self._inner = inner
-        self._min = min_val
-        self._max = max_val
-
-    def compute(self, x: float, y: float, z: float,
-                climate: 'ClimateSample') -> float:
-        return max(self._min, min(self._max, self._inner.compute(x, y, z, climate)))
-
-
 class Spline(DensityFunction):
     """
     Vanilla's cubic spline interpolation.
@@ -579,20 +543,6 @@ class ErosionSpline(Spline):
 
     def _extract_value(self, x, y, z, climate):
         return climate.erosion
-
-
-class PeaksValleysSpline(Spline):
-    """Spline that maps peaks_and_valleys to density contribution."""
-
-    def _extract_value(self, x, y, z, climate):
-        return climate.peaks_valleys
-
-
-class WeirdnessSpline(Spline):
-    """Spline that maps weirdness to density contribution."""
-
-    def _extract_value(self, x, y, z, climate):
-        return climate.weirdness
 
 
 def _catmull_rom(p0: float, p1: float, p2: float, p3: float, t: float) -> float:
@@ -718,41 +668,6 @@ class ClampedNormal(DensityFunction):
         noise_val = self._noise.get_value(x, y, z)
         result = self._mean + self._stddev * noise_val
         return max(self._min, min(self._max, result))
-
-
-class AddDensity(DensityFunction):
-    """Add two density functions."""
-
-    def __init__(self, a: DensityFunction, b: DensityFunction):
-        self._a = a
-        self._b = b
-
-    def compute(self, x: float, y: float, z: float,
-                climate: 'ClimateSample') -> float:
-        return self._a.compute(x, y, z, climate) + self._b.compute(x, y, z, climate)
-
-
-class MulDensity(DensityFunction):
-    """Multiply two density functions."""
-
-    def __init__(self, a: DensityFunction, b: DensityFunction):
-        self._a = a
-        self._b = b
-
-    def compute(self, x: float, y: float, z: float,
-                climate: 'ClimateSample') -> float:
-        return self._a.compute(x, y, z, climate) * self._b.compute(x, y, z, climate)
-
-
-class ConstantDensity(DensityFunction):
-    """Constant density value."""
-
-    def __init__(self, value: float):
-        self._value = value
-
-    def compute(self, x: float, y: float, z: float,
-                climate: 'ClimateSample') -> float:
-        return self._value
 
 
 class CacheOnce(DensityFunction):
@@ -920,26 +835,6 @@ _PV_SPLINE_POINTS = [
 ]
 
 
-def _spline_interpolate(points: list[tuple[float, float]], value: float) -> float:
-    """Cubic spline interpolation between control points."""
-    if not points:
-        return 0.0
-    if value <= points[0][0]:
-        return points[0][1]
-    if value >= points[-1][0]:
-        return points[-1][1]
-    for i in range(len(points) - 1):
-        if points[i][0] <= value <= points[i + 1][0]:
-            t = (value - points[i][0]) / (points[i + 1][0] - points[i][0])
-            # Catmull-Rom cubic
-            p0 = points[max(0, i - 1)][1]
-            p1 = points[i][1]
-            p2 = points[i + 1][1]
-            p3 = points[min(len(points) - 1, i + 2)][1]
-            return _catmull_rom(p0, p1, p2, p3, t)
-    return points[-1][1]
-
-
 # ============================================================
 # Climate parameter noise configurations (vanilla exact)
 # ============================================================
@@ -988,10 +883,6 @@ def _span(a: float, b: float) -> ClimateRange:
     if a <= b:
         return ClimateRange(a, b)
     return ClimateRange(b, a)
-
-
-def _span2(a: ClimateRange, b: ClimateRange) -> ClimateRange:
-    return ClimateRange(min(a.min_val, b.min_val), max(a.max_val, b.max_val))
 
 
 def _point(v: float) -> ClimateRange:
@@ -1346,51 +1237,6 @@ class OverworldBiomeTable:
 # ============================================================
 # Biome height parameters (vanilla-like)
 # ============================================================
-
-def _biome_height_params(biome_id: int) -> tuple[float, float]:
-    """Return (base_height, variation) for a biome, matching vanilla's MultiNoise terrain shaping."""
-    E = _BiomeId
-    mountain = {E.JAGGED_PEAKS, E.FROZEN_PEAKS, E.STONY_PEAKS}
-    mid_mountain = {E.SNOWY_SLOPES, E.GROVE, E.MEADOW, E.CHERRY_GROVE}
-    hills = {E.WINDSWEPT_HILLS, E.WINDSWEPT_GRAVELLY_HILLS, E.WINDSWEPT_FOREST}
-    badlands = {E.BADLANDS, E.ERODED_BADLANDS, E.WOODED_BADLANDS}
-    flat = {E.PLAINS, E.SUNFLOWER_PLAINS, E.DESERT, E.SNOWY_PLAINS}
-    forest = {E.FOREST, E.FLOWER_FOREST, E.BIRCH_FOREST, E.DARK_FOREST,
-              E.OLD_GROWTH_BIRCH_FOREST}
-    taiga = {E.TAIGA, E.OLD_GROWTH_PINE_TAIGA, E.OLD_GROWTH_SPRUCE_TAIGA, E.SNOWY_TAIGA}
-
-    if biome_id in (E.OCEAN, E.DEEP_OCEAN, E.WARM_OCEAN, E.LUKEWARM_OCEAN,
-                    E.COLD_OCEAN, E.FROZEN_OCEAN, E.DEEP_COLD_OCEAN,
-                    E.DEEP_FROZEN_OCEAN, E.DEEP_LUKEWARM_OCEAN):
-        return -0.70, 0.15
-    if biome_id in (E.RIVER, E.FROZEN_RIVER):
-        return -0.50, 0.05
-    if biome_id in (E.BEACH, E.SNOWY_BEACH):
-        return -0.05, 0.03
-    if biome_id == E.STONY_SHORE:
-        return 0.10, 0.08
-    if biome_id in (E.SWAMP, E.MANGROVE_SWAMP):
-        return -0.20, 0.08
-    if biome_id in mountain:
-        return 1.30, 0.70
-    if biome_id in mid_mountain:
-        return 0.55, 0.30
-    if biome_id in hills:
-        return 1.00, 0.50
-    if biome_id in badlands:
-        return 0.30, 0.20
-    if biome_id == E.SAVANNA_PLATEAU:
-        return 0.35, 0.20
-    if biome_id in flat:
-        return 0.125, 0.05
-    if biome_id in forest:
-        return 0.10, 0.20
-    if biome_id in taiga:
-        return 0.20, 0.20
-    if biome_id == E.ICE_SPIKES:
-        return 0.45, 0.50
-    return 0.125, 0.05
-
 
 # ============================================================
 # Vanilla Density Function Tree
@@ -2360,7 +2206,7 @@ class OreVeinGenerator:
 # VanillaTerrainGenerator
 # ============================================================
 
-class VanillaTerrainGenerator:
+class VanillaTerrainGenerator(DecorationMixin):
     """
     Vanilla-style approximate terrain generator for Minecraft Java 1.21.1.
 
@@ -2641,43 +2487,6 @@ class VanillaTerrainGenerator:
                 elif top_block in (SAND, RED_SAND, GRAVEL, CLAY) and surface_h < SEA_LEVEL:
                     self._place_underwater_decor(blocks, biome, lx, lz, yi, rng)
 
-    def _should_place_tree(self, biome: str, surface_h: int, rng: _random.Random) -> bool:
-        tree_chance = {
-            "minecraft:plains": 0.015,
-            "minecraft:forest": 0.08,
-            "minecraft:flower_forest": 0.07,
-            "minecraft:birch_forest": 0.08,
-            "minecraft:dark_forest": 0.09,
-            "minecraft:jungle": 0.10,
-            "minecraft:bamboo_jungle": 0.08,
-            "minecraft:sparse_jungle": 0.05,
-            "minecraft:taiga": 0.07,
-            "minecraft:old_growth_pine_taiga": 0.08,
-            "minecraft:old_growth_spruce_taiga": 0.08,
-            "minecraft:cherry_grove": 0.06,
-            "minecraft:savanna": 0.035,
-            "minecraft:savanna_plateau": 0.03,
-            "minecraft:windswept_savanna": 0.025,
-            "minecraft:mangrove_swamp": 0.04,
-            "minecraft:swamp": 0.03,
-        }.get(biome, 0.0)
-
-        if surface_h > 130:
-            tree_chance *= 0.3
-        return rng.random() < tree_chance
-
-    def _is_clear_for_tree(self, blocks, lx: int, lz: int, trunk_base_y: int,
-                           radius: int = 2, height: int = 7) -> bool:
-        for y in range(trunk_base_y, min(trunk_base_y + height, WORLD_HEIGHT)):
-            for dz in range(-radius, radius + 1):
-                for dx in range(-radius, radius + 1):
-                    nx, nz = lx + dx, lz + dz
-                    if not (0 <= nx < 16 and 0 <= nz < 16):
-                        return False
-                    if blocks[y][nz][nx] not in (AIR, WATER):
-                        return False
-        return True
-
     def _place_tree(self, blocks, biome: str, lx: int, lz: int,
                     trunk_base_y: int, rng: _random.Random):
         log_block = OAK_LOG
@@ -2730,69 +2539,6 @@ class VanillaTerrainGenerator:
 
         if top_y < WORLD_HEIGHT and blocks[top_y][lz][lx] == AIR:
             blocks[top_y][lz][lx] = leaves_block
-
-    def _place_surface_plant(self, blocks, biome: str, lx: int, lz: int,
-                             plant_y: int, rng: _random.Random):
-        flower_tables = {
-            "minecraft:flower_forest": [DANDELION, POPPY, ALLIUM, AZURE_BLUET,
-                                        RED_TULIP, ORANGE_TULIP, WHITE_TULIP,
-                                        PINK_TULIP, OXEYE_DAISY, CORNFLOWER,
-                                        LILY_OF_THE_VALLEY],
-            "minecraft:cherry_grove": [PINK_TULIP, WHITE_TULIP, ALLIUM],
-            "minecraft:meadow": [ALLIUM, AZURE_BLUET, CORNFLOWER, OXEYE_DAISY],
-            "minecraft:swamp": [BLUE_ORCHID],
-            "minecraft:mangrove_swamp": [BLUE_ORCHID],
-            "minecraft:plains": [DANDELION, POPPY, CORNFLOWER],
-            "minecraft:sunflower_plains": [DANDELION, POPPY, CORNFLOWER],
-        }
-
-        if biome in flower_tables and rng.random() < 0.18:
-            blocks[plant_y][lz][lx] = rng.choice(flower_tables[biome])
-        elif biome in {"minecraft:plains", "minecraft:forest", "minecraft:birch_forest",
-                       "minecraft:flower_forest", "minecraft:meadow", "minecraft:taiga",
-                       "minecraft:old_growth_pine_taiga",
-                       "minecraft:old_growth_spruce_taiga"} and rng.random() < 0.35:
-            blocks[plant_y][lz][lx] = SHORT_GRASS
-
-    def _place_underwater_decor(self, blocks, biome: str, lx: int, lz: int,
-                                floor_y: int, rng: _random.Random):
-        water_y = floor_y + 1
-        if water_y >= WORLD_HEIGHT or blocks[water_y][lz][lx] != WATER:
-            return
-
-        if biome in {"minecraft:warm_ocean", "minecraft:lukewarm_ocean"} and rng.random() < 0.08:
-            coral_blocks = [
-                TUBE_CORAL_BLOCK, BRAIN_CORAL_BLOCK, BUBBLE_CORAL_BLOCK,
-                FIRE_CORAL_BLOCK, HORN_CORAL_BLOCK,
-            ]
-            coral_fans = [
-                TUBE_CORAL_FAN, BRAIN_CORAL_FAN, BUBBLE_CORAL_FAN,
-                FIRE_CORAL_FAN, HORN_CORAL_FAN,
-            ]
-            blocks[floor_y][lz][lx] = rng.choice(coral_blocks)
-            if water_y < WORLD_HEIGHT and blocks[water_y][lz][lx] == WATER:
-                blocks[water_y][lz][lx] = rng.choice(coral_fans)
-            return
-
-        if biome in {"minecraft:ocean", "minecraft:deep_ocean", "minecraft:cold_ocean",
-                     "minecraft:deep_cold_ocean", "minecraft:lukewarm_ocean",
-                     "minecraft:warm_ocean"}:
-            if rng.random() < 0.22:
-                height = 1 + rng.randint(0, 4)
-                for i in range(height):
-                    y = water_y + i
-                    if y >= WORLD_HEIGHT or blocks[y][lz][lx] != WATER:
-                        break
-                    blocks[y][lz][lx] = KELP if i == height - 1 else KELP_PLANT
-            elif rng.random() < 0.35:
-                blocks[water_y][lz][lx] = SEAGRASS
-
-    def _block_hash(self, x: int, y: int, z: int) -> float:
-        """Simple coordinate hash for deterministic randomness."""
-        n = x * 374761393 + y * 668265263 + z * 1274126177 + self.seed
-        n = (n ^ (n >> 13)) * 1103515245
-        n = n ^ (n >> 16)
-        return (n & 0x7FFFFFFF) / 0x7FFFFFFF
 
     def get_height_map(self, chunk_x: int, chunk_z: int) -> list[list[int]]:
         """Compute height map for a chunk."""

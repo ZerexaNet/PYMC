@@ -108,10 +108,6 @@ BIOME_NAME_TO_ID = {name: index for index, name in enumerate(BIOME_REGISTRY.keys
 BIOME_ID_TO_NAME = {index: name for name, index in BIOME_NAME_TO_ID.items()}
 
 
-def build_biome_registry_entries() -> OrderedDict:
-    return BIOME_REGISTRY.copy()
-
-
 class BiomeSampler:
     def __init__(self, seed: int = 0):
         self.seed = seed

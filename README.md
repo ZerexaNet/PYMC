@@ -118,14 +118,12 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
   - `world/fluids.py`：流体系统
 - `commands/`：命令框架和原版命令
 - `admin/`：权限系统
-- `watchdog/`：双进程保护系统
+- `watchdog/`：进程管理
   - `watchdog/process_manager.py`：Watchdog 管理器
   - `watchdog/network_optimizer.py`：网络优化器
-  - `watchdog/health_check.py`：健康检查
-  - `watchdog/restart_handler.py`：自动重启处理
 - `mods/`：PYMC 原生 Python Mod API
 - `plugins/`：PYMC 原生 Python Plugin API + Java Bukkit/Paper 桥接层（`plugins/java_plugin.py`）
-- `native/`：C++ 原生地形生成器、轻量生物 AI、红石引擎、光照引擎、物理引擎及 PYMC 原生扩展接口
+- `native/`：C++ 原生组件——地形生成器（`terrain_gen`）、生物 AI 进程（`mob_ai`）、原版行为引擎（`vanilla`：红石/BUD、漏斗、爆炸）
 
 ## 运行
 

@@ -5,7 +5,7 @@
 
 from commands.framework import Command, CommandContext, SUCCESS, FAILURE
 from commands.selector import resolve_selector
-from commands.arguments import parse_coordinate, resolve_coordinate, parse_damage_type
+from commands.arguments import parse_damage_type
 from network.connection import Connection
 
 
@@ -13,81 +13,6 @@ def register(manager):
     """Register all entity-related commands."""
 
     # --- /summon ---
-    async def _summon(ctx: CommandContext) -> int:
-        from handlers.play.entities import broadcast_entity_spawn
-
-        tokens = ctx.arguments.get("_raw_tokens", [])
-        args = tokens[1:] if len(tokens) > 1 else []
-
-        if not args:
-            await ctx.reply("[PyMC] 用法: summon <实体类型> [x] [y] [z] [NBT]")
-            return FAILURE
-
-        entity_type = args[0].lower()
-        if ":" in entity_type:
-            entity_type = entity_type.split(":", 1)[1]
-
-        bx, by, bz = 0.0, 100.0, 0.0
-        if ctx.sender and hasattr(ctx.sender, 'x'):
-            bx, by, bz = ctx.sender.x, ctx.sender.y, ctx.sender.z
-
-        if len(args) >= 4:
-            try:
-                x = resolve_coordinate(parse_coordinate(args[1]), bx)
-                y = resolve_coordinate(parse_coordinate(args[2]), by)
-                z = resolve_coordinate(parse_coordinate(args[3]), bz)
-            except (ValueError, IndexError):
-                await ctx.reply("[PyMC] 坐标格式无效")
-                return FAILURE
-        else:
-            x, y, z = bx, by, bz
-
-        entity = None
-        if entity_type == "experience_orb" or entity_type == "orb":
-            count = 1
-            if len(args) >= 5:
-                try:
-                    count = max(1, int(args[4]))
-                except ValueError:
-                    pass
-            entity = ctx.server.entity_manager.create_experience_orb(x, y, z, count=count)
-            await broadcast_entity_spawn(ctx.server, entity)
-            await ctx.reply(f"[PyMC] 已生成经验球实体 #{entity.entity_id} x{count}")
-        elif entity_type == "item":
-            item_name = "minecraft:stone"
-            count = 1
-            if len(args) >= 5:
-                item_name = args[4]
-                if ":" not in item_name:
-                    item_name = f"minecraft:{item_name}"
-            if len(args) >= 6:
-                try:
-                    count = max(1, int(args[5]))
-                except ValueError:
-                    pass
-            entity = ctx.server.entity_manager.create_item(x, y, z, item_name=item_name, count=count)
-            await ctx.reply(f"[PyMC] 已生成 item 实体 #{entity.entity_id}: {item_name} x{count}")
-        elif entity_type in ("pig", "cow", "sheep", "zombie", "skeleton", "creeper", "spider"):
-            entity = ctx.server.entity_manager.create_mob(x, y, z, mob_type=entity_type)
-            await broadcast_entity_spawn(ctx.server, entity)
-            await ctx.reply(f"[PyMC] 已生成 {entity_type} 实体 #{entity.entity_id}")
-        else:
-            entity = ctx.server.entity_manager.create_mob(x, y, z, mob_type=entity_type)
-            await broadcast_entity_spawn(ctx.server, entity)
-            await ctx.reply(f"[PyMC] 已生成 {entity_type} 实体 #{entity.entity_id}")
-
-        return SUCCESS
-
-    cmd_summon = Command(
-        name="summon",
-        description="生成实体",
-        usage="summon <实体类型> [x] [y] [z] [NBT]",
-        permission="command.summon",
-        category="entity",
-    )
-    cmd_summon._execute_func = _summon
-    manager.register(cmd_summon)
-
     # --- /damage ---
     async def _damage(ctx: CommandContext) -> int:
         from handlers.play.join import _damage_player

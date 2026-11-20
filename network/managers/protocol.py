@@ -12,12 +12,8 @@
   - MovementRateLimiter: 移动更新速率限制
 """
 
-import time
 import logging
-from collections import deque
-from typing import Optional
 
-from protocol.packet import pack_packet
 
 logger = logging.getLogger("PyMC.协议优化")
 
@@ -38,31 +34,6 @@ class PacketCache:
         self._hits: int = 0
         self._misses: int = 0
 
-    def get_or_encode(self, packet_id: int, payload: bytes,
-                      compression_threshold: int) -> bytes:
-        """
-        获取缓存的数据包帧，或编码并缓存。
-        """
-        key = (packet_id, payload, compression_threshold)
-        cached = self._cache.get(key)
-        if cached is not None:
-            self._hits += 1
-            return cached
-
-        # 编码并缓存
-        frame = pack_packet(packet_id, payload, compression_threshold)
-        self._misses += 1
-
-        # 如果缓存已满，清除最旧的条目
-        if len(self._cache) >= self._max_size:
-            # 简单策略: 清除一半
-            keys = list(self._cache.keys())
-            for k in keys[:len(keys) // 2]:
-                del self._cache[k]
-
-        self._cache[key] = frame
-        return frame
-
     def invalidate(self, packet_id: int | None = None):
         """
         使缓存失效。
@@ -74,14 +45,6 @@ class PacketCache:
             keys_to_remove = [k for k in self._cache if k[0] == packet_id]
             for k in keys_to_remove:
                 del self._cache[k]
-
-    @property
-    def hit_rate(self) -> float:
-        """缓存命中率。"""
-        total = self._hits + self._misses
-        if total == 0:
-            return 0.0
-        return self._hits / total
 
     @property
     def size(self) -> int:
@@ -113,16 +76,6 @@ class PacketBatcher:
     def pending_count(self) -> int:
         """待发送数据包数量。"""
         return self._pending_count
-
-    @property
-    def pending_bytes(self) -> int:
-        """待发送字节数。"""
-        return len(self._buffer)
-
-    @property
-    def should_flush(self) -> bool:
-        """判断是否应该刷新缓冲区。"""
-        return len(self._buffer) >= self._max_batch_size or self._pending_count > 0
 
     def flush(self) -> bytes:
         """
@@ -163,48 +116,3 @@ class MovementRateLimiter:
         self._total_processed: int = 0
         self._total_dropped: int = 0
 
-    def should_process(self, current_tick: float) -> bool:
-        """
-        判断当前移动数据包是否应该处理。
-        
-        参数:
-            current_tick: 当前 tick 时间戳
-        
-        返回:
-            True 表示应该处理，False 表示应该跳过
-        """
-        # 检查窗口重置
-        if current_tick - self._window_start >= self._window_ticks:
-            self._window_start = current_tick
-            self._window_count = 0
-
-        # 检查最小间隔
-        if current_tick - self._last_processed < self._min_interval:
-            self._total_dropped += 1
-            return False
-
-        # 检查窗口内最大数量
-        if self._window_count >= self._max_per_window:
-            self._total_dropped += 1
-            return False
-
-        self._last_processed = current_tick
-        self._window_count += 1
-        self._total_processed += 1
-        return True
-
-    @property
-    def drop_rate(self) -> float:
-        """丢弃率。"""
-        total = self._total_processed + self._total_dropped
-        if total == 0:
-            return 0.0
-        return self._total_dropped / total
-
-    @property
-    def total_processed(self) -> int:
-        return self._total_processed
-
-    @property
-    def total_dropped(self) -> int:
-        return self._total_dropped

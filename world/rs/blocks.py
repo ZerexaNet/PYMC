@@ -79,10 +79,6 @@ def is_face_sturdy(state: int, face: str) -> bool:
     return False
 
 
-def is_signal_source_name(name: str) -> bool:
-    return name in SIGNAL_SOURCES
-
-
 def is_diode(state: int) -> bool:
     return name_of(state) in ("minecraft:repeater", "minecraft:comparator")
 

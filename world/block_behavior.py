@@ -37,20 +37,10 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Optional
 from dataclasses import dataclass, field
 
-from .blocks import (
-    AIR, STONE, GRANITE, DIORITE, ANDESITE, GRASS_BLOCK, DIRT,
-    COBBLESTONE, OAK_PLANKS, GLASS, SAND, OAK_LOG, TORCH,
-    BEDROCK, WATER, LAVA, CHEST, CRAFTING_TABLE, FURNACE,
-    FARMLAND, ANVIL, ENDER_CHEST, CAKE, OAK_DOOR, IRON_DOOR,
-    OAK_SIGN, OAK_TRAPDOOR, IRON_TRAPDOOR, TRAPPED_CHEST,
-    BLAST_FURNACE, REDSTONE_TORCH, CACTUS, WHITE_BED,
-    OBSIDIAN,
-)
 from .chunk_io import STATE_ID_TO_BLOCK
-from .inventory import ItemStack, encode_slot_entry
+from .inventory import ItemStack
 
 logger = logging.getLogger("PyMC.方块行为")
 
@@ -290,71 +280,6 @@ def get_block_tier_required(block_name: str) -> str | None:
     if info is not None:
         return info[2]
     return None
-
-
-def calculate_break_time(block_name: str, tool_item: ItemStack | None,
-                          in_water: bool = False, on_ground: bool = True) -> float:
-    """
-    Calculate the time in seconds to break a block.
-
-    Args:
-        block_name: The block being mined
-        tool_item: The tool being used (or None for bare hands)
-        in_water: Whether the player is in water (5x slower)
-        on_ground: Whether the player is on ground (affects mining)
-
-    Returns:
-        Time in seconds to break the block, or -1 if unbreakable
-    """
-    hardness = get_block_hardness(block_name)
-    if hardness < 0:
-        return -1.0  # Unbreakable
-
-    preferred_tool = get_block_tool(block_name)
-    tier_required = get_block_tier_required(block_name)
-
-    # Base speed
-    if hardness == 0:
-        return 0.0
-
-    speed_multiplier = 1.0
-
-    # Tool bonus
-    if tool_item is not None and not tool_item.is_empty:
-        tool_type = tool_item.get_tool_type()
-        tool_tier = tool_item.get_tool_tier()
-
-        if tool_type == preferred_tool:
-            # Correct tool: apply speed bonus
-            speed_multiplier = tool_item.get_mining_speed()
-
-            # Check tier requirement
-            if tier_required is not None:
-                tool_tier_level = _TIER_ORDER.get(tool_tier, 0) if tool_tier else 0
-                required_tier_level = _TIER_ORDER.get(tier_required, 0)
-                if tool_tier_level < required_tier_level:
-                    # Can't mine with this tier - very slow
-                    speed_multiplier = 1.0
-        elif tool_type is not None:
-            # Wrong tool type but still a tool
-            speed_multiplier = 1.0
-
-    # Calculate break time
-    # Formula: break_time = hardness * 1.5 / speed_multiplier (simplified vanilla)
-    if speed_multiplier > 1.0:
-        break_time = hardness * 1.5 / speed_multiplier
-    else:
-        break_time = hardness * 5.0  # Without correct tool, 5x penalty
-
-    # Water penalty
-    if in_water:
-        break_time *= 5.0
-
-    # Not on ground penalty (slight)
-    if not on_ground:
-        break_time *= 1.5
-
-    return max(0.05, break_time)
 
 
 def _harvest_tools() -> dict[str, frozenset[int]]:
@@ -657,19 +582,12 @@ class BlockBehavior:
         return True
 
     @staticmethod
-    async def on_break(conn, server, x: int, y: int, z: int) -> list[ItemStack]:
-        """Called when a block is broken. Return list of drops."""
-        return []
-
-    @staticmethod
     async def on_step_on(conn, server, x: int, y: int, z: int) -> None:
         """Called when an entity steps on this block."""
-        pass
 
     @staticmethod
     async def on_projectile_hit(conn, server, x: int, y: int, z: int) -> None:
         """Called when a projectile hits this block."""
-        pass
 
     @staticmethod
     def is_solid() -> bool:
@@ -1805,12 +1723,6 @@ class TNTBehavior(BlockBehavior):
         server.entity_manager.create_tnt(x + 0.5, y, z + 0.5)
 
     @staticmethod
-    async def _create_explosion(server, cx: int, cy: int, cz: int, radius: float = 4.0):
-        """Explosion at a block position (vanilla algorithm in world.explosion)."""
-        from world.explosion import explode
-        await explode(server, cx + 0.5, cy + 0.0625, cz + 0.5, radius)
-
-    @staticmethod
     def is_interactive() -> bool:
         return True
 
@@ -2089,8 +2001,3 @@ def get_block_behavior(block_name: str) -> BlockBehavior | None:
     return BLOCK_BEHAVIORS.get(block_name)
 
 
-def get_block_name_from_state(state_id: int) -> str:
-    """Get block name from a block state ID."""
-    if state_id in STATE_ID_TO_BLOCK:
-        return STATE_ID_TO_BLOCK[state_id][0]
-    return "minecraft:air"

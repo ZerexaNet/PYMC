@@ -981,11 +981,9 @@ def register(manager):
 
     # ---------------- experience ----------------
     def _points_for_level(level: int) -> int:
-        if level >= 30:
-            return 112 + (level - 30) * 9
-        if level >= 15:
-            return 37 + (level - 15) * 5
-        return 7 + level * 2
+        # vanilla experience curve, shared with the player experience code
+        from handlers.play.join import _experience_needed_for_next_level
+        return _experience_needed_for_next_level(level)
 
     def _total_for_level(level: int) -> int:
         return sum(_points_for_level(i) for i in range(max(0, level)))

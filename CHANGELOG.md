@@ -60,6 +60,14 @@
 
 ### 移除
 - 删除网页管理台（`admin/web.py` 及其配置项 `web-admin-*`）。控制台命令、RCON（如启用）和权限文件（`permissions.json`）不受影响。
+- 删除未使用的旧模块：旧红石实现（`world/redstone_legacy.py`）、方块表生成脚本、看门狗的健康检查与自动重启、Python 版 worldgen 客户端、早期的 C++ 服务端/光照/物理/插件/模组代码，以及从未被调用的命令模块（`core`、`server`、`gamerule`）和未注册的记分板实现（`commands/vanilla/scoreboard.py`）。
+- 删除被覆盖的命令注册（同名命令只保留实际生效的那一个）。
+
+### 清理与修复
+- 修复：`execute store` 和 `execute if score` 读写的记分板与 `/scoreboard`、`/trigger` 不是同一个，现在统一为同一份数据。
+- 修复：关闭附魔台或铁砧时，背包放不下的退还物品会报错（缺少导入），现在会掉落在地上。
+- 合并重复代码：两个地形生成器共用的树木、植物、水下装饰方法移到 `world/terrain_decor.py`；多个版本的区块包（1.17/1.19/1.20）改为共用一份实现；`/xp` 与玩家经验计算共用同一条经验曲线。
+- CMake 只构建仍在使用的三个目标：`terrain_gen`、`mob_ai`、`pymc_vanilla`。
 
 ### 铁砧
 - 铁砧的先前工作惩罚：每次合并后结果的惩罚为 `max(左, 右) * 2 + 1`，合并时两边的惩罚都计入费用（与原版一致）。
