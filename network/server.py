@@ -1168,8 +1168,10 @@ class MinecraftServer:
         from handlers.play.entities import sync_minecarts
         await sync_minecarts(self)
         await self._process_world_effects()
-        if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
-            self.entity_manager.spawn_natural_mobs()
+        if self.gamerules.get("doMobSpawning", True):
+            from world.spawning import run_despawning, run_spawning
+            run_spawning(self, tick_count)
+            run_despawning(self, tick_count)
         await self._tick_entity_interactions()
         if tick_count % 10 == 0:
             await self._tick_entity_sync()

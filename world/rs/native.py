@@ -27,7 +27,7 @@ from .core import name_of
 
 logger = logging.getLogger("PyMC.红石")
 
-ABI_VERSION = 5
+ABI_VERSION = 6
 
 LOAD_CHUNK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_uint16))
 CONTAINER_SIGNAL = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
@@ -107,6 +107,10 @@ def _declare(lib):
     vp = ctypes.c_void_p
     lib.vrs_light_set_tables.argtypes = [vp, vp, i]
     lib.vrs_light_compute.argtypes = [vp, i, vp, vp]
+    lib.vrs_biome_create.argtypes = [ctypes.POINTER(d), i, ctypes.c_char_p]
+    lib.vrs_biome_create.restype = vp
+    lib.vrs_biome_destroy.argtypes = [vp]
+    lib.vrs_biome_sections.argtypes = [vp, i, i, ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_int32)]
 
 
 def load_library():

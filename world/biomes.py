@@ -108,9 +108,24 @@ BIOME_NAME_TO_ID = {name: index for index, name in enumerate(BIOME_REGISTRY.keys
 BIOME_ID_TO_NAME = {index: name for name, index in BIOME_NAME_TO_ID.items()}
 
 
+def _noise_params(sampler: "BiomeSampler") -> list[float]:
+    """Noise tables of the seven samplers, in the layout vrs_biome_create reads."""
+    out: list[float] = []
+    for noise in (sampler.temperature_noise, sampler.humidity_noise, sampler.continental_noise,
+                  sampler.erosion_noise, sampler.weirdness_noise, sampler.swamp_noise,
+                  sampler.mushroom_noise):
+        out += [float(len(noise.noise_layers)), float(noise.persistence), float(noise.lacunarity),
+                float(noise._max_value)]
+        for layer in noise.noise_layers:
+            out += [layer.x_offset, layer.y_offset, layer.z_offset]
+            out += [float(v) for v in layer.perm[:512]]
+    return out
+
+
 class BiomeSampler:
     def __init__(self, seed: int = 0):
         self.seed = seed
+        self._native = None
         self.temperature_noise = OctaveNoise(seed + 11, octaves=3, persistence=0.5, lacunarity=2.0)
         self.humidity_noise = OctaveNoise(seed + 12, octaves=3, persistence=0.5, lacunarity=2.0)
         self.continental_noise = OctaveNoise(seed + 13, octaves=3, persistence=0.5, lacunarity=2.0)
@@ -250,8 +265,50 @@ class BiomeSampler:
                 return "minecraft:dripstone_caves"
         return surface_biome
 
+    def _native_handle(self):
+        """The native sampler built from this sampler's noise tables, or None."""
+        if self._native is None:
+            self._native = False
+            try:
+                from .rs.native import load_library
+                lib = load_library()
+            except Exception:
+                lib = None
+            if lib is not None:
+                import ctypes
+                params = _noise_params(self)
+                array = (ctypes.c_double * len(params))(*params)
+                names = "\n".join(BIOME_ID_TO_NAME[i] for i in range(len(BIOME_ID_TO_NAME)))
+                handle = lib.vrs_biome_create(array, len(params), names.encode("utf-8"))
+                if handle:
+                    self._native = (lib, handle)
+        return self._native or None
+
+    def __del__(self):
+        native = getattr(self, "_native", None)
+        if native:
+            native[0].vrs_biome_destroy(native[1])
+
     def build_chunk_biome_sections(self, chunk_x: int, chunk_z: int,
                                    chunk_blocks: list[list[list[int]]]) -> list[list[int]]:
+        native = self._native_handle()
+        if native is not None:
+            return self._build_native(native, chunk_x, chunk_z, chunk_blocks)
+        return self._build_python(chunk_x, chunk_z, chunk_blocks)
+
+    def _build_native(self, native, chunk_x: int, chunk_z: int,
+                      chunk_blocks: list[list[list[int]]]) -> list[list[int]]:
+        import ctypes
+        from .fastpack import column_heights
+        lib, handle = native
+        heights = column_heights(chunk_blocks, None)
+        column = (ctypes.c_int32 * 256)(*heights)
+        out = (ctypes.c_int32 * (NUM_SECTIONS * 64))()
+        lib.vrs_biome_sections(handle, chunk_x, chunk_z, column, out)
+        return [list(out[s * 64:(s + 1) * 64]) for s in range(NUM_SECTIONS)]
+
+    def _build_python(self, chunk_x: int, chunk_z: int,
+                      chunk_blocks: list[list[list[int]]]) -> list[list[int]]:
         base_x = chunk_x * 16
         base_z = chunk_z * 16
         surface_heights = [[MIN_Y for _ in range(16)] for _ in range(16)]

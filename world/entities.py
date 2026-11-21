@@ -623,58 +623,6 @@ class EntityManager:
     def count_mobs(self) -> int:
         return sum(1 for entity in self.list_entities() if entity.kind == "mob")
 
-    def spawn_natural_mobs(self, max_spawned: int = 2, cap: int = 32) -> int:
-        """Spawn a small vanilla-inspired trickle near players."""
-        players = self.server.get_online_players()
-        if not players or self.count_mobs() >= cap:
-            return 0
-
-        terrain = getattr(self.server, "terrain_generator", None)
-        if terrain is None:
-            return 0
-
-        spawned = 0
-        rng = random.Random(int(time.time() * 20) ^ self.server.next_entity_id)
-        is_night = 13000 <= int(getattr(self.server, "world_time", 0)) <= 23000
-
-        for player in players:
-            if spawned >= max_spawned or self.count_mobs() >= cap:
-                break
-            if player.gamemode == "spectator":
-                continue
-
-            angle = rng.random() * math.tau
-            radius = rng.randint(24, 48)
-            x = math.floor(player.x + math.cos(angle) * radius)
-            z = math.floor(player.z + math.sin(angle) * radius)
-            try:
-                y = int(terrain.get_terrain_height(x, z)) + 1
-            except Exception:
-                continue
-
-            if abs(x - player.x) < 24 and abs(z - player.z) < 24:
-                continue
-            if not _is_passable(self.server.get_block_at(x, y, z)):
-                continue
-            if not _is_solid(self.server.get_block_at(x, y - 1, z)):
-                continue
-
-            config = getattr(self.server, "config", {})
-            if is_night:
-                # spawn-monsters=false 或和平难度下不生成敌对生物
-                if (not config.get("spawn-monsters", True)
-                        or str(config.get("difficulty", "easy")).lower() == "peaceful"):
-                    continue
-                mob_type = rng.choice(["zombie", "skeleton", "creeper", "spider"])
-            else:
-                if not config.get("spawn-animals", True):
-                    continue
-                mob_type = rng.choice(["pig", "cow", "sheep"])
-            self.create_mob(x + 0.5, y, z + 0.5, mob_type=mob_type)
-            spawned += 1
-
-        return spawned
-
     def tick(self):
         self.tick_stamp += 1
         to_remove: list[int] = []
