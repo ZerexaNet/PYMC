@@ -10,7 +10,6 @@ import logging
 import os
 import socket
 import time
-from typing import Any
 
 logger = logging.getLogger("PyMC.watchdog")
 
@@ -221,38 +220,6 @@ class WatchdogManager:
             "uptime_seconds": time.time() - self.start_time,
         }
 
-    async def graceful_shutdown(self):
-        """
-        Coordinated shutdown - notify partner first.
-
-        Sends PYMC_SHUTDOWN message to partner, waits briefly,
-        then stops the local watchdog.
-        """
-        logger.info("Initiating coordinated shutdown...")
-
-        # Notify partner to also shut down
-        try:
-            loop = asyncio.get_running_loop()
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            message = f"PYMC_SHUTDOWN|{os.getpid()}"
-            await loop.run_in_executor(
-                None,
-                lambda: sock.sendto(
-                    message.encode('utf-8'),
-                    ('127.0.0.1', self._partner_port)
-                )
-            )
-            sock.close()
-            logger.info("Shutdown notification sent to partner")
-        except Exception as e:
-            logger.debug(f"Failed to send shutdown notification: {e}")
-
-        # Wait briefly for partner acknowledgment
-        await asyncio.sleep(2)
-
-        # Both shut down cleanly
-        await self.stop()
-
     # ============================================================
     # Internal implementation
     # ============================================================
@@ -445,19 +412,3 @@ class WatchdogManager:
                 pass
             return 0.0
 
-    def check_partner_health(self) -> dict:
-        """Check the health of the partner process."""
-        if self.partner_pid is None:
-            return {"status": "no_partner", "alive": False}
-
-        alive = self._is_process_alive(self.partner_pid)
-        return {
-            "status": "alive" if alive else "dead",
-            "pid": self.partner_pid,
-            "alive": alive,
-            "missed_heartbeats": self.missed_heartbeats,
-            "tps": self._partner_tps,
-            "players": self._partner_players,
-            "memory_mb": self._partner_memory_mb,
-            "last_seen": self._partner_last_seen,
-        }

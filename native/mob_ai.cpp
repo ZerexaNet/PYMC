@@ -21,7 +21,8 @@
 
 namespace {
 
-constexpr uint8_t kTickCommand = 'T';
+constexpr uint8_t kTickCommand = 'T';    // one mob, players included
+constexpr uint8_t kBatchCommand = 'B';   // many mobs: players sent once, one reply per mob, in order
 constexpr uint32_t kResponsePayloadSize = 80;
 
 enum MobType : int32_t {
@@ -343,7 +344,7 @@ AiOutput tick_ai(const MobInput& in, const std::vector<PlayerInput>& players) {
     return out;
 }
 
-bool read_tick_request(MobInput& in, std::vector<PlayerInput>& players) {
+bool read_mob_fields(MobInput& in) {
     if (!read_exact(&in.mob_type, sizeof(in.mob_type))) return false;
     if (!read_exact(&in.entity_id, sizeof(in.entity_id))) return false;
     if (!read_exact(&in.age_ticks, sizeof(in.age_ticks))) return false;
@@ -363,6 +364,10 @@ bool read_tick_request(MobInput& in, std::vector<PlayerInput>& players) {
     if (!read_exact(&in.target_x, sizeof(in.target_x))) return false;
     if (!read_exact(&in.target_y, sizeof(in.target_y))) return false;
     if (!read_exact(&in.target_z, sizeof(in.target_z))) return false;
+    return true;
+}
+
+bool read_players(MobInput& in, std::vector<PlayerInput>& players) {
     if (!read_exact(&in.player_count, sizeof(in.player_count))) return false;
 
     if (in.player_count > 256) {
@@ -376,6 +381,10 @@ bool read_tick_request(MobInput& in, std::vector<PlayerInput>& players) {
         if (!read_exact(&players[i].attackable, sizeof(players[i].attackable))) return false;
     }
     return true;
+}
+
+bool read_tick_request(MobInput& in, std::vector<PlayerInput>& players) {
+    return read_mob_fields(in) && read_players(in, players);
 }
 
 bool write_response(const AiOutput& out) {
@@ -409,26 +418,48 @@ int main() {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
-    setvbuf(stdin, nullptr, _IONBF, 0);
-    setvbuf(stdout, nullptr, _IONBF, 0);
+    // Buffered pipes: a request is ~30 fields and was read one syscall per field when unbuffered.
+    // Replies are flushed explicitly after each one below.
+    static char in_buffer[1 << 16];
+    static char out_buffer[1 << 14];
+    setvbuf(stdin, in_buffer, _IOFBF, sizeof(in_buffer));
+    setvbuf(stdout, out_buffer, _IOFBF, sizeof(out_buffer));
 
     while (true) {
         uint8_t command = 0;
         if (!read_exact(&command, 1)) {
             break;
         }
-        if (command != kTickCommand) {
-            break;
-        }
-
-        MobInput input{};
-        std::vector<PlayerInput> players;
-        if (!read_tick_request(input, players)) {
-            break;
-        }
-
-        const AiOutput out = tick_ai(input, players);
-        if (!write_response(out)) {
+        if (command == kTickCommand) {
+            MobInput input{};
+            std::vector<PlayerInput> players;
+            if (!read_tick_request(input, players)) {
+                break;
+            }
+            if (!write_response(tick_ai(input, players))) {
+                break;
+            }
+        } else if (command == kBatchCommand) {
+            // uint32 mob_count, the players once, then each mob's fields (no player list per mob)
+            uint32_t mob_count = 0;
+            if (!read_exact(&mob_count, sizeof(mob_count)) || mob_count > 65536) {
+                break;
+            }
+            MobInput shared{};
+            std::vector<PlayerInput> players;
+            if (!read_players(shared, players)) {
+                break;
+            }
+            bool ok = true;
+            for (uint32_t i = 0; i < mob_count && ok; ++i) {
+                MobInput input{};
+                input.player_count = shared.player_count;
+                ok = read_mob_fields(input) && write_response(tick_ai(input, players));
+            }
+            if (!ok) {
+                break;
+            }
+        } else {
             break;
         }
         std::fflush(stdout);

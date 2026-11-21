@@ -8,6 +8,7 @@ Base class for version-specific protocol handlers.
 Subclasses override methods to handle version differences.
 """
 
+from protocol.data_types import write_int, write_long, write_varint
 from protocol.nbt import encode_nbt, NbtLongArray
 
 
@@ -38,11 +39,6 @@ class VersionHandler:
         if protocol_version is not None:
             self.PROTOCOL_VERSION = protocol_version
 
-    def get_packet_map(self) -> dict:
-        """Return clientbound packet ID mappings for this version."""
-        from protocol.packet_map import get_clientbound_map
-        return get_clientbound_map(self.PROTOCOL_VERSION)
-
     def get_packet_id(self, packet_name: str) -> int | None:
         """Get a clientbound packet ID by name for this version."""
         from protocol.packet_map import get_clientbound_packet
@@ -65,13 +61,6 @@ class VersionHandler:
             "WORLD_SURFACE": NbtLongArray(world_surface),
         }
         return encode_nbt(heightmap_nbt, with_type=True)
-
-    async def send_keep_alive(self, conn, keep_alive_id):
-        """Send a Keep Alive packet."""
-        from protocol.data_types import write_long
-        pid = self.get_packet_id("keep_alive")
-        if pid is not None:
-            await conn.send_packet(pid, write_long(keep_alive_id))
 
     async def send_system_chat(self, conn, text, overlay=False):
         """Send a system chat message in this version's format.
@@ -188,16 +177,6 @@ class VersionHandler:
             payload.extend(write_varint(conn.experience_total))
             await conn.send_packet(pid, bytes(payload))
 
-    async def send_spawn_position(self, conn, x, y, z):
-        """Send Set Default Spawn Position packet."""
-        from protocol.data_types import write_position, write_float
-        pid = self.get_packet_id("spawn_position")
-        if pid is not None:
-            payload = bytearray()
-            payload.extend(write_position(x, y, z))
-            payload.extend(write_float(0.0))
-            await conn.send_packet(pid, bytes(payload))
-
     async def send_update_time(self, conn, world_age, day_time=None):
         """Send Update Time packet (world age + time of day)."""
         from protocol.data_types import write_long
@@ -238,29 +217,49 @@ class VersionHandler:
                 payload.extend(write_varint(eid))
             await conn.send_packet(pid, bytes(payload))
 
-    async def send_player_info_update(self, conn, players, server):
-        """Send Player Info Update packet (or equivalent for older versions)."""
-        # This is version-specific and will be overridden
-        pass
+    def build_chunk_packet_full_light(self, chunk_x, chunk_z, chunk_data, heightmap_longs,
+                           chunk_blocks=None, sky_light_arrays=None,
+                           block_light_arrays=None):
+        """Chunk Data and Update Light packet with full light masks (1.17 and later layout)."""
+        payload = bytearray()
 
-    async def send_player_info_remove(self, conn, uuids, server):
-        """Send Player Info Remove packet (or equivalent for older versions)."""
-        # This is version-specific
-        pass
+        # Chunk X, Z (Int)
+        payload.extend(write_int(chunk_x))
+        payload.extend(write_int(chunk_z))
 
-    async def handle_login_success(self, conn, server):
-        """
-        After Login Success is sent, handle the transition.
-        For 1.20.2+, go to configuration phase.
-        For older versions, go directly to play phase.
-        """
-        if self.HAS_CONFIGURATION_PHASE:
-            # Wait for Login Acknowledged from client
-            pass
-        else:
-            # Go directly to play
-            from network.connection import ConnectionState
-            conn.state = ConnectionState.PLAY
+        # Heightmaps (NBT)
+        payload.extend(self.build_heightmap_nbt(heightmap_longs, heightmap_longs))
+
+        # Chunk Data
+        payload.extend(write_varint(len(chunk_data)))
+        payload.extend(chunk_data)
+
+        # Block Entities (VarInt count = 0)
+        payload.extend(write_varint(0))
+
+        # Light data
+        all_bits = (1 << 26) - 1
+        payload.extend(write_varint(1))
+        payload.extend(write_long(all_bits))
+        payload.extend(write_varint(1))
+        payload.extend(write_long(all_bits))
+        payload.extend(write_varint(0))
+        payload.extend(write_varint(0))
+
+        sky_light_section = bytes([0xFF] * 2048)
+        light_section_count = 26
+        payload.extend(write_varint(light_section_count))
+        for _ in range(light_section_count):
+            payload.extend(write_varint(2048))
+            payload.extend(sky_light_section)
+
+        block_light_section = bytes([0x00] * 2048)
+        payload.extend(write_varint(light_section_count))
+        for _ in range(light_section_count):
+            payload.extend(write_varint(2048))
+            payload.extend(block_light_section)
+
+        return bytes(payload)
 
     def build_chunk_data_for_version(self, chunk_blocks, chunk_biomes=None):
         """

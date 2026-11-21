@@ -6,9 +6,7 @@
 
 from commands.framework import Command, CommandContext, SUCCESS, FAILURE
 from commands.arguments import (
-    parse_time_value, TIME_PRESETS, parse_weather, parse_difficulty,
-    parse_coordinate, resolve_coordinate, parse_fill_mode,
-    parse_mask_mode, parse_clone_mode,
+    parse_coordinate, resolve_coordinate, parse_fill_mode, parse_clone_mode,
 )
 
 
@@ -16,159 +14,9 @@ def register(manager):
     """Register all world-related commands."""
 
     # --- /time ---
-    async def _time(ctx: CommandContext) -> int:
-        tokens = ctx.arguments.get("_raw_tokens", [])
-        args = tokens[1:] if len(tokens) > 1 else []
-
-        if not args:
-            await ctx.reply(f"[PyMC] 当前时间: {ctx.server.world_time}")
-            return SUCCESS
-
-        action = args[0].lower()
-
-        if action == "set" and len(args) >= 2:
-            try:
-                value = parse_time_value(args[1])
-            except ValueError:
-                await ctx.reply(f"[PyMC] 无效时间值: {args[1]}")
-                return FAILURE
-            ctx.server.world_time = value
-            await ctx.reply(f"[PyMC] 世界时间已设置为 {value}")
-            return SUCCESS
-
-        if action == "add" and len(args) >= 2:
-            try:
-                value = parse_time_value(args[1])
-            except ValueError:
-                await ctx.reply(f"[PyMC] 无效时间值: {args[1]}")
-                return FAILURE
-            ctx.server.world_time += value
-            await ctx.reply(f"[PyMC] 世界时间已变更为 {ctx.server.world_time}")
-            return SUCCESS
-
-        if action == "query":
-            if len(args) >= 2 and args[1].lower() == "daytime":
-                await ctx.reply(f"[PyMC] 白天时间: {ctx.server.world_time % 24000}")
-            elif len(args) >= 2 and args[1].lower() == "day":
-                await ctx.reply(f"[PyMC] 天数: {ctx.server.world_time // 24000}")
-            else:
-                await ctx.reply(f"[PyMC] 世界时间: {ctx.server.world_time}")
-            return SUCCESS
-
-        await ctx.reply("[PyMC] 用法: time <set|add|query> <值>")
-        return FAILURE
-
-    def _time_suggest(ctx: CommandContext) -> list[str]:
-        tokens = ctx.input_string.split()
-        if len(tokens) == 2:
-            return ["set", "add", "query"]
-        if len(tokens) == 3 and tokens[1] == "set":
-            return list(TIME_PRESETS.keys())
-        if len(tokens) == 3 and tokens[1] == "query":
-            return ["daytime", "day", "gametime"]
-        return []
-
-    cmd_time = Command(
-        name="time",
-        description="设置或查询世界时间",
-        usage="time <set|add|query> <值>",
-        permission="command.time",
-        category="world",
-    )
-    cmd_time._execute_func = _time
-    cmd_time._suggest_func = _time_suggest
-    manager.register(cmd_time)
-
     # --- /weather ---
-    async def _weather(ctx: CommandContext) -> int:
-        tokens = ctx.arguments.get("_raw_tokens", [])
-        args = tokens[1:] if len(tokens) > 1 else []
-
-        if not args:
-            await ctx.reply(f"[PyMC] 当前天气: {ctx.server.weather}")
-            return SUCCESS
-
-        try:
-            weather = parse_weather(args[0])
-        except ValueError as e:
-            await ctx.reply(f"[PyMC] {e}")
-            return FAILURE
-
-        ctx.server.weather = weather
-        duration = 6000
-        if len(args) >= 2:
-            try:
-                duration = int(args[1]) * 20
-            except ValueError:
-                pass
-
-        await ctx.reply(f"[PyMC] 天气已设置为 {weather}")
-        return SUCCESS
-
-    def _weather_suggest(ctx: CommandContext) -> list[str]:
-        return ["clear", "rain", "thunder"]
-
-    cmd_weather = Command(
-        name="weather",
-        description="设置天气",
-        usage="weather <clear|rain|thunder> [持续时间(秒)]",
-        permission="command.weather",
-        category="world",
-    )
-    cmd_weather._execute_func = _weather
-    cmd_weather._suggest_func = _weather_suggest
-    manager.register(cmd_weather)
-
     # --- /difficulty ---
-    async def _difficulty(ctx: CommandContext) -> int:
-        tokens = ctx.arguments.get("_raw_tokens", [])
-        args = tokens[1:] if len(tokens) > 1 else []
-
-        if not args:
-            await ctx.reply(f"[PyMC] 当前难度: {ctx.server.config.get('difficulty', 'normal')}")
-            return SUCCESS
-
-        try:
-            diff_int, diff_name = parse_difficulty(args[0])
-        except ValueError as e:
-            await ctx.reply(f"[PyMC] {e}")
-            return FAILURE
-
-        ctx.server.config["difficulty"] = diff_name
-        ctx.server.save_runtime_config()
-        await ctx.reply(f"[PyMC] 难度已设置为 {diff_name}")
-        return SUCCESS
-
-    def _difficulty_suggest(ctx: CommandContext) -> list[str]:
-        return ["peaceful", "easy", "normal", "hard"]
-
-    cmd_difficulty = Command(
-        name="difficulty",
-        description="设置游戏难度",
-        usage="difficulty <peaceful|easy|normal|hard>",
-        permission="command.difficulty",
-        category="world",
-    )
-    cmd_difficulty._execute_func = _difficulty
-    cmd_difficulty._suggest_func = _difficulty_suggest
-    manager.register(cmd_difficulty)
-
     # --- /seed ---
-    async def _seed(ctx: CommandContext) -> int:
-        seed = ctx.server.config.get("level-seed", "")
-        await ctx.reply(f"[PyMC] 世界种子: {seed if seed != '' else 0}")
-        return SUCCESS
-
-    cmd_seed = Command(
-        name="seed",
-        description="显示世界种子",
-        usage="seed",
-        permission="command.seed",
-        category="world",
-    )
-    cmd_seed._execute_func = _seed
-    manager.register(cmd_seed)
-
     # --- /setblock ---
     async def _setblock(ctx: CommandContext) -> int:
         from world.editing import resolve_block_state, set_world_block
@@ -373,86 +221,7 @@ def register(manager):
     manager.register(cmd_clone)
 
     # --- /setworldspawn ---
-    async def _setworldspawn(ctx: CommandContext) -> int:
-        tokens = ctx.arguments.get("_raw_tokens", [])
-        if len(tokens) >= 4:
-            try:
-                x = int(float(tokens[1]))
-                y = int(float(tokens[2]))
-                z = int(float(tokens[3]))
-            except ValueError:
-                await ctx.reply("[PyMC] 用法: setworldspawn <x> <y> <z>")
-                return FAILURE
-        else:
-            x = int(ctx.server.spawn_position[0])
-            y = int(ctx.server.spawn_position[1])
-            z = int(ctx.server.spawn_position[2])
-        ctx.server.spawn_position = (x, y, z)
-        ctx.server.save_runtime_config()
-        await ctx.reply(f"[PyMC] 世界出生点已设置为 ({x}, {y}, {z})")
-        return SUCCESS
-
-    cmd_sws = Command(
-        name="setworldspawn",
-        description="设置世界出生点",
-        usage="setworldspawn [x y z]",
-        permission="command.op",
-        category="world",
-    )
-    cmd_sws._execute_func = _setworldspawn
-    manager.register(cmd_sws)
-
     # --- /spawnpoint ---
-    async def _spawnpoint(ctx: CommandContext) -> int:
-        import math
-        tokens = ctx.arguments.get("_raw_tokens", [])
-        target = ctx.sender
-        coord_index = 1
-
-        if len(tokens) >= 2 and ctx.sender is None:
-            target = ctx.server.find_player(tokens[1])
-            coord_index = 2
-            if target is None:
-                await ctx.reply(f"[PyMC] 未找到玩家: {tokens[1]}")
-                return FAILURE
-        elif len(tokens) >= 2 and ctx.sender is not None:
-            maybe_target = ctx.server.find_player(tokens[1])
-            if maybe_target is not None:
-                target = maybe_target
-                coord_index = 2
-
-        if target is None:
-            await ctx.reply("[PyMC] 用法: spawnpoint [玩家] [x y z]")
-            return FAILURE
-
-        if len(tokens) >= coord_index + 3:
-            try:
-                spawn_x = int(float(tokens[coord_index]))
-                spawn_y = int(float(tokens[coord_index + 1]))
-                spawn_z = int(float(tokens[coord_index + 2]))
-            except ValueError:
-                await ctx.reply("[PyMC] 坐标格式无效")
-                return FAILURE
-        else:
-            spawn_x = math.floor(target.x)
-            spawn_y = math.floor(target.y)
-            spawn_z = math.floor(target.z)
-
-        target.personal_spawn = (spawn_x, spawn_y, spawn_z)
-        ctx.server.save_player_state(target)
-        await ctx.reply(f"[PyMC] 已将 {target.username or '玩家'} 的个人出生点设置为 ({spawn_x}, {spawn_y}, {spawn_z})")
-        return SUCCESS
-
-    cmd_sp = Command(
-        name="spawnpoint",
-        description="设置个人出生点",
-        usage="spawnpoint [玩家] [x y z]",
-        permission="command.op",
-        category="world",
-    )
-    cmd_sp._execute_func = _spawnpoint
-    manager.register(cmd_sp)
-
     # --- /fillbiome ---
     async def _fillbiome(ctx: CommandContext) -> int:
         tokens = ctx.arguments.get("_raw_tokens", [])

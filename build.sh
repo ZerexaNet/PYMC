@@ -60,21 +60,6 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "[信息] 正在编译 C++ 加速层 (共享内存 IPC + 红石引擎 + 光照引擎 + 物理引擎)..."
-if command -v cmake &> /dev/null; then
-    cd build
-    cmake .. -DCMAKE_BUILD_TYPE=Release
-    make -j$(nproc 2>/dev/null || echo 2)
-    cd ..
-    # Copy built artifacts
-    cp -f build/pymc_native_server native/ 2>/dev/null || true
-    cp -f build/libpymc_native.so native/ 2>/dev/null || true
-    echo "[信息] C++ 加速层编译完成"
-else
-    echo "[警告] 未找到 cmake，跳过 C++ 加速层编译"
-    echo "[警告] 将使用 Python 回退模式"
-fi
-
 echo "[信息] 开始编译 PyMC 服务端..."
 echo ""
 
@@ -92,8 +77,6 @@ python3 -m nuitka \
     --include-data-files=native/terrain_gen=terrain_gen \
     --include-data-files=native/mob_ai=mob_ai \
     --include-data-files=native/$VANILLA_LIB=native/$VANILLA_LIB \
-    --include-data-files=native/pymc_native_server=pymc_native_server \
-    --include-data-files=native/libpymc_native.so=libpymc_native.so \
     --include-data-files=world/blocks.json=world/blocks.json \
     --include-data-dir=protocol/data=protocol/data \
     --include-data-dir=world/data=world/data \

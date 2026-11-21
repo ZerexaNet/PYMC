@@ -94,7 +94,6 @@ def register(manager):
                 target.inventory_state_id += 1
                 if slot is not None:
                     # Send slot update
-                    from handlers.play.join import _send_set_experience
                     await ctx.reply(f"[PyMC] 已给予 {target.username} {item_name} x{count}")
                     return SUCCESS
             except Exception as e:

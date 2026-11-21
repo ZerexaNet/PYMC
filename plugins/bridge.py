@@ -16,7 +16,7 @@
 
 import asyncio
 import logging
-from typing import Optional, Any, Dict, List, Callable
+from typing import Optional, List
 
 logger = logging.getLogger("pymc.plugins.bridge")
 
@@ -200,11 +200,6 @@ class PlayerBridge:
     @property
     def protocol_version(self) -> int:
         return self._conn.protocol_version
-
-    async def send_message(self, text: str):
-        """Send a system chat message to this player."""
-        from handlers.play.chat import send_system_message
-        await send_system_message(self._conn, text)
 
     def kick(self, reason: str = "Kicked by plugin"):
         """Disconnect this player."""
@@ -428,67 +423,6 @@ def hook_player_kick(server, conn, reason: str = ""):
     pm.fire_event(event)
 
 
-def hook_player_move(server, conn, from_x: float, from_y: float, from_z: float,
-                     to_x: float, to_y: float, to_z: float):
-    """Fire the PlayerMoveEvent."""
-    pm = server.plugin_manager
-    if pm is None:
-        return
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.PLAYER_MOVE,
-        {
-            "player_name": conn.username or "",
-            "from_x": from_x, "from_y": from_y, "from_z": from_z,
-            "to_x": to_x, "to_y": to_y, "to_z": to_z,
-            "player": PlayerBridge(conn),
-        },
-        cancellable=False,
-    )
-    pm.fire_event(event)
-
-
-def hook_player_teleport(server, conn, from_x: float, from_y: float, from_z: float,
-                         to_x: float, to_y: float, to_z: float) -> bool:
-    """Fire the PlayerTeleportEvent. Returns True if teleport should proceed."""
-    pm = server.plugin_manager
-    if pm is None:
-        return True
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.PLAYER_TELEPORT,
-        {
-            "player_name": conn.username or "",
-            "from_x": from_x, "from_y": from_y, "from_z": from_z,
-            "to_x": to_x, "to_y": to_y, "to_z": to_z,
-            "player": PlayerBridge(conn),
-        },
-        cancellable=True,
-    )
-    return pm.fire_event(event)
-
-
-def hook_player_interact(server, conn, x: int, y: int, z: int,
-                         action: str = "right_click", hand: str = "main") -> bool:
-    """Fire the PlayerInteractEvent. Returns True if interaction should proceed."""
-    pm = server.plugin_manager
-    if pm is None:
-        return True
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.PLAYER_INTERACT,
-        {
-            "player_name": conn.username or "",
-            "x": x, "y": y, "z": z,
-            "action": action,
-            "hand": hand,
-            "player": PlayerBridge(conn),
-        },
-        cancellable=True,
-    )
-    return pm.fire_event(event)
-
-
 def hook_player_respawn(server, conn):
     """Fire the PlayerRespawnEvent."""
     pm = server.plugin_manager
@@ -562,79 +496,6 @@ def hook_entity_death(server, entity_id: int, cause: str = ""):
     pm.fire_event(event)
 
 
-def hook_projectile_hit(server, entity_id: int, x: int, y: int, z: int):
-    """Fire the ProjectileHitEvent."""
-    pm = server.plugin_manager
-    if pm is None:
-        return
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.PROJECTILE_HIT,
-        {
-            "entity_id": entity_id,
-            "x": x, "y": y, "z": z,
-        },
-        cancellable=False,
-    )
-    pm.fire_event(event)
-
-
-def hook_block_burn(server, x: int, y: int, z: int, block_state: int):
-    """Fire the BlockBurnEvent."""
-    pm = server.plugin_manager
-    if pm is None:
-        return
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.BLOCK_BURN,
-        {
-            "x": x, "y": y, "z": z,
-            "block_state": block_state,
-        },
-        cancellable=False,
-    )
-    pm.fire_event(event)
-
-
-def hook_block_redstone(server, x: int, y: int, z: int,
-                        old_power: int, new_power: int):
-    """Fire the BlockRedstoneEvent."""
-    pm = server.plugin_manager
-    if pm is None:
-        return
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.BLOCK_REDSTONE,
-        {
-            "x": x, "y": y, "z": z,
-            "old_power": old_power,
-            "new_power": new_power,
-        },
-        cancellable=False,
-    )
-    pm.fire_event(event)
-
-
-def hook_sign_change(server, conn, x: int, y: int, z: int,
-                     lines: list) -> bool:
-    """Fire the SignChangeEvent. Returns True if change should proceed."""
-    pm = server.plugin_manager
-    if pm is None:
-        return True
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.SIGN_CHANGE,
-        {
-            "player_name": conn.username or "",
-            "x": x, "y": y, "z": z,
-            "lines": lines,
-            "player": PlayerBridge(conn),
-        },
-        cancellable=True,
-    )
-    return pm.fire_event(event)
-
-
 def hook_chunk_load(server, cx: int, cz: int):
     """Fire the ChunkLoadEvent."""
     pm = server.plugin_manager
@@ -686,81 +547,6 @@ def hook_time_change(server, old_time: int, new_time: int) -> bool:
     event = PluginEvent(
         PluginEvents.TIME_CHANGE,
         {"old_time": old_time, "new_time": new_time},
-        cancellable=True,
-    )
-    return pm.fire_event(event)
-
-
-def hook_inventory_click(server, conn, slot: int, item_id: str = "",
-                         click_type: str = "left") -> bool:
-    """Fire the InventoryClickEvent. Returns True if click should proceed."""
-    pm = server.plugin_manager
-    if pm is None:
-        return True
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.INVENTORY_CLICK,
-        {
-            "player_name": conn.username or "",
-            "slot": slot,
-            "item_id": item_id,
-            "click_type": click_type,
-            "player": PlayerBridge(conn),
-        },
-        cancellable=True,
-    )
-    return pm.fire_event(event)
-
-
-def hook_craft_item(server, conn, result_item: str, recipe_id: str = "") -> bool:
-    """Fire the CraftItemEvent. Returns True if craft should proceed."""
-    pm = server.plugin_manager
-    if pm is None:
-        return True
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.CRAFT_ITEM,
-        {
-            "player_name": conn.username or "",
-            "result_item": result_item,
-            "recipe_id": recipe_id,
-            "player": PlayerBridge(conn),
-        },
-        cancellable=True,
-    )
-    return pm.fire_event(event)
-
-
-def hook_fluid_place(server, x: int, y: int, z: int,
-                     fluid_type: str = "water") -> bool:
-    """Fire the FluidPlaceEvent. Returns True if placement should proceed."""
-    pm = server.plugin_manager
-    if pm is None:
-        return True
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.FLUID_PLACE,
-        {"x": x, "y": y, "z": z, "fluid_type": fluid_type},
-        cancellable=True,
-    )
-    return pm.fire_event(event)
-
-
-def hook_fluid_flow(server, from_x: int, from_y: int, from_z: int,
-                    to_x: int, to_y: int, to_z: int,
-                    fluid_type: str = "water") -> bool:
-    """Fire the FluidFlowEvent. Returns True if flow should proceed."""
-    pm = server.plugin_manager
-    if pm is None:
-        return True
-    from plugins import PluginEvents, PluginEvent
-    event = PluginEvent(
-        PluginEvents.FLUID_FLOW,
-        {
-            "from_x": from_x, "from_y": from_y, "from_z": from_z,
-            "to_x": to_x, "to_y": to_y, "to_z": to_z,
-            "fluid_type": fluid_type,
-        },
         cancellable=True,
     )
     return pm.fire_event(event)
@@ -830,18 +616,6 @@ def register_plugin_commands(server):
         handler, plugin_id = entry
 
         # Create a Command object that wraps the plugin's handler
-        async def _make_executor(h, pid):
-            async def _exec(ctx: CommandContext) -> int:
-                try:
-                    # Plugin handlers are sync — call them with the arg string
-                    args = ctx.remaining_input
-                    h(args)
-                    return SUCCESS
-                except Exception as e:
-                    logger.exception(f"Plugin {pid} command error: {e}")
-                    return FAILURE
-            return _exec
-
         # We can't use async closure directly in a loop, so bind via default arg
         cmd = Command(
             name=cmd_name,

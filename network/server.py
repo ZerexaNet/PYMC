@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from typing import Optional
 from config import save_config
 from admin.permissions import PermissionManager, UserCache
-from admin.web import WebAdminServer
 from .connection import Connection, ConnectionState
 from handlers.handshake import handle_handshake
 from handlers.status import handle_status
@@ -27,15 +26,14 @@ from world.biomes import BiomeSampler
 from world.entities import EntityManager
 from world.redstone import RedstoneEngine
 from world.vanilla_terrain import VanillaTerrainGenerator
-from world.inventory import PlayerInventory
-from world.block_behavior import ContainerManager, container_manager
+from world.block_behavior import container_manager
 from world.fluids import FluidSystem
 from watchdog import WatchdogManager, PlayerNetworkOptimizer
 from .managers.gamerule import GameruleManager
 from .managers.time import TimeManager
 from .managers.scheduler import TickScheduler
 from .managers.metrics import ServerMetrics
-from .managers.protocol import PacketCache, PacketBatcher
+from .managers.protocol import PacketCache
 
 logger = logging.getLogger("PyMC.服务器")
 mc_logger = logging.getLogger("minecraft.server")
@@ -106,7 +104,8 @@ class MinecraftServer:
         self.level_name = world_name
         world_path = os.path.join(universe, world_name) if universe else world_name
         self.world_storage = WorldStorage(
-            world_path, region_format=str(config.get("region-file-format", "anvil")))
+            world_path, region_format=str(config.get("region-file-format", "anvil")),
+            decoded_cache_size=config.get("chunk-decode-cache", None))
         self.session_lock = SessionLock(self.world_storage.world_dir)
 
         # level.dat: 出生点、世界时间、天气、游戏规则、种子
@@ -151,7 +150,6 @@ class MinecraftServer:
         whitelist["enabled"] = bool(config.get("white-list", False))
         self.permissions.on_whitelist_toggle = self._on_whitelist_toggle
 
-        self.web_admin: WebAdminServer | None = None
         self.rcon = None
         self.loop: asyncio.AbstractEventLoop | None = None
 
@@ -305,13 +303,6 @@ class MinecraftServer:
                 return conn
         return None
 
-    def broadcast_packet(self, packet_id: int, payload: bytes,
-                         exclude: Connection = None):
-        """向所有在线玩家广播数据包。"""
-        for conn in self.get_online_players():
-            if conn != exclude:
-                asyncio.ensure_future(conn.send_packet(packet_id, payload))
-
     def broadcast_system_message(self, text, exclude: Connection = None,
                                  log: bool = False):
         """向所有在线玩家广播系统聊天消息 (字符串或文本组件)。"""
@@ -392,6 +383,8 @@ class MinecraftServer:
             player_data["inventory"] = conn.inventory_obj.serialize_full()
 
         self.world_storage.save_player_data(str(conn.uuid), player_data)
+        from world.advancements import save as save_advancements
+        save_advancements(self, conn)
 
     def save_all_player_states(self):
         """保存所有在线玩家存档。"""
@@ -463,6 +456,8 @@ class MinecraftServer:
         self.world_storage.initialize()
         container_manager.load(str(self.world_storage.world_dir))
         container_manager.block_reader = self.get_block_at        # double chests read their block states
+        from world.enchanting_window import set_too_expensive_limit
+        set_too_expensive_limit(self.config.get("anvil-too-expensive-limit", True))
         from world.minecart import load_minecarts
         load_minecarts(self, self.world_storage.world_dir)
         self._initialize_terrain_generator()
@@ -504,19 +499,6 @@ class MinecraftServer:
 
         # 启动游戏循环 (20 TPS)
         self._tick_task = asyncio.create_task(self._game_loop())
-
-        if self.config.get("web-admin-enabled", True):
-            try:
-                self.web_admin = WebAdminServer(
-                    self,
-                    self.config.get("web-admin-host", "127.0.0.1"),
-                    self.config.get("web-admin-port", 25568),
-                    self.config.get("web-admin-allow-remote", False),
-                )
-                self.web_admin.start()
-            except Exception as e:
-                logger.error(f"启动 Web 管理台失败: {e}")
-                self.web_admin = None
 
         if self.config.get("enable-rcon", False):
             from network.rcon import RconServer
@@ -973,10 +955,6 @@ class MinecraftServer:
         self.world_storage.close()
         mc_logger.info(f"ThreadedAnvilChunkStorage ({self.level_name}): All chunks are saved")
 
-        if self.web_admin:
-            self.web_admin.stop()
-            self.web_admin = None
-
         if self._chunk_executor:
             self._chunk_executor.shutdown(wait=False, cancel_futures=True)
             self._chunk_executor = None
@@ -1152,6 +1130,15 @@ class MinecraftServer:
         # Process active furnace-like containers.
         from world.block_behavior import container_manager
         container_manager.tick_furnaces(self)
+        from world.block_behavior import tick_brewing_stands
+        from handlers.play.blocks import _broadcast_block_changes
+        brew_changes = tick_brewing_stands(self)
+        if brew_changes:
+            await _broadcast_block_changes(self, brew_changes)
+
+        # 进度: 背包里已有的物品授予对应的进度
+        from world.advancements import tick as tick_advancements
+        await tick_advancements(self, tick_count)
 
         # 发送 KeepAlive 心跳
         if tick_count % keepalive_interval == 0:
@@ -1181,8 +1168,10 @@ class MinecraftServer:
         from handlers.play.entities import sync_minecarts
         await sync_minecarts(self)
         await self._process_world_effects()
-        if self.gamerules.get("doMobSpawning", True) and tick_count % 200 == 0:
-            self.entity_manager.spawn_natural_mobs()
+        if self.gamerules.get("doMobSpawning", True):
+            from world.spawning import run_despawning, run_spawning
+            run_spawning(self, tick_count)
+            run_despawning(self, tick_count)
         await self._tick_entity_interactions()
         if tick_count % 10 == 0:
             await self._tick_entity_sync()
@@ -1476,7 +1465,6 @@ class MinecraftServer:
             _add_player_experience,
             _damage_player,
             _send_collect_entity,
-            send_system_message,
         )
 
         players = self.get_online_players()

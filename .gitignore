@@ -16,10 +16,6 @@ native/terrain_gen
 native/terrain_gen.exe
 native/mob_ai
 native/mob_ai.exe
-native/pymc_native_server
-native/pymc_native_server.exe
-native/libpymc_native.so
-native/pymc_native.dll
 native/libpymc_vanilla.so
 native/libpymc_vanilla.dylib
 native/pymc_vanilla.dll

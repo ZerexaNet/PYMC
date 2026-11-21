@@ -14,14 +14,11 @@ Key differences from 1.21:
 """
 
 import logging
-import struct
 import math
 from protocol.data_types import (
     write_varint, write_string, write_boolean, write_int, write_long,
-    write_byte, write_ubyte, write_float, write_double,
-    write_uuid, write_identifier, write_position,
+    write_byte, write_ubyte,
 )
-from protocol.nbt import encode_nbt, NbtLong, NbtLongArray
 from handlers.versioned.base import VersionHandler
 
 logger = logging.getLogger("PyMC.版本.1_14")
@@ -198,14 +195,6 @@ class VersionHandlerV1_14(VersionHandler):
         payload.extend(write_varint(0))
 
         return bytes(payload)
-
-    def build_heightmap_nbt(self, motion_blocking, world_surface):
-        """Build heightmap NBT for 1.14+."""
-        heightmap_nbt = {
-            "MOTION_BLOCKING": NbtLongArray(motion_blocking),
-            "WORLD_SURFACE": NbtLongArray(world_surface),
-        }
-        return encode_nbt(heightmap_nbt, with_type=True)
 
 
 def conn_protocol_ge_578():

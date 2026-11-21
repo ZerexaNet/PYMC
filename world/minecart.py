@@ -174,12 +174,15 @@ class MinecartEntity(Entity):
             px, py, pz = player.x, player.y, player.z
             if px + 0.3 > x0 and px - 0.3 < x1 and pz + 0.3 > z0 and pz - 0.3 < z1 and py + 1.8 > y0 and py < y1:
                 self._pushed_by(px, pz)
-        for other in minecarts(server):
-            if other is self or not other.alive:
-                continue
-            (ox0, oy0, oz0), (ox1, oy1, oz1) = other.bounding_box()
-            if ox1 > x0 and ox0 < x1 and oz1 > z0 and oz0 < z1 and oy1 > y0 and oy0 < y1:
-                other.collide_with(self)
+        grid = _cart_grid(server)
+        for gx in range(math.floor(x0 / _GRID_CELL), math.floor(x1 / _GRID_CELL) + 1):
+            for gz in range(math.floor(z0 / _GRID_CELL), math.floor(z1 / _GRID_CELL) + 1):
+                for other in grid.get((gx, gz), ()):
+                    if other is self or not other.alive:
+                        continue
+                    (ox0, oy0, oz0), (ox1, oy1, oz1) = other.bounding_box()
+                    if ox1 > x0 and ox0 < x1 and oz1 > z0 and oz0 < z1 and oy1 > y0 and oy0 < y1:
+                        other.collide_with(self)
 
     def _pushed_by(self, px: float, pz: float):
         """Entity.push(minecart) from a player: away from them, 0.05 at most."""
@@ -351,7 +354,25 @@ def minecarts(server) -> list:
     manager = getattr(server, "entity_manager", None)
     if manager is None:
         return []
-    return [e for e in manager.list_entities() if isinstance(e, MinecartEntity)]
+    return manager.of_kind("minecart")
+
+
+_GRID_CELL = 2.0
+
+
+def _cart_grid(server) -> dict:
+    """Minecarts bucketed by 2x2-block cells; rebuilt once per entity tick."""
+    manager = getattr(server, "entity_manager", None)
+    stamp = getattr(manager, "tick_stamp", None)
+    cached = getattr(server, "_cart_grid", None)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    grid: dict = {}
+    for cart in minecarts(server):
+        key = (math.floor(cart.x / _GRID_CELL), math.floor(cart.z / _GRID_CELL))
+        grid.setdefault(key, []).append(cart)
+    server._cart_grid = (stamp, grid)
+    return grid
 
 
 def hopper_minecarts(server) -> list:

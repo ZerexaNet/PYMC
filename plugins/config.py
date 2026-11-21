@@ -10,7 +10,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -125,13 +125,6 @@ class PluginConfig:
         except (TypeError, ValueError):
             return default
 
-    def get_float(self, key: str, default: float = 0.0) -> float:
-        val = self._data.get(key, default)
-        try:
-            return float(val)
-        except (TypeError, ValueError):
-            return default
-
     def get_bool(self, key: str, default: bool = False) -> bool:
         val = self._data.get(key, default)
         if isinstance(val, bool):
@@ -143,15 +136,6 @@ class PluginConfig:
     def get_str(self, key: str, default: str = "") -> str:
         val = self._data.get(key, default)
         return str(val) if val is not None else default
-
-    def get_list(self, key: str, default: Optional[list] = None) -> list:
-        val = self._data.get(key, default if default is not None else [])
-        return list(val) if isinstance(val, (list, tuple)) else (default if default is not None else [])
-
-    def get_section(self, key: str) -> Dict[str, Any]:
-        """Get a nested dict section.  Returns an empty dict if missing or not a dict."""
-        val = self._data.get(key, {})
-        return val if isinstance(val, dict) else {}
 
     # -- metadata helpers -----------------------------------------------
 
@@ -173,10 +157,6 @@ class PluginConfig:
     @property
     def plugin_id(self) -> str:
         return self._plugin_id
-
-    @property
-    def file_path(self) -> str:
-        return str(self._file)
 
     # ------------------------------------------------------------------
     # Internal helpers

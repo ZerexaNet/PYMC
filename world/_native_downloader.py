@@ -15,9 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import platform
 import stat
-import sys
 import urllib.request
 import urllib.error
 from pathlib import Path

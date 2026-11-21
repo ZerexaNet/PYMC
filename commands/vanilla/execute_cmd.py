@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import math
 import logging
-from typing import Any
 
-from commands.framework import Command, CommandContext, SUCCESS, FAILURE, ERROR
-from commands.selector import resolve_selector, parse_selector, parse_int_range
+from commands.framework import Command, CommandContext, SUCCESS, FAILURE
+from commands.selector import resolve_selector, parse_int_range
 
 logger = logging.getLogger("PyMC.命令执行")
 
@@ -109,7 +108,7 @@ async def _evaluate_condition(ctx: CommandContext, exec_ctx: ExecuteContext, con
     if condition_type == "score":
         if index + 3 >= len(tokens):
             return (False, index + 4)
-        from commands.vanilla.scoreboard import get_scoreboard_manager
+        from commands.vanilla.display import get_scoreboard_manager
         sb = get_scoreboard_manager()
         target_player = tokens[index]
         target_obj = tokens[index + 1]
@@ -227,32 +226,6 @@ async def _evaluate_condition(ctx: CommandContext, exec_ctx: ExecuteContext, con
             return (False, index + 3)
 
     return (False, index + 1)
-
-
-def _skip_condition_tokens(tokens: list[str], index: int, condition_type: str) -> int:
-    """Skip past the tokens of a condition to find the next subcommand."""
-    if condition_type == "entity":
-        return index + 1
-    if condition_type == "score":
-        # score <target> <targetObj> <operation> <source> <sourceObj>
-        # or score <target> <targetObj> matches <range>
-        if index + 2 < len(tokens):
-            op = tokens[index + 2]
-            if op == "matches":
-                return index + 4
-            return index + 5
-        return index + 4
-    if condition_type == "block":
-        return index + 4
-    if condition_type == "blocks":
-        return index + 13  # Rough estimate
-    if condition_type == "predicate":
-        return index + 1
-    if condition_type == "function":
-        return index + 1
-    if condition_type == "loaded":
-        return index + 3
-    return index + 1
 
 
 # ============================================================
@@ -534,7 +507,6 @@ async def _execute_chain(ctx: CommandContext, exec_ctx: ExecuteContext, tokens: 
             return FAILURE
         # Just pass through to the run subcommand with a summon command
         command_str = ' '.join(tokens[index:])
-        from commands import CommandManager
         result = await ctx.server.command_manager.execute(exec_ctx.executor, command_str)
         return result
 
@@ -555,7 +527,6 @@ async def _execute_chain(ctx: CommandContext, exec_ctx: ExecuteContext, tokens: 
             exec_ctx.executor.yaw, exec_ctx.executor.pitch = exec_ctx.yaw, exec_ctx.pitch
 
         # Execute the command
-        from commands import CommandManager
         result = await ctx.server.command_manager.execute(exec_ctx.executor, command_str)
 
         # Restore position
@@ -567,7 +538,7 @@ async def _execute_chain(ctx: CommandContext, exec_ctx: ExecuteContext, tokens: 
         if exec_ctx.store_targets:
             for store_info in exec_ctx.store_targets:
                 if store_info.get("target_type") == "score":
-                    from commands.vanilla.scoreboard import get_scoreboard_manager
+                    from commands.vanilla.display import get_scoreboard_manager
                     sb = get_scoreboard_manager()
                     try:
                         sb.set_score(store_info["objective"], store_info["player"], result)

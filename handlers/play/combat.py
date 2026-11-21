@@ -256,6 +256,9 @@ def damage_mob(server, entity, amount: float, source=None) -> bool:
     from world.loot import LootContext, loot_tables
     table = "entities/" + str(getattr(entity, "mob_type", "")).split(":")[-1]
     killer = source if source is not None and hasattr(source, "inventory_obj") else None
+    if killer is not None:
+        from world.advancements import on_mob_killed
+        on_mob_killed(killer, entity)
     if loot_tables.has(table):
         tool = None
         if killer is not None:

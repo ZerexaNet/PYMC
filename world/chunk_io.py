@@ -26,7 +26,6 @@ import math
 from .fastpack import flatten_section, pack_longs, palette_of, to_signed, unpack_longs
 import struct
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 from protocol.nbt import (
@@ -126,17 +125,24 @@ def _find_blocks_json() -> str:
     )
 
 
+def _load_blocks_json() -> list:
+    with open(_find_blocks_json(), "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def _build_block_registry():
-    blocks_path = _find_blocks_json()
-    with open(blocks_path, "r", encoding="utf-8") as f:
-        blocks = json.load(f)
+    """State tables for every block state. Keys and property pairs are shared objects, which keeps the
+    ~25k entries small; the legacy (pre-1.21 state order) table is only built when an old chunk needs it."""
+    pairs: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def share(key):
+        return tuple(pairs.setdefault(pair, pair) for pair in key)
 
     state_id_to_block: dict[int, tuple[str, dict[str, str]]] = {}
     block_key_to_state_id: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
     block_name_to_default_state: dict[str, int] = {}
-    legacy_key_to_state_id: dict[tuple[str, tuple[tuple[str, str], ...]], int] = {}
 
-    for block in blocks:
+    for block in _load_blocks_json():
         name = f"minecraft:{block['name']}"
         default_state = int(block["defaultState"])
         block_name_to_default_state[name] = default_state
@@ -146,21 +152,32 @@ def _build_block_registry():
         for state_id in range(min_state, max_state + 1):
             props = _state_id_to_properties(block, state_id)
             state_id_to_block[state_id] = (name, props)
-            block_key_to_state_id[(name, tuple(sorted(props.items())))] = state_id
-            legacy_props = _state_id_to_properties(block, state_id, legacy=True)
-            legacy_key_to_state_id[(name, tuple(sorted(legacy_props.items())))] = state_id
+            block_key_to_state_id[(name, share(sorted(props.items())))] = state_id
 
         # 允许省略 Properties 时直接落到 defaultState
         default_props = _state_id_to_properties(block, default_state)
         block_key_to_state_id[(name, tuple())] = default_state
-        block_key_to_state_id[(name, tuple(sorted(default_props.items())))] = default_state
+        block_key_to_state_id[(name, share(sorted(default_props.items())))] = default_state
 
-    global LEGACY_KEY_TO_STATE_ID
-    LEGACY_KEY_TO_STATE_ID = legacy_key_to_state_id
     return state_id_to_block, block_key_to_state_id, block_name_to_default_state
 
 
-LEGACY_KEY_TO_STATE_ID: dict = {}
+_LEGACY_KEY_TO_STATE_ID: dict | None = None
+
+
+def _legacy_table() -> dict:
+    global _LEGACY_KEY_TO_STATE_ID
+    if _LEGACY_KEY_TO_STATE_ID is None:
+        table: dict = {}
+        for block in _load_blocks_json():
+            name = f"minecraft:{block['name']}"
+            for state_id in range(int(block["minStateId"]), int(block["maxStateId"]) + 1):
+                legacy_props = _state_id_to_properties(block, state_id, legacy=True)
+                table[(name, tuple(sorted(legacy_props.items())))] = state_id
+        _LEGACY_KEY_TO_STATE_ID = table
+    return _LEGACY_KEY_TO_STATE_ID
+
+
 STATE_ID_TO_BLOCK, BLOCK_KEY_TO_STATE_ID, BLOCK_NAME_TO_DEFAULT_STATE = _build_block_registry()
 
 # Chunks written by this version carry this tag; see _uses_legacy_state_order().
@@ -261,7 +278,7 @@ def _palette_entry_to_state_id(entry: dict, legacy: bool = False) -> int:
         for k, v in props.items()
     ))
 
-    table = LEGACY_KEY_TO_STATE_ID if legacy else BLOCK_KEY_TO_STATE_ID
+    table = _legacy_table() if legacy else BLOCK_KEY_TO_STATE_ID
     state_id = table.get((name, normalized))
     if state_id is not None:
         return state_id
@@ -311,15 +328,6 @@ def _build_section_nbt(section_blocks: list[list[list[int]]], section_y: int,
     if non_air_count:
         section["block_count"] = non_air_count
     return section
-
-
-@lru_cache(maxsize=1)
-def _empty_heightmaps() -> dict:
-    empty_chunk = [[[0 for _ in range(16)] for _ in range(16)] for _ in range(WORLD_HEIGHT)]
-    return {
-        "MOTION_BLOCKING": NbtLongArray(build_heightmap_from_terrain(empty_chunk, include_water=False)),
-        "WORLD_SURFACE": NbtLongArray(build_heightmap_from_terrain(empty_chunk, include_water=True)),
-    }
 
 
 def serialize_chunk(chunk_blocks: list[list[list[int]]], chunk_x: int = 0,
@@ -524,21 +532,3 @@ def deserialize_chunk(data: bytes) -> list[list[list[int]]] | None:
     return blocks
 
 
-def serialize_chunk_fast(flat_blocks: array.array, chunk_x: int = 0,
-                         chunk_z: int = 0) -> bytes:
-    """
-    从扁平 uint16 数组编码原版 Chunk NBT。
-    """
-    if len(flat_blocks) != BLOCKS_COUNT:
-        raise ValueError(f"flat_blocks 长度应为 {BLOCKS_COUNT}, 实际 {len(flat_blocks)}")
-
-    blocks = []
-    offset = 0
-    for _ in range(WORLD_HEIGHT):
-        layer = []
-        for _ in range(16):
-            layer.append(list(flat_blocks[offset:offset + 16]))
-            offset += 16
-        blocks.append(layer)
-
-    return serialize_chunk(blocks, chunk_x=chunk_x, chunk_z=chunk_z)

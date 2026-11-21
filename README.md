@@ -36,13 +36,12 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [x] **登录检查**：用户名合法性、协议版本（过旧/过新客户端提示）、封禁、白名单、服务器已满、同名重复登录踢出旧连接、`player-idle-timeout`。
 - [x] **玩法细节**：死亡界面与原版死亡消息、掉落物品与经验、重生流程、`keepInventory`/`doImmediateRespawn`/`showDeathMessages` 等规则、受伤动画与击退、PvP（`pvp`）、潜行/疾跑/挥手/手持物品同步、生存/创造模式挖掘与放置确认、`spawn-protection`、天空光与方块光计算。
 - [x] 控制台和游戏内基础命令。
-- [x] Web 管理台、权限组、OP、封禁和白名单。
+- [x] 权限组、OP、封禁和白名单。
 - [x] 单元测试覆盖原生地形、原版存档读写与迁移、玩家存档、原生 AI、种子解析和安全出生点。
 - [x] **红石系统**：tick 引擎、电源/导线/火把/中继器/比较器/观察者/活塞、门与灯控制、TNT 起爆、音符盒、发射器/投掷器；红石时序为原版近似。
 - [x] **合成**：背包 2×2 与工作台 3×3，原版 1.21.1 全部有序/无序配方（标签展开、镜像、合成剩余物），Shift 批量合成。
-- [x] **物品栏系统**：`ItemStack`、玩家物品栏、协议序列化、左右键/Shift/数字键/拖拽/丢弃，以及方块容器交互与持久化；铁砧/附魔台等专业界面仍为简化。
+- [x] **物品栏系统**：`ItemStack`、玩家物品栏、协议序列化、左右键/Shift/数字键/拖拽/丢弃，以及方块容器交互与持久化；附魔台和铁砧已实现（附魔、先前工作惩罚、费用上限可由 `anvil-too-expensive-limit` 关闭）；药水外观已实现，药效尚未实现。
 - [x] **PYMC 原生扩展 API**：支持 Python Mod/Plugin 的发现、依赖排序、生命周期、事件和命令注册。Java Fabric/Forge Mod 不受支持；Bukkit/Paper `.jar` 插件通过可选 Java 桥接层提供 best-effort 兼容，详见 `MOD_COMPATIBILITY.md`。
-- [x] **Web 管理台安全默认值**：默认只监听 `127.0.0.1`；由于当前没有内置认证，远程监听必须显式设置 `web-admin-allow-remote=true` 并部署外部访问控制。
 
 ### 部分实现（不可视为完成）
 
@@ -62,7 +61,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - [ ] 完整洞穴系统：大型洞穴、繁茂洞穴、溶洞、地下水体、岩浆湖、深暗之域等。
 - [ ] Nether、End 和多维度传送。
 - [ ] 完整光照和客户端可见的区块更新细节。
-- [ ] 更完整的物品栏交互：创造模式物品栏、铁砧/附魔台完整界面、药水效果。
+- [ ] 更完整的物品栏交互：创造模式物品栏、铁砧改名与修复、药水效果。
 - [ ] 更完整的生物系统：完整 A* 寻路、繁殖、村民、Boss、刷怪规则和 mob cap。
 - [ ] 更完整的选择器、NBT 参数和 datapack/function 支持。
 
@@ -101,7 +100,7 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
 - 基础 `gamerule`：控制昼夜流动、天气循环、自然刷怪、自然回血和死亡自动重生
 - 天气客户端同步：Game Event 广播下雨/雷暴状态与强度，入服时同步当前天气；雷暴期间落雷并伤害附近实体
 - 控制台和游戏内基础命令
-- Web 管理台、权限组、OP、封禁和白名单
+- 权限组、OP、封禁和白名单
 
 ## 目录
 
@@ -118,19 +117,17 @@ PyMC 是一个用 Python 实现的 Minecraft Java 版 1.21.1 服务端原型，�
   - `world/block_behavior.py`：方块行为系统
   - `world/fluids.py`：流体系统
 - `commands/`：命令框架和原版命令
-- `admin/`：权限系统和 Web 管理后台
-- `watchdog/`：双进程保护系统
+- `admin/`：权限系统
+- `watchdog/`：进程管理
   - `watchdog/process_manager.py`：Watchdog 管理器
   - `watchdog/network_optimizer.py`：网络优化器
-  - `watchdog/health_check.py`：健康检查
-  - `watchdog/restart_handler.py`：自动重启处理
 - `mods/`：PYMC 原生 Python Mod API
 - `plugins/`：PYMC 原生 Python Plugin API + Java Bukkit/Paper 桥接层（`plugins/java_plugin.py`）
-- `native/`：C++ 原生地形生成器、轻量生物 AI、红石引擎、光照引擎、物理引擎及 PYMC 原生扩展接口
+- `native/`：C++ 原生组件——地形生成器（`terrain_gen`）、生物 AI 进程（`mob_ai`）、原版行为引擎（`vanilla`：红石/BUD、漏斗、爆炸）
 
 ## 运行
 
-需要 Python 3.10 或更新版本。
+需要 Python 3.14（最新稳定版；测试在 3.14 上通过）。
 
 ```bash
 pip install -r requirements.txt
@@ -143,7 +140,6 @@ python main.py --nogui
 默认监听:
 
 - Minecraft 服务端: `0.0.0.0:25565`
-- Web 管理台: `127.0.0.1:25568`（无内置认证，默认禁止远程监听）
 - Watchdog UDP 健康检查: `127.0.0.1:25569` (启用时)
 
 使用 Minecraft Java 1.21.1 客户端连接 `localhost:25565`。
@@ -162,9 +158,9 @@ python main.py --nogui
 - `view-distance`：区块视距
 - `level-seed`：世界种子
 - `gamemode`：默认游戏模式
-- `web-admin-enabled`：是否启用 Web 管理台
-- `web-admin-host`：管理台监听地址，默认 `127.0.0.1`
-- `web-admin-allow-remote`：允许无内置认证的远程监听；仅应在受认证反向代理等外部访问控制保护时启用
+- `chunk-decode-cache`：解码后的区块缓存数量，每个约 1.2 MB，默认 64
+- `redstone-chunk-cache`：原生红石引擎保留的区块数，每个约 196 KB，默认 256
+- `anvil-too-expensive-limit`：铁砧合并费用达到 40 级时是否禁止取出（原版为 `true`；设为 `false` 后不限制费用，等级足够即可取出）
 - `permissions-file`：权限文件路径
 - `join-immediate-radius`：玩家入服时优先同步的近距离区块半径
 - `min-protocol-version` / `max-protocol-version`：允许的协议版本范围 (默认 47-770)

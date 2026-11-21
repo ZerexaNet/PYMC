@@ -37,20 +37,10 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Optional
 from dataclasses import dataclass, field
 
-from .blocks import (
-    AIR, STONE, GRANITE, DIORITE, ANDESITE, GRASS_BLOCK, DIRT,
-    COBBLESTONE, OAK_PLANKS, GLASS, SAND, OAK_LOG, TORCH,
-    BEDROCK, WATER, LAVA, CHEST, CRAFTING_TABLE, FURNACE,
-    FARMLAND, ANVIL, ENDER_CHEST, CAKE, OAK_DOOR, IRON_DOOR,
-    OAK_SIGN, OAK_TRAPDOOR, IRON_TRAPDOOR, TRAPPED_CHEST,
-    BLAST_FURNACE, REDSTONE_TORCH, CACTUS, WHITE_BED,
-    OBSIDIAN,
-)
 from .chunk_io import STATE_ID_TO_BLOCK
-from .inventory import ItemStack, encode_slot_entry
+from .inventory import ItemStack
 
 logger = logging.getLogger("PyMC.方块行为")
 
@@ -290,71 +280,6 @@ def get_block_tier_required(block_name: str) -> str | None:
     if info is not None:
         return info[2]
     return None
-
-
-def calculate_break_time(block_name: str, tool_item: ItemStack | None,
-                          in_water: bool = False, on_ground: bool = True) -> float:
-    """
-    Calculate the time in seconds to break a block.
-
-    Args:
-        block_name: The block being mined
-        tool_item: The tool being used (or None for bare hands)
-        in_water: Whether the player is in water (5x slower)
-        on_ground: Whether the player is on ground (affects mining)
-
-    Returns:
-        Time in seconds to break the block, or -1 if unbreakable
-    """
-    hardness = get_block_hardness(block_name)
-    if hardness < 0:
-        return -1.0  # Unbreakable
-
-    preferred_tool = get_block_tool(block_name)
-    tier_required = get_block_tier_required(block_name)
-
-    # Base speed
-    if hardness == 0:
-        return 0.0
-
-    speed_multiplier = 1.0
-
-    # Tool bonus
-    if tool_item is not None and not tool_item.is_empty:
-        tool_type = tool_item.get_tool_type()
-        tool_tier = tool_item.get_tool_tier()
-
-        if tool_type == preferred_tool:
-            # Correct tool: apply speed bonus
-            speed_multiplier = tool_item.get_mining_speed()
-
-            # Check tier requirement
-            if tier_required is not None:
-                tool_tier_level = _TIER_ORDER.get(tool_tier, 0) if tool_tier else 0
-                required_tier_level = _TIER_ORDER.get(tier_required, 0)
-                if tool_tier_level < required_tier_level:
-                    # Can't mine with this tier - very slow
-                    speed_multiplier = 1.0
-        elif tool_type is not None:
-            # Wrong tool type but still a tool
-            speed_multiplier = 1.0
-
-    # Calculate break time
-    # Formula: break_time = hardness * 1.5 / speed_multiplier (simplified vanilla)
-    if speed_multiplier > 1.0:
-        break_time = hardness * 1.5 / speed_multiplier
-    else:
-        break_time = hardness * 5.0  # Without correct tool, 5x penalty
-
-    # Water penalty
-    if in_water:
-        break_time *= 5.0
-
-    # Not on ground penalty (slight)
-    if not on_ground:
-        break_time *= 1.5
-
-    return max(0.05, break_time)
 
 
 def _harvest_tools() -> dict[str, frozenset[int]]:
@@ -657,19 +582,12 @@ class BlockBehavior:
         return True
 
     @staticmethod
-    async def on_break(conn, server, x: int, y: int, z: int) -> list[ItemStack]:
-        """Called when a block is broken. Return list of drops."""
-        return []
-
-    @staticmethod
     async def on_step_on(conn, server, x: int, y: int, z: int) -> None:
         """Called when an entity steps on this block."""
-        pass
 
     @staticmethod
     async def on_projectile_hit(conn, server, x: int, y: int, z: int) -> None:
         """Called when a projectile hits this block."""
-        pass
 
     @staticmethod
     def is_solid() -> bool:
@@ -707,6 +625,11 @@ class ContainerData:
     burn_time: int = 0       # Remaining fuel burn time
     cook_time: int = 0       # Current cook progress
     cook_time_total: int = 0 # Total cook time for current recipe
+    brew_time: int = 0       # Brewing stand: ticks left in the current brew
+    brew_fuel: int = 0       # Brewing stand: brew fuel units left (one blaze powder = 20)
+    enchant_seed: int = 0    # Enchanting table: seed of the offers (changes after each enchant)
+    enchant_offers: list = field(default_factory=list)   # Enchanting table: current offers (not saved)
+    anvil_cost: int = 0      # Anvil: levels the current result costs (not saved)
 
     def __post_init__(self):
         if not self.items:
@@ -722,6 +645,13 @@ class ContainerData:
                 self.items = [None] * 5
             elif self.type == "brewing_stand":
                 self.items = [None] * 5  # 0-2 bottles, 3 ingredient, 4 blaze powder
+            elif self.type == "enchanting_table":
+                self.items = [None] * 2  # 0 item, 1 lapis lazuli
+                if not self.enchant_seed:
+                    import random as _random
+                    self.enchant_seed = _random.getrandbits(31)
+            elif self.type == "anvil":
+                self.items = [None] * 3  # 0 left, 1 right, 2 result
             elif self.type == "dropper" or self.type == "dispenser":
                 self.items = [None] * 9
             else:
@@ -737,6 +667,9 @@ class ContainerData:
             "burn_time": self.burn_time,
             "cook_time": self.cook_time,
             "cook_time_total": self.cook_time_total,
+            "brew_time": self.brew_time,
+            "brew_fuel": self.brew_fuel,
+            "enchant_seed": self.enchant_seed,
         }
 
     @classmethod
@@ -750,6 +683,9 @@ class ContainerData:
         container.burn_time = int(data.get("burn_time", 0))
         container.cook_time = int(data.get("cook_time", 0))
         container.cook_time_total = int(data.get("cook_time_total", 0))
+        container.brew_time = int(data.get("brew_time", 0))
+        container.brew_fuel = int(data.get("brew_fuel", 0))
+        container.enchant_seed = int(data.get("enchant_seed", 0))
         return container
 
 
@@ -1108,6 +1044,137 @@ class ChestBehavior(BlockBehavior):
         return True
 
 
+# --------------------------------------------------
+# Brewing (BrewingStandBlockEntity / PotionBrewing)
+# --------------------------------------------------
+#
+# A potion is an item (minecraft:potion / splash_potion / lingering_potion) whose
+# nbt "potion" names its effect: "water", "awkward", "healing", "long_swiftness",
+# "strong_healing", ... Only the common base-potion mixes are listed here; the
+# potion's appearance and effect are not sent to clients or applied yet.
+
+BREW_TIME = 400
+BREW_FUEL_PER_POWDER = 20
+POTION_ITEMS = {"minecraft:potion": "potion", "minecraft:splash_potion": "splash",
+                "minecraft:lingering_potion": "lingering"}
+_POTION_OF_KIND = {"potion": "minecraft:potion", "splash": "minecraft:splash_potion",
+                   "lingering": "minecraft:lingering_potion"}
+_AWKWARD_MIXES = {
+    "glistering_melon_slice": "healing", "sugar": "swiftness", "rabbit_foot": "leaping",
+    "blaze_powder": "strength", "golden_carrot": "night_vision", "pufferfish": "water_breathing",
+    "magma_cream": "fire_resistance", "spider_eye": "poison", "turtle_helmet": "turtle_master",
+    "phantom_membrane": "slow_falling", "ghast_tear": "regeneration",
+}
+_STRONG_OK = {"healing", "swiftness", "leaping", "strength", "poison", "regeneration", "turtle_master"}
+_LONG_OK = {"night_vision", "invisibility", "leaping", "fire_resistance", "swiftness", "slowness",
+            "water_breathing", "poison", "regeneration", "strength", "weakness", "turtle_master", "slow_falling"}
+_CORRUPT = {"swiftness": "slowness", "healing": "harming", "night_vision": "invisibility"}
+BREWING_INGREDIENTS = {"minecraft:" + n for n in (
+    "nether_wart", "redstone", "glowstone_dust", "fermented_spider_eye", "gunpowder", "dragon_breath", "sugar",
+    "rabbit_foot", "glistering_melon_slice", "spider_eye", "pufferfish", "magma_cream", "golden_carrot",
+    "blaze_powder", "ghast_tear", "turtle_helmet", "phantom_membrane", "breeze_rod", "slime_block", "cobweb",
+    "stone")}
+
+
+def potion_of(item) -> tuple[str, str] | None:
+    """(kind, effect) of a potion item, or None."""
+    if item is None or item.is_empty or item.item_id not in POTION_ITEMS:
+        return None
+    return POTION_ITEMS[item.item_id], str((item.nbt or {}).get("potion", "water"))
+
+
+def mix_potion(kind: str, effect: str, ingredient: str) -> tuple[str, str] | None:
+    """PotionBrewing.mix: the potion that ingredient turns (kind, effect) into, or None."""
+    ingredient = ingredient.split(":")[-1]
+    if kind == "potion" and effect == "water" and ingredient == "nether_wart":
+        return ("potion", "awkward")
+    if ingredient == "gunpowder" and kind == "potion":
+        return ("splash", effect)
+    if ingredient == "dragon_breath" and kind == "splash":
+        return ("lingering", effect)
+    prefix, base = ("strong_", effect[7:]) if effect.startswith("strong_") else \
+        (("long_", effect[5:]) if effect.startswith("long_") else ("", effect))
+    if effect == "awkward" and ingredient in _AWKWARD_MIXES:
+        return (kind, _AWKWARD_MIXES[ingredient])
+    if ingredient == "glowstone_dust" and not prefix and base in _STRONG_OK:
+        return (kind, "strong_" + base)
+    if ingredient == "redstone" and not prefix and base in _LONG_OK:
+        return (kind, "long_" + base)
+    if ingredient == "fermented_spider_eye" and base in _CORRUPT:
+        return (kind, prefix + _CORRUPT[base])
+    return None
+
+
+def _potion_stack(kind: str, effect: str):
+    from .inventory import ItemStack
+    return ItemStack(_POTION_OF_KIND[kind], 1, 0, {"potion": effect})
+
+
+def brewing_mixes(container) -> list:
+    """Bottle slots that the ingredient in slot 3 would change now: [(slot, kind, effect)]."""
+    ingredient = container.items[3]
+    if ingredient is None or ingredient.is_empty:
+        return []
+    out = []
+    for slot in (0, 1, 2):
+        potion = potion_of(container.items[slot])
+        if potion is None:
+            continue
+        result = mix_potion(potion[0], potion[1], ingredient.item_id)
+        if result is not None:
+            out.append((slot, result[0], result[1]))
+    return out
+
+
+def brewing_can_place(container, slot: int, item_id: str) -> bool:
+    """BrewingStandBlockEntity.canPlaceItem."""
+    if slot == 3:
+        return item_id in BREWING_INGREDIENTS
+    if slot == 4:
+        return item_id == "minecraft:blaze_powder"
+    if slot in (0, 1, 2):
+        current = container.items[slot]
+        return item_id in POTION_ITEMS and (current is None or current.is_empty)
+    return False
+
+
+def brewing_tick(container) -> bool:
+    """One game tick of a brewing stand. Returns True when a brew finished."""
+    items = container.items
+    if container.brew_fuel <= 0 and len(items) > 4 and items[4] is not None and not items[4].is_empty \
+            and items[4].item_id == "minecraft:blaze_powder":
+        container.brew_fuel = BREW_FUEL_PER_POWDER
+        items[4].count -= 1
+        if items[4].count <= 0:
+            items[4] = None
+    mixes = brewing_mixes(container)
+    can_brew = bool(mixes)
+    finished = False
+    if container.brew_time > 0:
+        container.brew_time -= 1
+        if container.brew_time == 0 and can_brew:
+            for slot, kind, effect in mixes:
+                items[slot] = _potion_stack(kind, effect)
+            items[3].count -= 1
+            if items[3].count <= 0:
+                items[3] = None
+            finished = True
+        elif not can_brew:
+            container.brew_time = 0
+    elif can_brew and container.brew_fuel > 0:
+        container.brew_fuel -= 1
+        container.brew_time = BREW_TIME
+    return finished
+
+
+def brewing_bottle_state(container, state: int) -> int:
+    """has_bottle_0..2 follow the bottle slots."""
+    from .rs.core import with_props
+    changes = {f"has_bottle_{i}": "true" if container.items[i] is not None and not container.items[i].is_empty
+               else "false" for i in range(3)}
+    return with_props(state, **changes)
+
+
 class BrewingStandBehavior(BlockBehavior):
     """Brewing stand window: 3 bottles, ingredient, blaze powder."""
 
@@ -1131,26 +1198,22 @@ class BrewingStandBehavior(BlockBehavior):
         return True
 
 
-# PotionBrewing ingredients (1.21.1) and what goes into the bottle slots
-BREWING_INGREDIENTS = {"minecraft:" + n for n in (
-    "nether_wart", "redstone", "glowstone_dust", "fermented_spider_eye", "gunpowder", "dragon_breath", "sugar",
-    "rabbit_foot", "glistering_melon_slice", "spider_eye", "pufferfish", "magma_cream", "golden_carrot",
-    "blaze_powder", "ghast_tear", "turtle_helmet", "phantom_membrane", "breeze_rod", "slime_block", "cobweb",
-    "stone")}
-BREWING_BOTTLES = {"minecraft:potion", "minecraft:splash_potion", "minecraft:lingering_potion",
-                   "minecraft:glass_bottle"}
-
-
-def brewing_can_place(container, slot: int, item_id: str) -> bool:
-    """BrewingStandBlockEntity.canPlaceItem."""
-    if slot == 3:
-        return item_id in BREWING_INGREDIENTS
-    if slot == 4:
-        return item_id == "minecraft:blaze_powder"
-    if slot in (0, 1, 2):
-        current = container.items[slot]
-        return item_id in BREWING_BOTTLES and (current is None or current.is_empty)
-    return False
+def tick_brewing_stands(server) -> list:
+    """Advance every brewing stand one tick; returns (x, y, z, state) for the blocks whose bottles changed."""
+    from .editing import get_world_block, set_world_block
+    changes = []
+    for (x, y, z), container in list(container_manager.containers.items()):
+        if container.type != "brewing_stand":
+            continue
+        brewing_tick(container)
+        state = get_world_block(server, x, y, z)
+        if state is None:
+            continue
+        new_state = brewing_bottle_state(container, state)
+        if new_state != state:
+            set_world_block(server, x, y, z, new_state)
+            changes.append((x, y, z, new_state))
+    return changes
 
 
 class CraftingTableBehavior(BlockBehavior):
@@ -1245,17 +1308,21 @@ class BlastFurnaceBehavior(BlockBehavior):
 
 
 class AnvilBehavior(BlockBehavior):
-    """Anvil repair/enchant interface."""
+    """Anvil: merge an enchanted book (or a matching item) into an item."""
 
     @staticmethod
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
         from world.inventory import send_open_container
+        from world.enchanting_window import open_window, ANVIL
+        container = container_manager.get_or_create(x, y, z, ANVIL)
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
-
+        conn._open_container_type = 'block'
         await send_open_container(conn, window_id, "minecraft:anvil", {"translate": "container.repair"})
+        await open_window(conn, window_id, container, (x, y, z))
+        container_manager.add_viewer(x, y, z, conn.entity_id)
         return True
 
     @staticmethod
@@ -1264,17 +1331,21 @@ class AnvilBehavior(BlockBehavior):
 
 
 class EnchantingTableBehavior(BlockBehavior):
-    """Enchanting table interface."""
+    """Enchanting table: an item and lapis lazuli, three enchantment offers."""
 
     @staticmethod
     async def on_use(conn, server, x: int, y: int, z: int,
                      face: int, hand: int) -> bool:
         from world.inventory import send_open_container
+        from world.enchanting_window import open_window, ENCHANT_TABLE
+        container = container_manager.get_or_create(x, y, z, ENCHANT_TABLE)
         window_id = container_manager.allocate_window_id()
         conn._open_window_id = window_id
         conn._open_container_pos = (x, y, z)
-
+        conn._open_container_type = 'block'
         await send_open_container(conn, window_id, "minecraft:enchantment", {"translate": "container.enchant"})
+        await open_window(conn, window_id, container, (x, y, z))
+        container_manager.add_viewer(x, y, z, conn.entity_id)
         return True
 
     @staticmethod
@@ -1652,12 +1723,6 @@ class TNTBehavior(BlockBehavior):
         server.entity_manager.create_tnt(x + 0.5, y, z + 0.5)
 
     @staticmethod
-    async def _create_explosion(server, cx: int, cy: int, cz: int, radius: float = 4.0):
-        """Explosion at a block position (vanilla algorithm in world.explosion)."""
-        from world.explosion import explode
-        await explode(server, cx + 0.5, cy + 0.0625, cz + 0.5, radius)
-
-    @staticmethod
     def is_interactive() -> bool:
         return True
 
@@ -1936,8 +2001,3 @@ def get_block_behavior(block_name: str) -> BlockBehavior | None:
     return BLOCK_BEHAVIORS.get(block_name)
 
 
-def get_block_name_from_state(state_id: int) -> str:
-    """Get block name from a block state ID."""
-    if state_id in STATE_ID_TO_BLOCK:
-        return STATE_ID_TO_BLOCK[state_id][0]
-    return "minecraft:air"

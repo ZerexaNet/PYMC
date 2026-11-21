@@ -29,7 +29,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 logger = logging.getLogger("pymc.plugins.java")
 

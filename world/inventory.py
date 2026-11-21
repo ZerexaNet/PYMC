@@ -17,12 +17,10 @@ Slot layout (Java Edition 1.21.1):
   45:    Crafting result (client-side only)
 """
 
-import copy
 import logging
-from typing import Optional
 
 from protocol.data_types import (
-    write_varint, write_boolean, write_byte, write_short,
+    write_varint, write_short,
 )
 
 logger = logging.getLogger("PyMC.物品栏")
@@ -157,11 +155,6 @@ BLOCK_TO_ITEM_OVERRIDES: dict[str, str] = {
 }
 
 
-def block_name_to_item_name(block_name: str) -> str:
-    """Convert a block name to the item it drops when mined without silk touch."""
-    return BLOCK_TO_ITEM_OVERRIDES.get(block_name, block_name)
-
-
 # --------------------------------------------------
 # ItemStack
 # --------------------------------------------------
@@ -212,14 +205,6 @@ class ItemStack:
 
     # --- Backward compatibility methods ---
 
-    def is_empty_method(self) -> bool:
-        """Check if this stack is empty (method version for backward compat)."""
-        return self.is_empty
-
-    def max_stack_size_method(self) -> int:
-        """Get max stack size (method version for backward compat)."""
-        return self.max_stack_size
-
     def can_stack_with(self, other: 'ItemStack | None') -> bool:
         """Check if this stack can be combined with another."""
         if other is None or other.is_empty:
@@ -250,15 +235,6 @@ class ItemStack:
     def get_tool_tier(self) -> str | None:
         """Get the tool tier if this item is a tiered tool."""
         return TOOL_TIER_FROM_ITEM.get(self.item_id)
-
-    def get_mining_speed(self) -> float:
-        """Get the mining speed multiplier for this tool."""
-        tier = self.get_tool_tier()
-        if tier:
-            return TOOL_TIER_SPEED.get(tier, 1.0)
-        if self.item_id == "minecraft:shears":
-            return 1.0
-        return 1.0
 
     def __repr__(self) -> str:
         if self.is_empty:
@@ -397,12 +373,6 @@ class PlayerInventory:
                 total += slot.count
         return total
 
-    def swap_slots(self, a: int, b: int):
-        """Swap the contents of two slots."""
-        if 0 <= a < self.TOTAL_SLOTS and 0 <= b < self.TOTAL_SLOTS:
-            self.slots[a], self.slots[b] = self.slots[b], self.slots[a]
-            self.state_id += 1
-
     def clear(self):
         """Clear all inventory slots."""
         self.slots = [None] * self.TOTAL_SLOTS
@@ -435,16 +405,6 @@ class PlayerInventory:
     def get_armor(self) -> list[ItemStack | None]:
         """Get the 4 armor slots (boots, leggings, chestplate, helmet)."""
         return list(self.slots[36:40])
-
-    def get_offhand(self) -> ItemStack | None:
-        """Get the offhand item."""
-        return self.slots[40]
-
-    def get_hotbar_slot(self, index: int) -> ItemStack | None:
-        """Get an item from the hotbar (0-8)."""
-        if 0 <= index < 9:
-            return self.slots[index]
-        return None
 
     def set_held_slot(self, slot: int):
         """Set the currently selected hotbar slot (0-8)."""
@@ -532,19 +492,47 @@ class PlayerInventory:
         """Create from legacy serialization format."""
         return cls.deserialize_full(data)
 
-    def to_legacy_tuple(self, slot: int) -> tuple[str, int] | None:
-        """Convert a slot to legacy tuple format for old code compatibility."""
-        item = self.get_slot(slot)
-        if item is None or item.is_empty:
-            return None
-        return (item.item_id, item.count)
-
-
 # --------------------------------------------------
 # Protocol Encoding
 # --------------------------------------------------
 
 SLOT_COMPONENT_DAMAGE = 3  # minecraft:damage in the 1.21.1 data component registry
+SLOT_COMPONENT_ENCHANTMENTS = 9          # minecraft:enchantments (ItemEnchantments)
+SLOT_COMPONENT_STORED_ENCHANTMENTS = 23  # minecraft:stored_enchantments (enchanted books)
+SLOT_COMPONENT_POTION_CONTENTS = 31      # minecraft:potion_contents
+POTION_ITEM_IDS = {"minecraft:potion", "minecraft:splash_potion", "minecraft:lingering_potion"}
+
+
+def _potion_payload(name: str) -> bytes | None:
+    """PotionContents: optional potion id, optional custom colour, custom effects, optional custom name."""
+    from protocol.data_types import write_boolean
+    from world.potions import protocol_id
+    registry_id = protocol_id(name)
+    if registry_id is None:
+        return None
+    return (write_boolean(True) + write_varint(registry_id)   # potion
+            + write_boolean(False)                            # no custom colour
+            + write_varint(0)                                 # no custom effects
+            + write_boolean(False))                           # no custom name
+
+
+def _enchantments_payload(levels: dict) -> bytes | None:
+    """ItemEnchantments: count, (registry id, level) pairs, show tooltip."""
+    from protocol.data_types import write_boolean
+    from world.enchanting import protocol_id
+    entries = []
+    for name, level in levels.items():
+        registry_id = protocol_id(name)
+        if registry_id is not None and int(level) > 0:
+            entries.append((registry_id, int(level)))
+    if not entries:
+        return None
+    out = bytearray(write_varint(len(entries)))
+    for registry_id, level in entries:
+        out.extend(write_varint(registry_id))
+        out.extend(write_varint(level))
+    out.extend(write_boolean(True))
+    return bytes(out)
 
 
 def encode_slot_entry(item: ItemStack | None) -> bytes:
@@ -594,6 +582,20 @@ def encode_slot_entry(item: ItemStack | None) -> bytes:
         components.extend(write_varint(SLOT_COMPONENT_DAMAGE))
         components.extend(write_varint(min(damage, item.max_durability)))
         component_count += 1
+    nbt = getattr(item, "nbt", None) or {}
+    if item.item_id in POTION_ITEM_IDS and nbt.get("potion"):
+        potion_data = _potion_payload(str(nbt["potion"]))
+        if potion_data is not None:
+            components.extend(write_varint(SLOT_COMPONENT_POTION_CONTENTS))
+            components.extend(potion_data)
+            component_count += 1
+    for key, component in (("enchantments", SLOT_COMPONENT_ENCHANTMENTS),
+                           ("stored_enchantments", SLOT_COMPONENT_STORED_ENCHANTMENTS)):
+        enchant_data = _enchantments_payload(nbt.get(key) or {})
+        if enchant_data is not None:
+            components.extend(write_varint(component))
+            components.extend(enchant_data)
+            component_count += 1
 
     payload.extend(write_varint(component_count))  # addedComponentCount
     payload.extend(write_varint(0))                # removedComponentCount
@@ -632,14 +634,51 @@ def decode_slot_entry(data: bytes, offset: int = 0) -> tuple[ItemStack | None, i
     added_count, offset = read_varint(data, offset)
     removed_count, offset = read_varint(data, offset)
     damage = 0
+    nbt: dict = {}
     for index in range(added_count):
         component_type, offset = read_varint(data, offset)
         if component_type == SLOT_COMPONENT_DAMAGE:
             damage, offset = read_varint(data, offset)
         elif component_type in (1, 2):      # max_stack_size / max_damage: VarInt
             _value, offset = read_varint(data, offset)
+        elif component_type in (SLOT_COMPONENT_ENCHANTMENTS, SLOT_COMPONENT_STORED_ENCHANTMENTS):
+            from world.enchanting import name_of_protocol_id
+            from protocol.data_types import read_boolean
+            count, offset = read_varint(data, offset)
+            levels = {}
+            for _ in range(count):
+                registry_id, offset = read_varint(data, offset)
+                level, offset = read_varint(data, offset)
+                name = name_of_protocol_id(registry_id)
+                if name is not None:
+                    levels[name.split(":", 1)[-1]] = level
+            _show_tooltip, offset = read_boolean(data, offset)
+            key = "enchantments" if component_type == SLOT_COMPONENT_ENCHANTMENTS else "stored_enchantments"
+            if levels:
+                nbt[key] = levels
+        elif component_type == SLOT_COMPONENT_POTION_CONTENTS:
+            from protocol.data_types import read_boolean, read_int, read_string
+            from world.potions import name_of_protocol_id
+            has_potion, offset = read_boolean(data, offset)
+            if has_potion:
+                potion_id, offset = read_varint(data, offset)
+                name = name_of_protocol_id(potion_id)
+                if name is not None:
+                    nbt["potion"] = name
+            has_colour, offset = read_boolean(data, offset)
+            if has_colour:
+                _colour, offset = read_int(data, offset)
+            effects, offset = read_varint(data, offset)
+            if effects:
+                # custom effects are not used by the server; their layout is not parsed
+                offset = len(data)
+                removed_count = 0
+                break
+            has_name, offset = read_boolean(data, offset)
+            if has_name:
+                _custom_name, offset = read_string(data, offset)
         else:
-            # Other component payloads (names, enchantments, potion contents...)
+            # Other component payloads (names, potion contents...)
             # are not decoded; the rest of this slot cannot be parsed reliably.
             offset = len(data)
             removed_count = 0
@@ -647,7 +686,7 @@ def decode_slot_entry(data: bytes, offset: int = 0) -> tuple[ItemStack | None, i
     for _ in range(removed_count):
         _removed_type, offset = read_varint(data, offset)
 
-    item = ItemStack(item_id=item_name, count=max(1, item_count), damage=damage)
+    item = ItemStack(item_id=item_name, count=max(1, item_count), damage=damage, nbt=nbt)
     return (item, offset)
 
 

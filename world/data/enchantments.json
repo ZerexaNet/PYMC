@@ -1,0 +1,2186 @@
+[
+ {
+  "id": 0,
+  "name": "aqua_affinity",
+  "max_level": 1,
+  "min_cost": [
+   1,
+   0
+  ],
+  "max_cost": [
+   41,
+   0
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "primary": [
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 1,
+  "name": "bane_of_arthropods",
+  "max_level": 5,
+  "min_cost": [
+   5,
+   8
+  ],
+  "max_cost": [
+   25,
+   8
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "mace"
+  ],
+  "primary": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "exclusive": [
+   "sharpness",
+   "smite",
+   "bane_of_arthropods",
+   "impaling",
+   "density",
+   "breach"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 2,
+  "name": "binding_curse",
+  "max_level": 1,
+  "min_cost": [
+   25,
+   0
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "player_head",
+   "creeper_head",
+   "zombie_head",
+   "skeleton_skull",
+   "wither_skeleton_skull",
+   "dragon_head",
+   "piglin_head",
+   "carved_pumpkin"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "player_head",
+   "creeper_head",
+   "zombie_head",
+   "skeleton_skull",
+   "wither_skeleton_skull",
+   "dragon_head",
+   "piglin_head",
+   "carved_pumpkin"
+  ],
+  "exclusive": [],
+  "treasure": true,
+  "curse": true,
+  "tradeable": true,
+  "in_enchanting_table": false
+ },
+ {
+  "id": 3,
+  "name": "blast_protection",
+  "max_level": 4,
+  "min_cost": [
+   5,
+   8
+  ],
+  "max_cost": [
+   13,
+   8
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "exclusive": [
+   "protection",
+   "blast_protection",
+   "fire_protection",
+   "projectile_protection"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 4,
+  "name": "breach",
+  "max_level": 4,
+  "min_cost": [
+   15,
+   9
+  ],
+  "max_cost": [
+   65,
+   9
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "mace"
+  ],
+  "primary": [
+   "mace"
+  ],
+  "exclusive": [
+   "sharpness",
+   "smite",
+   "bane_of_arthropods",
+   "impaling",
+   "density",
+   "breach"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 5,
+  "name": "channeling",
+  "max_level": 1,
+  "min_cost": [
+   25,
+   0
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "trident"
+  ],
+  "primary": [
+   "trident"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 6,
+  "name": "density",
+  "max_level": 5,
+  "min_cost": [
+   5,
+   8
+  ],
+  "max_cost": [
+   25,
+   8
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "mace"
+  ],
+  "primary": [
+   "mace"
+  ],
+  "exclusive": [
+   "sharpness",
+   "smite",
+   "bane_of_arthropods",
+   "impaling",
+   "density",
+   "breach"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 7,
+  "name": "depth_strider",
+  "max_level": 3,
+  "min_cost": [
+   10,
+   10
+  ],
+  "max_cost": [
+   25,
+   10
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "exclusive": [
+   "frost_walker",
+   "depth_strider"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 8,
+  "name": "efficiency",
+  "max_level": 5,
+  "min_cost": [
+   1,
+   10
+  ],
+  "max_cost": [
+   51,
+   10
+  ],
+  "weight": 10,
+  "anvil_cost": 1,
+  "supported": [
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "shears"
+  ],
+  "primary": [
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "shears"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 9,
+  "name": "feather_falling",
+  "max_level": 4,
+  "min_cost": [
+   5,
+   6
+  ],
+  "max_cost": [
+   11,
+   6
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 10,
+  "name": "fire_aspect",
+  "max_level": 2,
+  "min_cost": [
+   10,
+   20
+  ],
+  "max_cost": [
+   60,
+   20
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "mace"
+  ],
+  "primary": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 11,
+  "name": "fire_protection",
+  "max_level": 4,
+  "min_cost": [
+   10,
+   8
+  ],
+  "max_cost": [
+   18,
+   8
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "exclusive": [
+   "protection",
+   "blast_protection",
+   "fire_protection",
+   "projectile_protection"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 12,
+  "name": "flame",
+  "max_level": 1,
+  "min_cost": [
+   20,
+   0
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "bow"
+  ],
+  "primary": [
+   "bow"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 13,
+  "name": "fortune",
+  "max_level": 3,
+  "min_cost": [
+   15,
+   9
+  ],
+  "max_cost": [
+   65,
+   9
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe"
+  ],
+  "primary": [
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe"
+  ],
+  "exclusive": [
+   "fortune",
+   "silk_touch"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 14,
+  "name": "frost_walker",
+  "max_level": 2,
+  "min_cost": [
+   10,
+   10
+  ],
+  "max_cost": [
+   25,
+   10
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "exclusive": [
+   "frost_walker",
+   "depth_strider"
+  ],
+  "treasure": true,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": false
+ },
+ {
+  "id": 15,
+  "name": "impaling",
+  "max_level": 5,
+  "min_cost": [
+   1,
+   8
+  ],
+  "max_cost": [
+   21,
+   8
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "trident"
+  ],
+  "primary": [
+   "trident"
+  ],
+  "exclusive": [
+   "sharpness",
+   "smite",
+   "bane_of_arthropods",
+   "impaling",
+   "density",
+   "breach"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 16,
+  "name": "infinity",
+  "max_level": 1,
+  "min_cost": [
+   20,
+   0
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "bow"
+  ],
+  "primary": [
+   "bow"
+  ],
+  "exclusive": [
+   "infinity",
+   "mending"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 17,
+  "name": "knockback",
+  "max_level": 2,
+  "min_cost": [
+   5,
+   20
+  ],
+  "max_cost": [
+   55,
+   20
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "primary": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 18,
+  "name": "looting",
+  "max_level": 3,
+  "min_cost": [
+   15,
+   9
+  ],
+  "max_cost": [
+   65,
+   9
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "primary": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 19,
+  "name": "loyalty",
+  "max_level": 3,
+  "min_cost": [
+   12,
+   7
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "trident"
+  ],
+  "primary": [
+   "trident"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 20,
+  "name": "luck_of_the_sea",
+  "max_level": 3,
+  "min_cost": [
+   15,
+   9
+  ],
+  "max_cost": [
+   65,
+   9
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "fishing_rod"
+  ],
+  "primary": [
+   "fishing_rod"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 21,
+  "name": "lure",
+  "max_level": 3,
+  "min_cost": [
+   15,
+   9
+  ],
+  "max_cost": [
+   65,
+   9
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "fishing_rod"
+  ],
+  "primary": [
+   "fishing_rod"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 22,
+  "name": "mending",
+  "max_level": 1,
+  "min_cost": [
+   25,
+   25
+  ],
+  "max_cost": [
+   75,
+   25
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "shield",
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "bow",
+   "crossbow",
+   "trident",
+   "flint_and_steel",
+   "shears",
+   "brush",
+   "fishing_rod",
+   "carrot_on_a_stick",
+   "warped_fungus_on_a_stick",
+   "mace"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "shield",
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "bow",
+   "crossbow",
+   "trident",
+   "flint_and_steel",
+   "shears",
+   "brush",
+   "fishing_rod",
+   "carrot_on_a_stick",
+   "warped_fungus_on_a_stick",
+   "mace"
+  ],
+  "exclusive": [],
+  "treasure": true,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": false
+ },
+ {
+  "id": 23,
+  "name": "multishot",
+  "max_level": 1,
+  "min_cost": [
+   20,
+   0
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "crossbow"
+  ],
+  "primary": [
+   "crossbow"
+  ],
+  "exclusive": [
+   "multishot",
+   "piercing"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 24,
+  "name": "piercing",
+  "max_level": 4,
+  "min_cost": [
+   1,
+   10
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 10,
+  "anvil_cost": 1,
+  "supported": [
+   "crossbow"
+  ],
+  "primary": [
+   "crossbow"
+  ],
+  "exclusive": [
+   "multishot",
+   "piercing"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 25,
+  "name": "power",
+  "max_level": 5,
+  "min_cost": [
+   1,
+   10
+  ],
+  "max_cost": [
+   16,
+   10
+  ],
+  "weight": 10,
+  "anvil_cost": 1,
+  "supported": [
+   "bow"
+  ],
+  "primary": [
+   "bow"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 26,
+  "name": "projectile_protection",
+  "max_level": 4,
+  "min_cost": [
+   3,
+   6
+  ],
+  "max_cost": [
+   9,
+   6
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "exclusive": [
+   "protection",
+   "blast_protection",
+   "fire_protection",
+   "projectile_protection"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 27,
+  "name": "protection",
+  "max_level": 4,
+  "min_cost": [
+   1,
+   11
+  ],
+  "max_cost": [
+   12,
+   11
+  ],
+  "weight": 10,
+  "anvil_cost": 1,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "exclusive": [
+   "protection",
+   "blast_protection",
+   "fire_protection",
+   "projectile_protection"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 28,
+  "name": "punch",
+  "max_level": 2,
+  "min_cost": [
+   12,
+   20
+  ],
+  "max_cost": [
+   37,
+   20
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "bow"
+  ],
+  "primary": [
+   "bow"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 29,
+  "name": "quick_charge",
+  "max_level": 3,
+  "min_cost": [
+   12,
+   20
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "crossbow"
+  ],
+  "primary": [
+   "crossbow"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 30,
+  "name": "respiration",
+  "max_level": 3,
+  "min_cost": [
+   10,
+   10
+  ],
+  "max_cost": [
+   40,
+   10
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "primary": [
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 31,
+  "name": "riptide",
+  "max_level": 3,
+  "min_cost": [
+   17,
+   7
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "trident"
+  ],
+  "primary": [
+   "trident"
+  ],
+  "exclusive": [
+   "loyalty",
+   "channeling"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 32,
+  "name": "sharpness",
+  "max_level": 5,
+  "min_cost": [
+   1,
+   11
+  ],
+  "max_cost": [
+   21,
+   11
+  ],
+  "weight": 10,
+  "anvil_cost": 1,
+  "supported": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe"
+  ],
+  "primary": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "exclusive": [
+   "sharpness",
+   "smite",
+   "bane_of_arthropods",
+   "impaling",
+   "density",
+   "breach"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 33,
+  "name": "silk_touch",
+  "max_level": 1,
+  "min_cost": [
+   15,
+   0
+  ],
+  "max_cost": [
+   65,
+   0
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe"
+  ],
+  "primary": [
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe"
+  ],
+  "exclusive": [
+   "fortune",
+   "silk_touch"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 34,
+  "name": "smite",
+  "max_level": 5,
+  "min_cost": [
+   5,
+   8
+  ],
+  "max_cost": [
+   25,
+   8
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "mace"
+  ],
+  "primary": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "exclusive": [
+   "sharpness",
+   "smite",
+   "bane_of_arthropods",
+   "impaling",
+   "density",
+   "breach"
+  ],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 35,
+  "name": "soul_speed",
+  "max_level": 3,
+  "min_cost": [
+   10,
+   10
+  ],
+  "max_cost": [
+   25,
+   10
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots"
+  ],
+  "exclusive": [],
+  "treasure": true,
+  "curse": false,
+  "tradeable": false,
+  "in_enchanting_table": false
+ },
+ {
+  "id": 36,
+  "name": "sweeping_edge",
+  "max_level": 3,
+  "min_cost": [
+   5,
+   9
+  ],
+  "max_cost": [
+   20,
+   9
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "primary": [
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 37,
+  "name": "swift_sneak",
+  "max_level": 3,
+  "min_cost": [
+   25,
+   25
+  ],
+  "max_cost": [
+   75,
+   25
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings"
+  ],
+  "primary": [
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings"
+  ],
+  "exclusive": [],
+  "treasure": true,
+  "curse": false,
+  "tradeable": false,
+  "in_enchanting_table": false
+ },
+ {
+  "id": 38,
+  "name": "thorns",
+  "max_level": 3,
+  "min_cost": [
+   10,
+   20
+  ],
+  "max_cost": [
+   60,
+   20
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet"
+  ],
+  "primary": [
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 39,
+  "name": "unbreaking",
+  "max_level": 3,
+  "min_cost": [
+   5,
+   8
+  ],
+  "max_cost": [
+   55,
+   8
+  ],
+  "weight": 5,
+  "anvil_cost": 2,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "shield",
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "bow",
+   "crossbow",
+   "trident",
+   "flint_and_steel",
+   "shears",
+   "brush",
+   "fishing_rod",
+   "carrot_on_a_stick",
+   "warped_fungus_on_a_stick",
+   "mace"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "shield",
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "bow",
+   "crossbow",
+   "trident",
+   "flint_and_steel",
+   "shears",
+   "brush",
+   "fishing_rod",
+   "carrot_on_a_stick",
+   "warped_fungus_on_a_stick",
+   "mace"
+  ],
+  "exclusive": [],
+  "treasure": false,
+  "curse": false,
+  "tradeable": true,
+  "in_enchanting_table": true
+ },
+ {
+  "id": 40,
+  "name": "vanishing_curse",
+  "max_level": 1,
+  "min_cost": [
+   25,
+   0
+  ],
+  "max_cost": [
+   50,
+   0
+  ],
+  "weight": 1,
+  "anvil_cost": 8,
+  "supported": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "shield",
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "bow",
+   "crossbow",
+   "trident",
+   "flint_and_steel",
+   "shears",
+   "brush",
+   "fishing_rod",
+   "carrot_on_a_stick",
+   "warped_fungus_on_a_stick",
+   "mace",
+   "compass",
+   "carved_pumpkin",
+   "player_head",
+   "creeper_head",
+   "zombie_head",
+   "skeleton_skull",
+   "wither_skeleton_skull",
+   "dragon_head",
+   "piglin_head"
+  ],
+  "primary": [
+   "leather_boots",
+   "chainmail_boots",
+   "golden_boots",
+   "iron_boots",
+   "diamond_boots",
+   "netherite_boots",
+   "leather_leggings",
+   "chainmail_leggings",
+   "golden_leggings",
+   "iron_leggings",
+   "diamond_leggings",
+   "netherite_leggings",
+   "leather_chestplate",
+   "chainmail_chestplate",
+   "golden_chestplate",
+   "iron_chestplate",
+   "diamond_chestplate",
+   "netherite_chestplate",
+   "leather_helmet",
+   "chainmail_helmet",
+   "golden_helmet",
+   "iron_helmet",
+   "diamond_helmet",
+   "netherite_helmet",
+   "turtle_helmet",
+   "elytra",
+   "shield",
+   "diamond_sword",
+   "stone_sword",
+   "golden_sword",
+   "netherite_sword",
+   "wooden_sword",
+   "iron_sword",
+   "diamond_axe",
+   "stone_axe",
+   "golden_axe",
+   "netherite_axe",
+   "wooden_axe",
+   "iron_axe",
+   "diamond_pickaxe",
+   "stone_pickaxe",
+   "golden_pickaxe",
+   "netherite_pickaxe",
+   "wooden_pickaxe",
+   "iron_pickaxe",
+   "diamond_shovel",
+   "stone_shovel",
+   "golden_shovel",
+   "netherite_shovel",
+   "wooden_shovel",
+   "iron_shovel",
+   "diamond_hoe",
+   "stone_hoe",
+   "golden_hoe",
+   "netherite_hoe",
+   "wooden_hoe",
+   "iron_hoe",
+   "bow",
+   "crossbow",
+   "trident",
+   "flint_and_steel",
+   "shears",
+   "brush",
+   "fishing_rod",
+   "carrot_on_a_stick",
+   "warped_fungus_on_a_stick",
+   "mace",
+   "compass",
+   "carved_pumpkin",
+   "player_head",
+   "creeper_head",
+   "zombie_head",
+   "skeleton_skull",
+   "wither_skeleton_skull",
+   "dragon_head",
+   "piglin_head"
+  ],
+  "exclusive": [],
+  "treasure": true,
+  "curse": true,
+  "tradeable": true,
+  "in_enchanting_table": false
+ },
+ {
+  "id": 41,
+  "name": "wind_burst",
+  "max_level": 3,
+  "min_cost": [
+   15,
+   9
+  ],
+  "max_cost": [
+   65,
+   9
+  ],
+  "weight": 2,
+  "anvil_cost": 4,
+  "supported": [
+   "mace"
+  ],
+  "primary": [
+   "mace"
+  ],
+  "exclusive": [],
+  "treasure": true,
+  "curse": false,
+  "tradeable": false,
+  "in_enchanting_table": false
+ }
+]

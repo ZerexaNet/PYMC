@@ -112,10 +112,6 @@ async def send_game_event(conn, event: int, value: float = 0.0):
     await _send(conn, "game_event", write_ubyte(event) + write_float(value))
 
 
-async def send_simulation_distance(conn, distance: int):
-    await _send(conn, "simulation_distance", write_varint(distance))
-
-
 async def set_player_gamemode(server, conn, mode: str) -> bool:
     """
     切换玩家游戏模式并同步:

@@ -127,10 +127,10 @@ def build_vanilla_library(force: bool = False) -> str | None:
     tmp = out_dir / ("tmp_" + str(os.getpid()) + "_" + library.name)
     for compiler in compilers:
         if compiler[0] == "cl":
-            cmd = ["cl", "/nologo", "/O2", "/EHsc", "/std:c++17", "/LD", "/MT", "/DNOMINMAX",
+            cmd = ["cl", "/nologo", "/O2", "/EHsc", "/std:c++17", "/fp:precise", "/LD", "/MT", "/DNOMINMAX",
                    f"/Fe:{tmp}", str(VANILLA_SOURCE)]
         else:
-            cmd = compiler + ["-O2", "-std=c++17", "-shared", "-fPIC", "-fvisibility=hidden", "-o", str(tmp),
+            cmd = compiler + ["-O2", "-std=c++17", "-ffp-contract=off", "-shared", "-fPIC", "-fvisibility=hidden", "-o", str(tmp),
                               str(VANILLA_SOURCE)]
             if sys.platform == "win32":
                 cmd[1:1] = ["-static-libgcc", "-static-libstdc++", "-static"]

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from commands.framework import Command, CommandContext, SUCCESS, FAILURE
 from commands.selector import resolve_selector

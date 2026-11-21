@@ -28,20 +28,13 @@ import asyncio
 import math
 
 from protocol.data_types import (
-    write_varint, write_string, write_boolean, write_int, write_long,
-    write_byte, write_ubyte, write_float, write_double, write_short,
-    write_uuid, write_identifier, write_position, write_angle,
+    write_varint, write_boolean, write_int, write_long, write_byte,
+    write_ubyte, write_float, write_double, write_identifier, write_position,
 )
-from protocol.nbt import encode_nbt, NbtLongArray
 from network.connection import Connection
 from world.blocks import (
-    AIR, WATER, LAVA, GRASS_BLOCK, DIRT, COARSE_DIRT, PODZOL,
-    MOSS_BLOCK, SAND, RED_SAND, GRAVEL, SNOW_BLOCK, CLAY, STONE,
-    FIRE, SOUL_FIRE, CACTUS, WATER_CAULDRON, LAVA_CAULDRON,
-    MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH,
-    POWDER_SNOW, POWDER_SNOW_CAULDRON, SNOW,
-    SHORT_GRASS, TALL_GRASS, FERN, LARGE_FERN, DEAD_BUSH,
-    SEAGRASS, TALL_SEAGRASS, KELP, KELP_PLANT, SUGAR_CANE, BAMBOO,
+    WATER, LAVA, FIRE, SOUL_FIRE, CACTUS, WATER_CAULDRON, LAVA_CAULDRON,
+    MAGMA_BLOCK, CAMPFIRE, SOUL_CAMPFIRE, SWEET_BERRY_BUSH, POWDER_SNOW, POWDER_SNOW_CAULDRON,
 )
 from world.editing import get_world_block
 
@@ -49,17 +42,13 @@ from handlers.play.chunks import (
     _sorted_chunk_coords, _send_chunk_batch, _send_deferred_chunks,
 )
 from handlers.play.spawn import (
-    _resolve_initial_player_location, _resolve_player_respawn_location,
-    _is_suffocating_block, PASSABLE_BLOCKS,
+    _resolve_initial_player_location, _is_suffocating_block,
 )
 from handlers.play.entities import (
-    _send_visible_entities_to_player, _entity_within_tracking_range,
-    _send_experience_orb_spawn, _send_generic_entity_spawn,
-    broadcast_entity_spawn, broadcast_entity_remove,
+    _send_visible_entities_to_player,
 )
 from handlers.play.chat import (
-    build_system_message_payload, send_system_message,
-    build_player_info_update, build_player_info_remove,
+    build_player_info_update,
 )
 
 logger = logging.getLogger("PyMC.游戏")
@@ -155,6 +144,13 @@ async def send_join_game(conn: Connection, server):
         await send_op_level(conn, server)
         from commands.brigadier import send_commands
         await send_commands(conn, server)
+
+    # --- 1b. 进度 (1.12+ advancements): the tree and this player's progress ---
+    from world.advancements import on_join as send_advancements
+    try:
+        await send_advancements(server, conn)
+    except Exception:
+        logger.exception(f"发送 {conn.username} 的进度失败")
 
     # --- 2. 解析出生位置 (存档位置不安全时回退到安全出生点) ---
     target_x, target_y, target_z = _resolve_initial_player_location(

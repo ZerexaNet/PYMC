@@ -96,10 +96,6 @@ class CommandManager:
             return self.commands.get(global_resolved)
         return None
 
-    def get_all_commands(self) -> list[Command]:
-        """Return all registered commands."""
-        return list(self.commands.values())
-
     def get_commands_for_sender(self, sender) -> list[Command]:
         """Return commands the sender has permission to use."""
         result = []
@@ -113,16 +109,6 @@ class CommandManager:
             else:
                 result.append(cmd)
         return result
-
-    def get_commands_by_category(self) -> dict[str, list[Command]]:
-        """Return commands grouped by category."""
-        categories: dict[str, list[Command]] = {}
-        for cmd in self.commands.values():
-            cat = getattr(cmd, 'category', 'general')
-            if cat not in categories:
-                categories[cat] = []
-            categories[cat].append(cmd)
-        return categories
 
     async def execute(self, sender, command_string: str) -> int:
         """

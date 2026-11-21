@@ -29,8 +29,7 @@ from world.blocks import (
     GLASS, SAND, OAK_LOG, TORCH,
 )
 from world.editing import (
-    get_world_block, set_world_block, fill_box_detailed,
-    clone_box_detailed, resolve_block_state,
+    get_world_block, set_world_block,
 )
 
 logger = logging.getLogger("PyMC.方块")
@@ -140,10 +139,6 @@ def _load_chunk_for_edit(server, chunk_x: int, chunk_z: int):
     return _load_chunk_for_edit_impl(server, chunk_x, chunk_z)
 
 
-def _set_world_block(server, x: int, y: int, z: int, block_state: int) -> bool:
-    return bool(set_world_block(server, x, y, z, block_state))
-
-
 async def _refresh_chunks_for_players(server, chunk_coords: list[tuple[int, int]]):
     """将受影响区块重新编码并发给已加载这些区块的玩家。"""
     if not chunk_coords:
@@ -193,7 +188,6 @@ def _get_held_item_for_placement(conn: Connection) -> tuple[int, str | None]:
     Get the block state ID the player is trying to place based on held item.
     Returns (block_state_id, item_name) or (0, None) if nothing to place.
     """
-    from world.inventory import ItemStack
     from world.chunk_io import BLOCK_NAME_TO_DEFAULT_STATE
 
     inv = getattr(conn, 'inventory_obj', None)
@@ -230,10 +224,8 @@ async def _handle_block_dig(conn: Connection, payload: bytes, server):
     """处理挖方块。集成物品栏和方块行为系统。"""
     from handlers.play.entities import broadcast_entity_spawn
     from world.block_behavior import (
-        get_block_drops, get_block_name_from_state, get_block_hardness,
-        can_harvest_block, calculate_break_time, container_manager,
+        get_block_drops, get_block_hardness, container_manager,
     )
-    from world.inventory import ItemStack
     from world.chunk_io import STATE_ID_TO_BLOCK
 
     offset = 0
@@ -478,32 +470,6 @@ def _drop_held_item(conn: Connection, server, whole_stack: bool = True):
     asyncio.create_task(_do_drop())
 
 
-def _get_tool_max_damage(item_id: str) -> int:
-    """Get the max damage (durability) for a tool."""
-    _DURABILITY = {
-        "wooden_pickaxe": 59, "wooden_axe": 59, "wooden_shovel": 59,
-        "wooden_sword": 59, "wooden_hoe": 59,
-        "stone_pickaxe": 131, "stone_axe": 131, "stone_shovel": 131,
-        "stone_sword": 131, "stone_hoe": 131,
-        "iron_pickaxe": 250, "iron_axe": 250, "iron_shovel": 250,
-        "iron_sword": 250, "iron_hoe": 250,
-        "golden_pickaxe": 32, "golden_axe": 32, "golden_shovel": 32,
-        "golden_sword": 32, "golden_hoe": 32,
-        "diamond_pickaxe": 1561, "diamond_axe": 1561, "diamond_shovel": 1561,
-        "diamond_sword": 1561, "diamond_hoe": 1561,
-        "netherite_pickaxe": 2031, "netherite_axe": 2031, "netherite_shovel": 2031,
-        "netherite_sword": 2031, "netherite_hoe": 2031,
-        "leather_helmet": 55, "leather_chestplate": 80, "leather_leggings": 75, "leather_boots": 65,
-        "iron_helmet": 165, "iron_chestplate": 240, "iron_leggings": 225, "iron_boots": 195,
-        "golden_helmet": 77, "golden_chestplate": 112, "golden_leggings": 105, "golden_boots": 91,
-        "diamond_helmet": 363, "diamond_chestplate": 528, "diamond_leggings": 495, "diamond_boots": 429,
-        "netherite_helmet": 407, "netherite_chestplate": 592, "netherite_leggings": 555, "netherite_boots": 481,
-        "bow": 384, "crossbow": 326, "trident": 250, "shield": 336,
-        "shears": 238, "flint_and_steel": 64, "fishing_rod": 64,
-    }
-    return _DURABILITY.get(item_id, 0)
-
-
 def _is_replaceable(block_state: int) -> bool:
     """空气、流体和花草等可被直接替换的方块。"""
     if block_state == AIR:
@@ -549,11 +515,6 @@ def _collides_with_player(server, x: int, y: int, z: int, block_state: int) -> b
 
 async def _handle_block_place(conn: Connection, payload: bytes, server):
     """处理方块放置和方块交互。集成物品栏和方块行为系统。"""
-    from world.block_behavior import (
-        get_block_behavior, get_block_name_from_state, container_manager,
-    )
-    from world.inventory import ItemStack
-    from world.chunk_io import STATE_ID_TO_BLOCK
 
     offset = 0
     hand, offset = read_varint(payload, offset)
@@ -579,7 +540,7 @@ async def _use_item_on(conn: Connection, server, hand: int,
                        cursor: tuple[float, float, float] = (0.5, 0.5, 0.5)):
     """Use Item On 的实际逻辑: 方块交互优先, 其次放置手持方块。"""
     from world.block_behavior import (
-        get_block_behavior, get_block_name_from_state, container_manager,
+        get_block_behavior, container_manager,
     )
     from world.chunk_io import STATE_ID_TO_BLOCK
 
@@ -739,6 +700,10 @@ async def _use_item_on(conn: Connection, server, hand: int,
         container_manager.get_or_create(place_x, place_y, place_z, "hopper")
     elif placed_name == "minecraft:brewing_stand":
         container_manager.get_or_create(place_x, place_y, place_z, "brewing_stand")
+    elif placed_name == "minecraft:enchanting_table":
+        container_manager.get_or_create(place_x, place_y, place_z, "enchanting_table")
+    elif placed_name.endswith("anvil"):
+        container_manager.get_or_create(place_x, place_y, place_z, "anvil")
     elif placed_name in ("minecraft:dropper", "minecraft:dispenser"):
         container_manager.get_or_create(place_x, place_y, place_z, placed_name.split(":")[1])
 

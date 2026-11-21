@@ -22,7 +22,7 @@ import logging
 
 from protocol.data_types import (
     write_varint, write_double, write_short,
-    write_uuid, write_angle, write_boolean, write_ubyte, write_string,
+    write_uuid, write_angle, write_boolean, write_ubyte,
 )
 from network.connection import Connection
 

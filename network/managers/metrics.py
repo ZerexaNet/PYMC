@@ -14,9 +14,7 @@ ServerMetrics - 服务器性能指标收集与报告。
 """
 
 import time
-import os
 import logging
-from typing import Optional
 
 logger = logging.getLogger("PyMC.指标")
 
@@ -74,17 +72,6 @@ class ChunkThroughputCounter:
         self._records: list[tuple[float, int]] = []  # (timestamp, count)
         self._total_generated: int = 0
         self._total_loaded: int = 0
-
-    def record_generation(self, count: int, loaded: int):
-        """记录一次区块生成。"""
-        now = time.time()
-        self._records.append((now, count))
-        self._total_generated += count - loaded
-        self._total_loaded += loaded
-
-        # 清理过期记录
-        cutoff = now - self._window_seconds
-        self._records = [(t, c) for t, c in self._records if t > cutoff]
 
     @property
     def chunks_per_second(self) -> float:
@@ -160,11 +147,6 @@ class MemoryTracker:
         return 0
 
     @property
-    def peak_rss(self) -> int:
-        """峰值 RSS 内存使用 (字节)。"""
-        return self._peak_rss
-
-    @property
     def current_rss_mb(self) -> float:
         """当前 RSS 内存使用 (MB)。"""
         return self.current_rss / (1024 * 1024)
@@ -186,16 +168,6 @@ class NetworkIOTracker:
         self._packets_sent: int = 0
         self._packets_received: int = 0
         self._start_time: float = time.time()
-
-    def record_send(self, byte_count: int, packet_count: int = 1):
-        """记录发送数据。"""
-        self._bytes_sent += byte_count
-        self._packets_sent += packet_count
-
-    def record_receive(self, byte_count: int, packet_count: int = 1):
-        """记录接收数据。"""
-        self._bytes_received += byte_count
-        self._packets_received += packet_count
 
     @property
     def bytes_sent(self) -> int:

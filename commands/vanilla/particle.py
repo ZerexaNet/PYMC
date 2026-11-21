@@ -4,7 +4,6 @@
 
 from commands.framework import Command, CommandContext, SUCCESS, FAILURE
 from commands.arguments import parse_particle_name
-from network.connection import Connection
 
 
 def register(manager):

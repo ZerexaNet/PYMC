@@ -18,11 +18,10 @@ import logging
 import struct
 import math
 from protocol.data_types import (
-    write_varint, write_string, write_boolean, write_int, write_long,
-    write_byte, write_ubyte, write_float, write_double,
-    write_uuid, write_identifier, write_position, write_short,
+    write_varint, write_boolean, write_int, write_long, write_byte,
+    write_ubyte, write_identifier,
 )
-from protocol.nbt import encode_nbt, NbtLong, NbtLongArray, NbtByte, NbtDouble, NbtFloat
+from protocol.nbt import encode_nbt, NbtLong, NbtByte, NbtDouble, NbtFloat
 from handlers.versioned.base import VersionHandler
 
 logger = logging.getLogger("PyMC.版本.1_16")

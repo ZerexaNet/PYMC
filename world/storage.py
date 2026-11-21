@@ -50,14 +50,12 @@ import gzip
 import time
 import logging
 import json
-import sys
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from io import BytesIO
-from .chunk_io import serialize_chunk, deserialize_chunk, deserialize_chunk_with_biomes
-from .blocks import AIR, GRASS_BLOCK, WATER, STONE, LAVA, CACTUS, FIRE, SAND, DIRT
+from .chunk_io import serialize_chunk, deserialize_chunk_with_biomes
+from .blocks import AIR, WATER, LAVA, CACTUS, FIRE
 
 logger = logging.getLogger("pymc.storage")
 
@@ -774,46 +772,6 @@ def convert_linear_to_anvil(linear_path: str, mca_path: str,
     return region.chunk_count
 
 
-def convert_world_linear_to_anvil(world_dir: str,
-                                  compression_type: int = 2) -> int:
-    """
-    将世界目录中所有 Linear 文件转换为 Anvil 格式。
-
-    用于导出为原版兼容格式。
-
-    返回: 转换的文件数量
-    """
-    region_dir = Path(world_dir) / "region"
-    if not region_dir.exists():
-        return 0
-
-    linear_files = list(region_dir.glob("*.linear"))
-    if not linear_files:
-        return 0
-
-    logger.info(f"Found {len(linear_files)} Linear region files, converting to Anvil format...")
-
-    converted = 0
-    total_chunks = 0
-
-    for linear_file in linear_files:
-        mca_file = linear_file.with_suffix('.mca')
-        try:
-            chunks = convert_linear_to_anvil(str(linear_file), str(mca_file), compression_type)
-            if chunks > 0:
-                total_chunks += chunks
-                converted += 1
-                logger.info(f"  Exported: {linear_file.name} -> {mca_file.name} "
-                            f"({chunks} chunks)")
-        except Exception as e:
-            logger.error(f"  Export failed: {linear_file.name}: {e}")
-
-    logger.info(f"Linear -> Anvil export complete: {converted} files, "
-                f"total {total_chunks} chunks")
-
-    return converted
-
-
 # ============================================================
 # LRU 区域文件缓存
 # ============================================================
@@ -954,11 +912,6 @@ class LRUCache:
     def size(self) -> int:
         return len(self.access_order)
 
-    def estimated_memory(self) -> int:
-        """估算当前缓存使用的内存。"""
-        return self.current_memory
-
-
 # ============================================================
 # 世界存储管理器 (增强版)
 # ============================================================
@@ -975,6 +928,7 @@ class WorldStorage:
     def __init__(self, world_dir: str,
                  max_cached_regions: int = DEFAULT_MAX_REGIONS,
                  max_memory_mb: int = DEFAULT_MAX_MEMORY_MB,
+                 decoded_cache_size: int | None = None,
                  region_format: str = "anvil"):
         self.world_dir = Path(world_dir)
         self.region_format = "linear" if str(region_format).lower() == "linear" else "anvil"
@@ -998,6 +952,8 @@ class WorldStorage:
 
         # LRU 缓存
         self._cache = LRUCache(max_cached_regions, max_memory_mb)
+        if decoded_cache_size is not None:
+            self.DECODED_CACHE_SIZE = max(1, int(decoded_cache_size))
         self._cache.set_flush_callback(self._flush_region_impl)
 
         # 确保目录存在
@@ -1109,7 +1065,7 @@ class WorldStorage:
     # TPS 拖垮, 所以把解码后的数组按 LRU 缓存起来。缓存中的数组是共享对象:
     # 修改后必须调用 save_generated_chunk() 写回 (世界编辑代码都是这么做的)。
 
-    DECODED_CACHE_SIZE = 192
+    DECODED_CACHE_SIZE = 64     # about 1.2 MB per decoded chunk (nested lists): ~80 MB at most
 
     def _decoded_cache_get(self, key):
         with self._decoded_lock:
@@ -1226,34 +1182,10 @@ class WorldStorage:
                 except Exception as e:
                     logger.error(f"Failed to save region ({rx}, {rz}): {e}")
 
-    def flush_region(self, rx: int, rz: int):
-        """保存单个区域文件。"""
-        with self._io_lock:
-            key = (rx, rz)
-            if not self._cache.is_dirty(key):
-                return
-            region = self._cache.get(key)
-            if region is None:
-                return
-            path = self._get_region_path(rx, rz)
-            try:
-                region.write(str(path))
-                self._cache.dirty.discard(key)
-            except Exception as e:
-                logger.error(f"Failed to save region ({rx}, {rz}): {e}")
-
     def has_dirty_regions(self) -> bool:
         """是否存在尚未落盘的区域修改。"""
         with self._io_lock:
             return bool(self._cache.dirty)
-
-    def unload_region(self, rx: int, rz: int):
-        """卸载区域文件 (先保存再释放内存)。"""
-        with self._io_lock:
-            key = (rx, rz)
-            if self._cache.is_dirty(key):
-                self.flush_region(rx, rz)
-            self._cache.remove(key)
 
     def close(self):
         """关闭存储，保存所有未写入的数据。"""
@@ -1384,172 +1316,6 @@ class WorldStorage:
             return False
 
         return True
-
-    def find_safe_spawn_point(self, terrain_generator=None,
-                              preferred_x: int = 0,
-                              preferred_z: int = 0) -> tuple[int, int, int]:
-        """
-        查找安全的出生点。
-
-        增强功能:
-          - 检查更宽的半径 (16 个区块)
-          - 避免水、熔岩、仙人掌、火焰
-          - 优先选择 y=63-80 处的草方块
-          - 在世界生成后验证出生点
-
-        Args:
-            terrain_generator: 地形生成器 (用于生成未加载的区块)
-            preferred_x, preferred_z: 首选的世界坐标
-
-        Returns:
-            (x, y, z) 安全出生点坐标
-        """
-        # 转换为区块坐标
-        center_cx = preferred_x >> 4
-        center_cz = preferred_z >> 4
-
-        best_pos = None
-        best_score = -1
-
-        # 螺旋搜索 - 16 个区块半径
-        for dist in range(SAFE_SPAWN_RADIUS + 1):
-            for dx in range(-dist, dist + 1):
-                for dz in range(-dist, dist + 1):
-                    if abs(dx) != dist and abs(dz) != dist:
-                        continue  # 只搜索外圈
-
-                    cx = center_cx + dx
-                    cz = center_cz + dz
-
-                    # 尝试加载或生成区块
-                    chunk_blocks = self.load_generated_chunk(cx, cz)
-                    if chunk_blocks is None and terrain_generator is not None:
-                        try:
-                            chunk_blocks = terrain_generator.generate_chunk(cx, cz)
-                        except Exception:
-                            continue
-
-                    if chunk_blocks is None:
-                        continue
-
-                    # 在区块中心寻找出生点
-                    wx = cx * 16 + 8
-                    wz = cz * 16 + 8
-                    local_x = 8
-                    local_z = 8
-
-                    # 寻找地表
-                    surface_y = MIN_Y
-                    for yi in range(WORLD_HEIGHT - 1, -1, -1):
-                        block = chunk_blocks[yi][local_z][local_x]
-                        if block != AIR and block != WATER:
-                            surface_y = MIN_Y + yi
-                            break
-
-                    # 评分系统
-                    score = 0
-
-                    # 优先 y=63-80 (海平面附近, 草地高度)
-                    if 63 <= surface_y <= 80:
-                        score += 15
-                    elif 60 <= surface_y <= 90:
-                        score += 10
-                    elif 50 <= surface_y <= 100:
-                        score += 5
-
-                    # 优先草方块
-                    surface_yi = surface_y - MIN_Y
-                    if 0 <= surface_yi < WORLD_HEIGHT:
-                        surface_block = chunk_blocks[surface_yi][local_z][local_x]
-                        if surface_block == GRASS_BLOCK:
-                            score += 20
-                        elif surface_block == DIRT:
-                            score += 10
-                        elif surface_block == SAND:
-                            score += 5
-
-                    # 避免危险方块
-                    if 0 <= surface_yi < WORLD_HEIGHT:
-                        # 检查脚下方块是否危险
-                        foot_block = chunk_blocks[surface_yi][local_z][local_x]
-                        if self._is_dangerous_block(foot_block):
-                            score -= 100  # 强烈避免
-
-                        # 检查附近是否有危险方块
-                        for check_yi in range(max(0, surface_yi - 1),
-                                              min(WORLD_HEIGHT, surface_yi + 3)):
-                            for check_dx in range(-2, 3):
-                                for check_dz in range(-2, 3):
-                                    nx, nz = local_x + check_dx, local_z + check_dz
-                                    if 0 <= nx < 16 and 0 <= nz < 16:
-                                        check_block = chunk_blocks[check_yi][nz][nx]
-                                        if check_block in DANGEROUS_BLOCKS:
-                                            if check_block == LAVA:
-                                                score -= 50
-                                            elif check_block == WATER:
-                                                score -= 20
-                                            elif check_block in (FIRE, CACTUS):
-                                                score -= 30
-
-                    # 避免水下
-                    if surface_y <= SEA_LEVEL:
-                        score -= 50
-
-                    # 避免高海拔
-                    if surface_y > 120:
-                        score -= 20
-
-                    # 距离偏好 (越近越好)
-                    score -= dist * 2
-
-                    # 验证出生点安全性
-                    if score > 0 and self._is_safe_spawn_location(
-                            chunk_blocks, local_x, surface_y + 1, local_z):
-                        if score > best_score:
-                            best_score = score
-                            best_pos = (wx, surface_y + 1, wz)
-
-        if best_pos is None:
-            # 回退: 使用首选坐标 (海平面 + 1)
-            return (preferred_x, SEA_LEVEL + 1, preferred_z)
-
-        return best_pos
-
-    def validate_spawn_point(self, spawn_x: int, spawn_y: int,
-                             spawn_z: int) -> tuple[int, int, int]:
-        """
-        验证出生点是否安全，不安全则寻找附近的替代点。
-
-        增强功能:
-          - 检查脚下和头部方块
-          - 避免水、熔岩、仙人掌、火焰
-          - 验证失败时搜索更宽区域
-
-        Args:
-            spawn_x, spawn_y, spawn_z: 待验证的出生点
-
-        Returns:
-            验证后的安全出生点
-        """
-        cx = spawn_x >> 4
-        cz = spawn_z >> 4
-        local_x = spawn_x & 15
-        local_z = spawn_z & 15
-
-        chunk_blocks = self.load_generated_chunk(cx, cz)
-        if chunk_blocks is None:
-            return (spawn_x, spawn_y, spawn_z)
-
-        # 检查出生点安全性
-        if self._is_safe_spawn_location(chunk_blocks, local_x, spawn_y, local_z):
-            return (spawn_x, spawn_y, spawn_z)
-
-        # 寻找安全的替代点
-        return self.find_safe_spawn_point(
-            preferred_x=spawn_x,
-            preferred_z=spawn_z,
-        )
-
 
 # ============================================================
 # 玩家存档 <-> 原版 NBT

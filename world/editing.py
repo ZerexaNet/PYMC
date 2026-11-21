@@ -168,13 +168,6 @@ def set_world_block(server, x: int, y: int, z: int, block_state: int) -> set[tup
     return dirty_chunks
 
 
-def fill_box(server, x1: int, y1: int, z1: int, x2: int, y2: int, z2: int, block_state: int) -> tuple[int, set[tuple[int, int]]]:
-    changed_positions, changed_chunks, _ = fill_box_detailed(
-        server, x1, y1, z1, x2, y2, z2, block_state
-    )
-    return changed_positions, changed_chunks
-
-
 def fill_box_detailed(
     server,
     x1: int,
@@ -209,33 +202,6 @@ def fill_box_detailed(
 
 def _ranges_overlap(a_min: int, a_max: int, b_min: int, b_max: int) -> bool:
     return not (a_max < b_min or b_max < a_min)
-
-
-def clone_box(
-    server,
-    x1: int,
-    y1: int,
-    z1: int,
-    x2: int,
-    y2: int,
-    z2: int,
-    dest_x: int,
-    dest_y: int,
-    dest_z: int,
-    *,
-    mask_mode: str = "replace",
-    clone_mode: str = "normal",
-    filter_block_state: int | None = None,
-) -> tuple[int, set[tuple[int, int]]]:
-    changed_positions, changed_chunks, _ = clone_box_detailed(
-        server,
-        x1, y1, z1, x2, y2, z2,
-        dest_x, dest_y, dest_z,
-        mask_mode=mask_mode,
-        clone_mode=clone_mode,
-        filter_block_state=filter_block_state,
-    )
-    return changed_positions, changed_chunks
 
 
 def clone_box_detailed(

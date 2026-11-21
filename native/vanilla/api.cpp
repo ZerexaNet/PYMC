@@ -4,6 +4,8 @@
 //   redstone / block updates (BUD, QC, pistons, ...)  -> vrs_tick, vrs_block_changed, ...
 //   hoppers                                           -> vrs_tick_hoppers
 //   explosions (rays + exposure, thread safe)         -> vrs_explosion_blocks, vrs_exposure
+//   chunk light (sky + block, no engine state)        -> vrs_light_set_tables, vrs_light_compute
+//   biomes (noise + rules, no engine state)           -> vrs_biome_create, vrs_biome_sections
 //
 // The engine keeps a mirror of the chunks it reads (loaded through a
 // callback); every change it makes is logged and drained by Python, which
@@ -14,6 +16,8 @@
 
 #include "behaviors.h"
 #include "hopper.h"
+#include "light.h"
+#include "biome.h"
 
 #if defined(_WIN32)
 #define VRS_API extern "C" __declspec(dllexport)
@@ -31,7 +35,70 @@ static std::recursive_mutex M;
 
 static Pos P(int x, int y, int z) { return Pos{x, y, z}; }
 
-VRS_API int vrs_version() { return 3; }
+VRS_API int vrs_version() { return 6; }
+
+// Light: opacity/emission tables by state id (set once), then one call per chunk.
+VRS_API void vrs_light_set_tables(const uint8_t* opacity, const uint8_t* emission, int n) {
+    vrs::light::set_tables(opacity, emission, n);
+}
+VRS_API void vrs_light_compute(const uint16_t* blocks, int height, uint8_t* sky, uint8_t* block_light) {
+    vrs::light::compute(blocks, height, sky, block_light);
+}
+
+// Biomes: noise tables for the seven samplers, built in Python (same random generator),
+// laid out as [count, persistence, lacunarity, max_value, count x (xo, yo, zo, perm[512])]
+// per sampler in the order temperature, humidity, continental, erosion, weirdness,
+// swamp, mushroom. names: the biome names joined by '\n', in id order.
+VRS_API void* vrs_biome_create(const double* params, int n, const char* names) {
+    using namespace vrs::biome;
+    Sampler* s = new Sampler();
+    Octaves* sets[7] = {&s->temperature, &s->humidity, &s->continental, &s->erosion,
+                        &s->weirdness, &s->swamp, &s->mushroom};
+    int pos = 0;
+    for (Octaves* o : sets) {
+        o->count = (int)params[pos];
+        o->persistence = params[pos + 1];
+        o->lacunarity = params[pos + 2];
+        o->max_value = params[pos + 3];
+        pos += 4;
+        o->layers.resize(o->count);
+        for (Layer& layer : o->layers) {
+            layer.xo = params[pos];
+            layer.yo = params[pos + 1];
+            layer.zo = params[pos + 2];
+            pos += 3;
+            for (int i = 0; i < 512; i++) layer.perm[i] = (int)params[pos + i];
+            pos += 512;
+        }
+    }
+    if (pos != n) { delete s; return nullptr; }
+    int index = 0;
+    const char* p = names;
+    while (*p) {
+        const char* end = std::strchr(p, '\n');
+        std::string name = end ? std::string(p, end - p) : std::string(p);
+        s->ids[name] = index++;
+        if (!end) break;
+        p = end + 1;
+    }
+    return s;
+}
+
+VRS_API void vrs_biome_destroy(void* handle) { delete static_cast<vrs::biome::Sampler*>(handle); }
+
+// column_height: 256 entries (x + z*16), index of the highest non-air block + 1, 0 if none.
+// out: 24 sections x 64 biome ids (section-major, then y, z, x in 4x4x4 cells).
+VRS_API int vrs_biome_sections(void* handle, int chunk_x, int chunk_z,
+                               const int32_t* column_height, int32_t* out) {
+    if (handle == nullptr) return 0;
+    vrs::biome::build_sections(*static_cast<vrs::biome::Sampler*>(handle), chunk_x, chunk_z,
+                               column_height, out);
+    return 1;
+}
+
+// Chunks kept in the mirror. Every chunk is 196 KB; the rest are re-read from storage on demand.
+static size_t g_chunk_limit = 256;
+VRS_API void vrs_set_chunk_limit(int n) { LOCK; g_chunk_limit = n < 1 ? 1 : (size_t)n; }
 
 VRS_API int vrs_init(const char* blocks_json) {
     LOCK;
@@ -101,7 +168,13 @@ static int guarded(const std::function<void()>& fn) {
     }
 }
 
-VRS_API int vrs_tick() { LOCK; return guarded([] { G->tick_all(); }); }
+VRS_API int vrs_tick() {
+    LOCK;
+    return guarded([] {
+        G->tick_all();
+        G->evict(g_chunk_limit);   // no pointers into the mirror are held between ticks
+    });
+}
 
 VRS_API int vrs_tick_hoppers(const int32_t* xyz, int n) {
     LOCK;

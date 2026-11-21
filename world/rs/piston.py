@@ -11,11 +11,11 @@ straight from the vanilla code paths reproduced here.
 
 from __future__ import annotations
 
-from .blocks import Block, destroy_speed, is_face_sturdy
+from .blocks import Block, destroy_speed
 from .core import (
-    AIR, DATA_3D, DIRECTIONS, FROM_3D, OPP, SHAPE_ORDER, UPDATE_ALL, UPDATE_CLIENTS,
-    UPDATE_INVISIBLE, UPDATE_KNOWN_SHAPE, UPDATE_MOVE_BY_PISTON, UPDATE_NEIGHBORS,
-    default_state, java_hash_order, name_of, prop, rel, with_props,
+    AIR, DATA_3D, DIRECTIONS, FROM_3D, OPP, UPDATE_ALL, UPDATE_CLIENTS, UPDATE_INVISIBLE,
+    UPDATE_KNOWN_SHAPE, UPDATE_MOVE_BY_PISTON, default_state, java_hash_order,
+    name_of, prop, rel, with_props,
 )
 
 MOVING_PISTON = "minecraft:moving_piston"

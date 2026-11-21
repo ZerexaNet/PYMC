@@ -11,9 +11,8 @@ TickScheduler - 基于 tick 的延迟任务调度器。
 这个调度器提供了基于 tick 数而非真实时间的调度机制。
 """
 
-import asyncio
 import logging
-from typing import Callable, Any
+from typing import Callable
 
 logger = logging.getLogger("PyMC.调度器")
 

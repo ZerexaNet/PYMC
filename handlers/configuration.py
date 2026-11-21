@@ -8,12 +8,8 @@ import logging
 from protocol.data_types import (
     write_string, write_varint, write_boolean, write_identifier
 )
-from protocol.nbt import (
-    encode_nbt, NbtByte, NbtFloat, NbtLong, NbtDouble
-)
 from protocol.versions import has_configuration_phase
 from network.connection import Connection, ConnectionState
-from world.biomes import build_biome_registry_entries
 
 logger = logging.getLogger("PyMC.配置")
 
@@ -209,24 +205,6 @@ async def _send_tags(conn: Connection):
     if _TAGS_PAYLOAD_CACHE is None:
         _TAGS_PAYLOAD_CACHE = build_tags_payload()
     await conn.send_packet(0x0D, _TAGS_PAYLOAD_CACHE)
-
-
-async def _send_single_registry(conn: Connection, registry_id: str,
-                                 entries: dict):
-    """
-    发送单个注册表的 Registry Data 数据包 (0x07)，条目为 Python dict。
-    供插件/Mod 追加自定义注册表条目使用。
-    """
-    payload = bytearray()
-    payload.extend(write_identifier(registry_id))
-    payload.extend(write_varint(len(entries)))
-
-    for entry_id, entry_data in entries.items():
-        payload.extend(write_identifier(entry_id))
-        payload.extend(write_boolean(True))  # 有数据
-        payload.extend(encode_nbt(entry_data, with_type=True))
-
-    await conn.send_packet(0x07, bytes(payload))
 
 
 async def _send_finish_configuration(conn: Connection):

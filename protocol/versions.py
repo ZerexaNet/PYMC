@@ -54,11 +54,6 @@ for pv in SUPPORTED_VERSIONS:
         HAS_DIMENSION_REGISTRY.add(pv)
 
 
-def get_version_info(protocol_version: int) -> dict | None:
-    """Get version info for a protocol version, or None if not supported."""
-    return PROTOCOL_VERSIONS.get(protocol_version)
-
-
 def is_supported(protocol_version: int) -> bool:
     """Check if a protocol version is supported."""
     return protocol_version in PROTOCOL_VERSIONS
@@ -72,45 +67,9 @@ def get_version_name(protocol_version: int) -> str:
     return f"Unknown ({protocol_version})"
 
 
-def get_major_version(protocol_version: int) -> str:
-    """Get major version string (e.g. '1.21') for a protocol version."""
-    info = PROTOCOL_VERSIONS.get(protocol_version)
-    if info:
-        return info["major"]
-    return "unknown"
-
-
 def has_configuration_phase(protocol_version: int) -> bool:
     """Check if this protocol version uses the configuration phase (1.20.2+)."""
     return protocol_version in HAS_CONFIGURATION_PHASE
-
-
-def has_world_height_384(protocol_version: int) -> bool:
-    """Check if this protocol version supports 384-height world (1.17+)."""
-    return protocol_version in HAS_WORLD_HEIGHT_384
-
-
-def has_flattening(protocol_version: int) -> bool:
-    """Check if this protocol version uses the flattened block state IDs (1.13+)."""
-    return protocol_version in HAS_FLATTENING
-
-
-def get_closest_supported_version(protocol_version: int) -> int | None:
-    """
-    Find the closest supported protocol version for an unsupported version.
-    Returns the nearest supported version, or None if completely out of range.
-    """
-    if protocol_version in PROTOCOL_VERSIONS:
-        return protocol_version
-
-    # Find the closest lower supported version
-    best = None
-    for pv in SUPPORTED_VERSIONS:
-        if pv <= protocol_version:
-            best = pv
-        else:
-            break
-    return best
 
 
 def get_handler_version(protocol_version: int) -> str:
